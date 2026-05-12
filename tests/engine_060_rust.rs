@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use miniforge::core::game::Game;
 use miniforge::engine::advanced_prefabs::AdvancedPrefabSystem;
 use miniforge::engine::animation_graph::AnimationGraphLibrary;
+use miniforge::engine::archetype_library::ArchetypeLibrary;
 use miniforge::engine::asset_database::AssetDatabase;
 use miniforge::engine::asset_tools::AssetTools;
 use miniforge::engine::audio_mixer::AudioMixer;
@@ -14,10 +15,12 @@ use miniforge::engine::build_report::BuildReport;
 use miniforge::engine::camera::Camera;
 use miniforge::engine::component::{component_from_data, default_component};
 use miniforge::engine::component_validation::ComponentValidation;
+use miniforge::engine::content_drag::DragPayload;
 use miniforge::engine::diagnostics::Diagnostics;
 use miniforge::engine::editor_workspace::{EditorPanelKind, EditorWorkspace, WorkspaceMode};
 use miniforge::engine::engine_programming::ProgrammingEnvironment;
 use miniforge::engine::event_bus::EventBus;
+use miniforge::engine::file_browser::FileBrowser;
 use miniforge::engine::game_api::GameAPI;
 use miniforge::engine::game_clock::GameClock;
 use miniforge::engine::hierarchy_manager::HierarchyManager;
@@ -30,10 +33,12 @@ use miniforge::engine::profiler::Profiler;
 use miniforge::engine::project_templates::ProjectTemplates;
 use miniforge::engine::project_validator::ProjectValidator;
 use miniforge::engine::resource_manager::ResourceManager;
+use miniforge::engine::runtime_exporter::{ExportProfile, RuntimeExporter};
 use miniforge::engine::scene_serializer::SceneSerializer;
 use miniforge::engine::scene_view_tools::SceneViewTools;
 use miniforge::engine::script_editor::ScriptEditor;
 use miniforge::engine::spatial_index::SpatialIndex;
+use miniforge::engine::tile_brush::{TileBrush, TileBrushMode};
 use miniforge::engine::tilemap_layers::TilemapLayers;
 use miniforge::engine::ui_canvas::UICanvas;
 use miniforge::engine::upgrade_manifest::EngineUpgradeManifest;
@@ -385,7 +390,7 @@ fn component_validation_repairs_ranges() {
 #[test]
 fn scene_serializer_migrates_old_data() {
     let data = SceneSerializer::migrate(json!({"objects": [{"name": "Old"}]}));
-    assert_eq!(data["version"], "0.6.0");
+    assert_eq!(data["version"], miniforge::ENGINE_VERSION);
     assert_eq!(data["entities"][0]["name"], "Old");
     assert_eq!(data["brush_size"], 1);
 }
@@ -539,9 +544,12 @@ fn beta_play_mode_restores_snapshot() {
     let mut manager = PlayModeManager::default();
     manager.enter_play_mode(&entities, &mut mode);
     entities[0].x = 99.0;
-    manager.exit_play_mode(&mut entities, &mut mode);
+    manager.tick_frame();
+    manager.exit_play_mode(&mut entities, &mut mode, "test");
     assert_eq!(mode, "EDITOR");
     assert_eq!(entities[0].x, 1.0);
+    assert_eq!(manager.frame_count, 1);
+    assert_eq!(manager.last_exit_reason, "test");
 }
 
 #[test]
@@ -564,6 +572,54 @@ fn asset_database_import_settings_and_dependencies() {
             .unwrap()
     );
     assert!(graph["saves/scenes/main.scene"].contains(&"assets/data/Items.json".to_string()));
+}
+
+#[test]
+fn file_browser_and_asset_tools_manage_game_assets() {
+    let tmp = temp_dir("file-browser");
+    AssetTools::ensure_project_folders(&tmp).unwrap();
+    fs::write(tmp.join("assets").join("sprites").join("hero.png"), b"png").unwrap();
+    fs::write(tmp.join("assets").join("audio").join("hit.wav"), b"wav").unwrap();
+
+    let mut browser = FileBrowser::new(&tmp);
+    let sprite_import = browser
+        .create_sprite_import("HeroSprite", "assets/sprites/hero.png")
+        .unwrap();
+    let sound_cue = browser
+        .create_sound_cue("HitCue", "assets/audio/hit.wav")
+        .unwrap();
+    let material = browser.create_material("HeroMaterial").unwrap();
+    assert!(sprite_import.exists());
+    assert!(sound_cue.exists());
+    assert!(material.exists());
+
+    let folder = browser.create_folder("assets", "Imported").unwrap();
+    assert!(folder.exists());
+    browser.select_asset_by_path(&sprite_import);
+    let renamed = browser.rename_selected_asset("HeroIdle").unwrap().unwrap();
+    assert!(
+        renamed
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .contains("HeroIdle")
+    );
+    let moved = browser
+        .move_selected_asset("assets/Imported")
+        .unwrap()
+        .unwrap();
+    assert!(moved.starts_with(tmp.join("assets").join("Imported")));
+
+    let stats = browser.stats().unwrap();
+    assert!(stats.sprites >= 2);
+    assert!(stats.audio >= 2);
+    assert!(
+        browser
+            .scan_entries()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.asset_type == "Material")
+    );
 }
 
 #[test]
@@ -807,7 +863,12 @@ fn flow_field_builds_shared_paths_for_rts_squads() {
 
 #[test]
 fn rts_navigation_avoids_threats_and_builds_influence_maps() {
-    let grid = Grid::new(8, 5, 32, 8);
+    let mut grid = Grid::new(8, 5, 32, 8);
+    assert!(grid.line_of_sight((0, 0), (7, 0)));
+    grid.set_tile(3, 0, 1);
+    assert!(!grid.line_of_sight((0, 0), (7, 0)));
+    assert!(grid.reachable_area((0, 2), 10).len() > 8);
+    grid.set_tile(3, 0, 0);
     let threats = vec![((2, 2), 100), ((3, 2), 100), ((4, 2), 100), ((5, 2), 100)];
     let path = threat_aware_astar(&grid, (0, 2), (7, 2), &threats, 30);
     assert!(!path.is_empty());
@@ -961,6 +1022,100 @@ fn rts_system_runs_economy_production_construction_and_fog() {
 }
 
 #[test]
+fn archetype_library_spawns_ready_to_use_game_entities() {
+    let library = ArchetypeLibrary::with_defaults();
+    assert!(library.keys().contains(&"rts_soldier".to_string()));
+    assert!(!library.by_tag("Player").is_empty());
+
+    let soldier = library
+        .instantiate("rts_soldier", 4.0, 5.0, Some(2))
+        .unwrap();
+    assert_eq!(soldier.tag, "Enemy");
+    assert_eq!(soldier.layer, "Units");
+    assert!(soldier.get_component("Team").is_some());
+    assert_eq!(
+        soldier.get_component("Team").unwrap().get_i64("team_id", 0),
+        2
+    );
+    assert!(soldier.get_component("DamageDealer").is_some());
+    assert!(soldier.get_component("CombatTarget").is_some());
+    assert!(soldier.get_component("SquadMember").is_some());
+
+    let mut entities = Vec::new();
+    let worker_id =
+        GameAPI::spawn_archetype(&mut entities, &library, "rts_worker", 1.0, 2.0, Some(1)).unwrap();
+    let worker = entities
+        .iter_mut()
+        .find(|entity| entity.id == worker_id)
+        .unwrap();
+    assert!(GameAPI::assign_squad(worker, "alpha", 3, "builder"));
+    assert_eq!(
+        worker
+            .get_component("SquadMember")
+            .unwrap()
+            .get_string("squad_id", ""),
+        "alpha"
+    );
+    GameAPI::issue_attack_move(worker, 8.0, 2.0);
+    assert_eq!(worker.command, "ATTACK_MOVE");
+    assert_eq!(worker.attack_move_target, Some((8.0, 2.0)));
+}
+
+#[test]
+fn rts_system_executes_tactical_combat_and_auto_queue() {
+    let library = ArchetypeLibrary::with_defaults();
+    let mut attacker = library
+        .instantiate("rts_soldier", 0.0, 0.0, Some(1))
+        .unwrap();
+    let mut target = library
+        .instantiate("rts_soldier", 1.0, 0.0, Some(2))
+        .unwrap();
+    if let Some(damage) = attacker.get_component_mut("DamageDealer") {
+        damage.set_f64("damage", 120.0);
+        damage.set_f64("cooldown", 0.01);
+        damage.set_f64("range", 2.0);
+    }
+    if let Some(health) = target.get_component_mut("Health") {
+        health.set_f64("health", 40.0);
+    }
+
+    let mut base = library
+        .instantiate("rts_command_center", 5.0, 0.0, Some(1))
+        .unwrap();
+    if let Some(book) = base.get_component_mut("ProductionRecipeBook") {
+        book.set("auto_queue", json!(true));
+        book.set("preferred_recipe", json!("Worker"));
+    }
+    if let Some(queue) = base.get_component_mut("ProductionQueue") {
+        queue.set_f64("rally_x", 6.0);
+        queue.set_f64("rally_y", 0.0);
+    }
+
+    let mut entities = vec![attacker, target, base];
+    let mut rts = RTSSystem::default();
+    rts.update_entities(&mut entities, 0.1, "PLAY");
+
+    assert!(rts.stats["combat_events"] >= 1);
+    assert_eq!(rts.stats["destroyed"], 1);
+    assert!(!entities.iter().any(|entity| entity.tag == "Enemy"));
+    assert_eq!(rts.stats["auto_queued"], 1);
+    assert!(
+        entities
+            .iter()
+            .find(|entity| entity.name == "CommandCenter")
+            .unwrap()
+            .get_component("ProductionQueue")
+            .unwrap()
+            .get("queue")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len()
+            == 1
+    );
+}
+
+#[test]
 fn physics_resolves_collisions_and_honors_layer_matrix() {
     let mut first = GameObject::new(0.0, 0.0, Some("First".to_string()));
     first.add_component(default_component("Rigidbody2D").unwrap());
@@ -1014,6 +1169,45 @@ fn game_api_covers_queries_resources_blackboard_and_save_state() {
     entities[0].x = 99.0;
     assert!(GameAPI::load_game_state(&mut entities, &save_path).unwrap());
     assert_eq!(entities[0].x, 1.0);
+
+    GameAPI::set_x(&mut entities[0], 11.0);
+    GameAPI::move_y(&mut entities[0], 4.0);
+    GameAPI::set_scale(&mut entities[0], 2.0, 3.0);
+    GameAPI::rotate_by(&mut entities[0], 45.0);
+    GameAPI::set_size(&mut entities[0], 1.5, 2.0);
+    assert_eq!(entities[0].x, 11.0);
+    assert_eq!(entities[0].y, 6.0);
+    assert_eq!(entities[0].scale_x, 2.0);
+    assert_eq!(entities[0].width, 1.5);
+    assert!(GameAPI::set_component_value(
+        &mut entities[0],
+        "Transform",
+        "x",
+        json!(12.0)
+    ));
+    assert_eq!(
+        GameAPI::get_component_value(&entities[0], "Transform", "x").unwrap(),
+        json!(12.0)
+    );
+    assert!(GameAPI::add_audio_source(&mut entities[0], "HitCue", true));
+    assert_eq!(
+        entities[0]
+            .get_component("AudioSource")
+            .unwrap()
+            .get_string("audio_name", ""),
+        "HitCue"
+    );
+    let sprite_id =
+        GameAPI::spawn_sprite_entity(&mut entities, "SpriteEntity", "HeroSprite", 3.0, 4.0);
+    assert!(
+        entities
+            .iter()
+            .find(|entity| entity.id == sprite_id)
+            .unwrap()
+            .sprite_name
+            .as_deref()
+            == Some("HeroSprite")
+    );
 }
 
 #[test]
@@ -1146,6 +1340,8 @@ fn rust_editor_backend_spawns_edits_tiles_assets_and_templates() {
     game.camera.y = 32.0;
     game.camera.set_zoom(1.35);
     game.save_scene().unwrap();
+    game.save_project().unwrap();
+    assert!(tmp.join("project").join("project_state.json").exists());
     let loaded = Game::from_project(&tmp, false).unwrap();
     assert_eq!(
         loaded.tilemap_layers.layer("Decoration").unwrap().get(2, 2),
@@ -1164,6 +1360,21 @@ fn rust_editor_backend_spawns_edits_tiles_assets_and_templates() {
             .contains("Survival_Map.scene")
     }));
     assert!(game.validate_project());
+
+    let duplicated = game
+        .scene_manager
+        .duplicate_current_scene("CopiedScene")
+        .unwrap();
+    assert!(duplicated.exists());
+    assert!(game.scene_manager.open_scene("CopiedScene").unwrap());
+    assert!(
+        game.scene_manager
+            .scene_metadata()
+            .unwrap()
+            .get("exists")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    );
 }
 
 #[test]
@@ -1221,4 +1432,132 @@ fn rust_game_starters_create_functional_2d_scenes() {
             .get_tile(0, game.grid.height - 1)
             .is_some_and(|tile| tile == 1)
     );
+}
+
+#[test]
+fn production_editor_inspector_commands_undo_redo_and_components() {
+    let tmp = temp_dir("production-editor");
+    AssetTools::ensure_project_folders(&tmp).unwrap();
+    let mut game = Game::from_project(&tmp, false).unwrap();
+    let id = game.spawn_game_object("Editable", 1.0, 2.0);
+
+    game.edit_inspector_value(id, "Transform", "x", json!(9.0))
+        .unwrap();
+    assert_eq!(game.get_entity_by_id(id).unwrap().x, 9.0);
+    assert!(game.undo_editor_command().is_some());
+    assert_eq!(game.get_entity_by_id(id).unwrap().x, 1.0);
+    assert!(game.redo_editor_command().is_some());
+    assert_eq!(game.get_entity_by_id(id).unwrap().x, 9.0);
+
+    assert!(game.add_component_to_entity(id, "Stats"));
+    assert!(
+        game.get_entity_by_id(id)
+            .unwrap()
+            .get_component("Stats")
+            .is_some()
+    );
+    game.remove_component_from_entity(id, "Stats").unwrap();
+    assert!(
+        game.get_entity_by_id(id)
+            .unwrap()
+            .get_component("Stats")
+            .is_none()
+    );
+    assert!(game.undo_editor_command().is_some());
+    assert!(
+        game.get_entity_by_id(id)
+            .unwrap()
+            .get_component("Stats")
+            .is_some()
+    );
+}
+
+#[test]
+fn production_tile_brushes_cover_rectangle_fill_collision_and_undo() {
+    let mut tilemap = TilemapLayers::new(6, 6);
+    let rect = TileBrush::apply(&mut tilemap, TileBrushMode::Rectangle, (1, 1), (2, 2), 3);
+    assert_eq!(rect.changes.len(), 4);
+    assert_eq!(tilemap.layer("Ground").unwrap().get(2, 2), 3);
+
+    let fill = TileBrush::apply(&mut tilemap, TileBrushMode::Fill, (0, 0), (0, 0), 1);
+    assert!(!fill.changes.is_empty());
+    assert_eq!(tilemap.layer("Ground").unwrap().get(0, 0), 1);
+
+    let collision = TileBrush::apply(&mut tilemap, TileBrushMode::Collision, (4, 4), (4, 4), 7);
+    assert_eq!(tilemap.layer("Collision").unwrap().get(4, 4), 7);
+    assert_eq!(collision.layer, 2);
+
+    let tmp = temp_dir("tile-brush-game");
+    AssetTools::ensure_project_folders(&tmp).unwrap();
+    let mut game = Game::from_project(&tmp, false).unwrap();
+    assert!(game.paint_tile_brush(TileBrushMode::Rectangle, (0, 0), (1, 1), 5));
+    assert_eq!(game.tilemap_layers.layer("Ground").unwrap().get(1, 1), 5);
+    assert!(game.undo_editor_command().is_some());
+    assert_eq!(game.tilemap_layers.layer("Ground").unwrap().get(1, 1), 0);
+}
+
+#[test]
+fn production_assets_preview_drag_drop_and_runtime_export() {
+    let tmp = temp_dir("production-assets");
+    AssetTools::ensure_project_folders(&tmp).unwrap();
+    fs::write(tmp.join("assets").join("sprites").join("hero.png"), b"png").unwrap();
+    fs::write(tmp.join("assets").join("audio").join("hit.wav"), b"wav").unwrap();
+
+    let mut game = Game::from_project(&tmp, false).unwrap();
+    game.refresh_assets().unwrap();
+    let sprite = game
+        .asset_database
+        .assets
+        .values()
+        .find(|asset| asset.relative_path.ends_with("hero.png"))
+        .cloned()
+        .unwrap();
+    let preview = game.asset_database.preview(&sprite.relative_path).unwrap();
+    assert_eq!(preview.kind.label(), "Image");
+    assert!(preview.labels.contains(&"sprite".to_string()));
+
+    let payload = DragPayload::from_asset(&sprite);
+    let outcome = game.drop_asset_to_scene(&payload, 4.0, 5.0).unwrap();
+    assert!(matches!(
+        outcome,
+        miniforge::engine::content_drag::DropOutcome::SpawnedEntity(_)
+    ));
+    assert!(
+        game.units
+            .iter()
+            .any(|entity| entity.sprite_guid.as_deref() == Some(sprite.guid.as_str()))
+    );
+
+    let report =
+        RuntimeExporter::export_with_profile(&tmp, tmp.join("exports"), ExportProfile::Release)
+            .unwrap();
+    assert!(report.manifest_path.exists());
+    assert_eq!(report.profile, ExportProfile::Release);
+    assert!(report.copied_files > 0);
+}
+
+#[test]
+fn production_input_map_has_visual_actions_and_devices() {
+    let tmp = temp_dir("production-input");
+    let mut input_map = InputMap::new(tmp.join("input_map.json")).unwrap();
+    for action in [
+        "Move",
+        "Attack",
+        "Jump",
+        "Interact",
+        "Pause",
+        "Select",
+        "Command",
+        "CameraPan",
+    ] {
+        assert!(input_map.bindings.contains_key(action));
+    }
+    input_map.add_binding("Attack", "keyboard:f").unwrap();
+    input_map
+        .set_action_binding("Move", 0, "keyboard:custom_move")
+        .unwrap();
+    input_map.remove_binding("Attack", "keyboard:f").unwrap();
+    let infos = input_map.action_infos();
+    assert!(infos.iter().any(|action| action.name == "CameraPan"));
+    assert_eq!(input_map.bindings["Move"][0], "keyboard:custom_move");
 }

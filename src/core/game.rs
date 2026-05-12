@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use crate::core::engine_config::EngineConfig;
 use crate::engine::advanced_prefabs::AdvancedPrefabSystem;
 use crate::engine::animation_graph::AnimationGraphLibrary;
+use crate::engine::archetype_library::ArchetypeLibrary;
 use crate::engine::asset_database::AssetDatabase;
 use crate::engine::asset_tools::{AssetTools, ProjectPaths};
 use crate::engine::audio_mixer::AudioMixer;
@@ -17,14 +18,17 @@ use crate::engine::build_settings::BuildSettings;
 use crate::engine::camera::Camera;
 use crate::engine::component::default_component;
 use crate::engine::component_registry::ComponentRegistry;
+use crate::engine::content_drag::{ContentDropper, DragAssetKind, DragPayload, DropOutcome};
 use crate::engine::developer_console::DeveloperConsole;
 use crate::engine::diagnostics::Diagnostics;
+use crate::engine::editor_command::{EditorCommand, EditorCommandKind, EditorSnapshot};
 use crate::engine::editor_history::EditorHistory;
 use crate::engine::editor_workspace::{EditorWorkspace, WorkspaceMode};
 use crate::engine::engine_programming::ProgrammingEnvironment;
 use crate::engine::event_bus::EventBus;
 use crate::engine::game_clock::GameClock;
 use crate::engine::input_map::InputMap;
+use crate::engine::inspector_editor::InspectorEditor;
 use crate::engine::manifest_builder::ManifestBuilder;
 use crate::engine::play_mode_manager::PlayModeManager;
 use crate::engine::prefab_manager::PrefabManager;
@@ -33,12 +37,19 @@ use crate::engine::project_templates::ProjectTemplates;
 use crate::engine::project_validator::ProjectValidator;
 use crate::engine::resource_manager::ResourceManager;
 use crate::engine::runtime_config::RuntimeConfig;
+use crate::engine::runtime_exporter::{ExportProfile, RuntimeExportReport, RuntimeExporter};
 use crate::engine::scene_manager::SceneManager;
+use crate::engine::scene_save_manager::SceneSaveManager;
 use crate::engine::scene_validator::SceneValidator;
 use crate::engine::spatial_index::SpatialIndex;
 use crate::engine::tags_layers_manager::TagsLayersManager;
+use crate::engine::tile_brush::{TileBrush, TileBrushMode};
 use crate::engine::tilemap_layers::TilemapLayers;
+use crate::engine::ui_canvas::{
+    push_canvas, ui_canvases_from_value, UiCanvasElement, UiCanvasRoot, UiRect,
+};
 use crate::engine::upgrade_manifest::EngineUpgradeManifest;
+use crate::engine::entity_id::generate_entity_name;
 use crate::engine::visual_scripting::VisualScriptRuntime;
 use crate::engine::world::World;
 use crate::entities::game_object::GameObject;
@@ -82,6 +93,8 @@ pub struct Game {
     pub component_registry: ComponentRegistry,
     pub scene_manager: SceneManager,
     pub scene_validator: SceneValidator,
+    pub scene_save_manager: SceneSaveManager,
+    pub ui_canvases: Value,
     pub autosave_manager: AutosaveManager,
     pub history: EditorHistory,
     pub profiler: Profiler,
@@ -94,6 +107,7 @@ pub struct Game {
     pub rts_system: RTSSystem,
     pub physics_system: PhysicsSystem,
     pub advanced_prefabs: AdvancedPrefabSystem,
+    pub archetypes: ArchetypeLibrary,
     pub upgrade_manifest: EngineUpgradeManifest,
     pub editor_workspace: EditorWorkspace,
     pub programming: ProgrammingEnvironment,
@@ -181,6 +195,8 @@ impl Game {
             component_registry: ComponentRegistry::new(),
             scene_manager: SceneManager::new(&project_path),
             scene_validator: SceneValidator::default(),
+            scene_save_manager: SceneSaveManager::new(),
+            ui_canvases: json!([]),
             autosave_manager: AutosaveManager::new(&project_path, 60),
             history,
             profiler: Profiler::new(),
@@ -193,6 +209,7 @@ impl Game {
             rts_system: RTSSystem::default(),
             physics_system: PhysicsSystem::new(),
             advanced_prefabs: AdvancedPrefabSystem::default(),
+            archetypes: ArchetypeLibrary::with_defaults(),
             upgrade_manifest: EngineUpgradeManifest::new(),
             editor_workspace: EditorWorkspace::default(),
             programming: ProgrammingEnvironment::new(),
@@ -201,8 +218,29 @@ impl Game {
         if let Ok(scene_data) = game.scene_manager.load_current_scene_data() {
             game.apply_scene_data(&scene_data);
         }
+        game.scene_save_manager
+            .bootstrap_from_scene(&mut game.units, &game.tilemap_layers);
         game.sync_world();
         game.history.take_snapshot("Loaded Scene", &game.units);
+
+        let mut open_validator = ProjectValidator::default();
+        let _ = open_validator.validate_with_context(
+            &game.project_path,
+            &game.units,
+            Some(&game.asset_database),
+        );
+        for err in open_validator.errors.iter().take(10) {
+            game.console.log(err.clone(), "ERROR");
+        }
+        for warn in open_validator.warnings.iter().take(10) {
+            game.console.log(warn.clone(), "WARNING");
+        }
+        if game.autosave_manager.autosave_exists() {
+            game.console.log(
+                "Existe autosave en saves/autosave/autosave.scene (recuperación disponible).",
+                "PROJECT",
+            );
+        }
 
         Ok(game)
     }
@@ -270,16 +308,17 @@ impl Game {
             .get("brush_size")
             .and_then(Value::as_u64)
             .unwrap_or(self.brush_size as u64) as usize;
+
+        self.ui_canvases = data
+            .get("ui_canvases")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
     }
 
     pub fn run_headless_once(&mut self, dt: f64) {
         self.profiler.begin_frame();
         let clock_advance = self.clock.advance(dt);
         let mut marker = Instant::now();
-        MovementSystem.update_entities(&mut self.units, dt);
-        self.profiler
-            .record_system("Movement", marker.elapsed().as_secs_f64() * 1000.0);
-        marker = Instant::now();
         AnimationSystem.update_entities(&mut self.units, &self.animation_graphs, dt, &self.mode);
         self.profiler
             .record_system("Animation", marker.elapsed().as_secs_f64() * 1000.0);
@@ -298,6 +337,10 @@ impl Game {
             .update_entities(&mut self.units, dt, &self.mode);
         self.profiler
             .record_system("RTS", marker.elapsed().as_secs_f64() * 1000.0);
+        marker = Instant::now();
+        MovementSystem.update_entities(&mut self.units, dt);
+        self.profiler
+            .record_system("Movement", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
         self.physics_system
             .update_entities_mut(&mut self.units, dt, &self.mode);
@@ -325,6 +368,9 @@ impl Game {
             .set_counter("FixedTicks", clock_advance.fixed_steps);
         self.profiler
             .set_counter("SpatialCells", self.spatial_index.cells.len());
+        self.play_mode_manager.tick_frame();
+        self.profiler
+            .set_counter("PlayFrames", self.play_mode_manager.frame_count);
         self.profiler.end_frame();
     }
 
@@ -344,6 +390,90 @@ impl Game {
     pub fn mark_scene_clean(&mut self) {
         self.scene_dirty = false;
         self.scene_dirty_reason.clear();
+    }
+
+    pub fn capture_editor_snapshot(&self) -> EditorSnapshot {
+        EditorSnapshot::capture(&self.units, &self.tilemap_layers, &self.grid, &self.camera)
+    }
+
+    pub fn push_editor_command(
+        &mut self,
+        label: impl Into<String>,
+        kind: EditorCommandKind,
+        before: EditorSnapshot,
+    ) {
+        if self.mode == "PLAY" {
+            return;
+        }
+        let after = self.capture_editor_snapshot();
+        self.history
+            .push_command(EditorCommand::new(label, kind, before, after));
+    }
+
+    pub fn undo_editor_command(&mut self) -> Option<String> {
+        let label = self.history.undo_command(
+            &mut self.units,
+            &mut self.tilemap_layers,
+            &mut self.grid,
+            &mut self.camera,
+        )?;
+        self.clear_selection();
+        self.sync_world();
+        self.mark_scene_dirty("Undo");
+        Some(label)
+    }
+
+    pub fn redo_editor_command(&mut self) -> Option<String> {
+        let label = self.history.redo_command(
+            &mut self.units,
+            &mut self.tilemap_layers,
+            &mut self.grid,
+            &mut self.camera,
+        )?;
+        self.clear_selection();
+        self.sync_world();
+        self.mark_scene_dirty("Redo");
+        Some(label)
+    }
+
+    pub fn enter_play_mode(&mut self) {
+        if self.mode == "PLAY" {
+            return;
+        }
+        for entity in &mut self.units {
+            entity.sync_from_components();
+            if let Some(ai) = entity.get_component_mut("AIController") {
+                ai.set_f64("think_timer", 0.0);
+            }
+            if let Some(nav) = entity.get_component_mut("NavAgent") {
+                nav.set_f64("repath_timer", 9999.0);
+            }
+        }
+        self.play_mode_manager
+            .enter_play_mode(&self.units, &mut self.mode);
+        self.sync_world();
+        self.console
+            .log("Play Mode iniciado con snapshot seguro.", "ENGINE");
+    }
+
+    pub fn exit_play_mode(&mut self, reason: &str) {
+        if self.mode != "PLAY" {
+            return;
+        }
+        self.play_mode_manager
+            .exit_play_mode(&mut self.units, &mut self.mode, reason);
+        self.clear_selection();
+        self.sync_world();
+        self.console
+            .log("Play Mode terminado y escena restaurada.", "ENGINE");
+    }
+
+    pub fn toggle_play_mode(&mut self) {
+        if self.mode == "PLAY" {
+            self.exit_play_mode("toggle");
+        } else {
+            self.enter_play_mode();
+        }
     }
 
     pub fn get_entity_by_id(&self, entity_id: u64) -> Option<&GameObject> {
@@ -372,6 +502,7 @@ impl Game {
     }
 
     pub fn spawn_game_object(&mut self, name: &str, x: f64, y: f64) -> u64 {
+        let before = self.capture_editor_snapshot();
         let mut entity = GameObject::new(x, y, Some(name.to_string()));
         entity.width = 1.0;
         entity.height = 1.0;
@@ -381,10 +512,64 @@ impl Game {
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Spawn GameObject");
+        self.push_editor_command(
+            "Create GameObject",
+            EditorCommandKind::CreateEntity { entity_id: id },
+            before,
+        );
+        id
+    }
+
+    pub fn spawn_archetype(
+        &mut self,
+        archetype_key: &str,
+        x: f64,
+        y: f64,
+        team_id: Option<i64>,
+    ) -> Option<u64> {
+        let before = self.capture_editor_snapshot();
+        let entity = self.archetypes.instantiate(archetype_key, x, y, team_id)?;
+        let id = entity.id;
+        self.units.push(entity);
+        self.select_entity(id);
+        self.sync_world();
+        self.mark_scene_dirty("Spawn Archetype");
+        self.console.log(
+            format!("Arquetipo {archetype_key} creado como entity #{id}"),
+            "GAMEPLAY",
+        );
+        self.push_editor_command(
+            "Create Archetype",
+            EditorCommandKind::CreateEntity { entity_id: id },
+            before,
+        );
+        Some(id)
+    }
+
+    pub fn spawn_sprite_entity(&mut self, name: &str, sprite_name: &str, x: f64, y: f64) -> u64 {
+        let before = self.capture_editor_snapshot();
+        let mut entity = GameObject::new(x, y, Some(name.to_string()));
+        entity.sprite_name = Some(sprite_name.to_string());
+        if let Some(sprite) = entity.get_component_mut("SpriteRenderer") {
+            sprite.set("sprite_name", json!(sprite_name));
+            sprite.set("visible", json!(true));
+        }
+        entity.sync_to_components();
+        let id = entity.id;
+        self.units.push(entity);
+        self.select_entity(id);
+        self.sync_world();
+        self.mark_scene_dirty("Spawn Sprite Entity");
+        self.push_editor_command(
+            "Create Sprite Entity",
+            EditorCommandKind::CreateEntity { entity_id: id },
+            before,
+        );
         id
     }
 
     pub fn spawn_unit(&mut self, name: &str, x: f64, y: f64) -> u64 {
+        let before = self.capture_editor_snapshot();
         let mut entity = GameObject::new_unit(x, y, Some(name.to_string()));
         entity.tag = "Player".to_string();
         entity.add_component(default_component("Health").expect("Health"));
@@ -399,10 +584,16 @@ impl Game {
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Spawn Unit");
+        self.push_editor_command(
+            "Create Unit",
+            EditorCommandKind::CreateEntity { entity_id: id },
+            before,
+        );
         id
     }
 
     pub fn spawn_enemy(&mut self, x: f64, y: f64) -> u64 {
+        let before = self.capture_editor_snapshot();
         let mut entity = GameObject::new_unit(x, y, Some("Enemy".to_string()));
         entity.tag = "Enemy".to_string();
         entity.add_component(default_component("Health").expect("Health"));
@@ -433,10 +624,16 @@ impl Game {
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Spawn Enemy");
+        self.push_editor_command(
+            "Create Enemy",
+            EditorCommandKind::CreateEntity { entity_id: id },
+            before,
+        );
         id
     }
 
     pub fn spawn_resource(&mut self, x: f64, y: f64) -> u64 {
+        let before = self.capture_editor_snapshot();
         let mut entity = GameObject::new(x, y, Some("GoldNode".to_string()));
         entity.tag = "Resource".to_string();
         entity.width = 1.3;
@@ -449,6 +646,11 @@ impl Game {
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Spawn Resource");
+        self.push_editor_command(
+            "Create Resource",
+            EditorCommandKind::CreateEntity { entity_id: id },
+            before,
+        );
         id
     }
 
@@ -484,8 +686,11 @@ impl Game {
     }
 
     pub fn spawn_rts_worker(&mut self, name: &str, x: f64, y: f64, team_id: i64) -> u64 {
-        let id = self.spawn_unit(name, x, y);
+        let id = self
+            .spawn_archetype("rts_worker", x, y, Some(team_id))
+            .unwrap_or_else(|| self.spawn_unit(name, x, y));
         if let Some(entity) = self.get_entity_by_id_mut(id) {
+            entity.name = name.to_string();
             entity.layer = "Units".to_string();
             entity.add_component(default_component("Commandable").expect("Commandable"));
             entity.add_component(default_component("Vision").expect("Vision"));
@@ -501,6 +706,38 @@ impl Game {
     }
 
     pub fn spawn_rts_building(&mut self, name: &str, x: f64, y: f64, team_id: i64) -> u64 {
+        let before = self.capture_editor_snapshot();
+        let archetype_key = match name {
+            "CommandCenter" | "EnemyBase" => "rts_command_center",
+            "Barracks" => "rts_barracks",
+            _ => "",
+        };
+        if !archetype_key.is_empty()
+            && let Some(id) = self.spawn_archetype(archetype_key, x, y, Some(team_id))
+        {
+            if let Some(entity) = self.get_entity_by_id_mut(id) {
+                entity.name = name.to_string();
+                if let Some(commandable) = entity.get_component_mut("Commandable") {
+                    commandable.set("can_move", json!(false));
+                    commandable.set("can_produce", json!(true));
+                }
+                if let Some(queue) = entity.get_component_mut("ProductionQueue") {
+                    queue.set_f64("rally_x", x + 3.0);
+                    queue.set_f64("rally_y", y);
+                }
+                if team_id != 1 && entity.get_component("ThreatSource").is_none() {
+                    let mut threat = default_component("ThreatSource").expect("ThreatSource");
+                    threat.set_f64("strength", 6.0);
+                    threat.set_f64("radius", 5.0);
+                    entity.add_component(threat);
+                }
+                entity.sync_to_components();
+            }
+            self.sync_world();
+            self.mark_scene_dirty("Spawn RTS Building");
+            return id;
+        }
+
         let mut entity = GameObject::new(x, y, Some(name.to_string()));
         entity.tag = if team_id == 1 { "Player" } else { "Enemy" }.to_string();
         entity.layer = "Buildings".to_string();
@@ -540,6 +777,11 @@ impl Game {
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Spawn RTS Building");
+        self.push_editor_command(
+            "Create RTS Building",
+            EditorCommandKind::CreateEntity { entity_id: id },
+            before,
+        );
         id
     }
 
@@ -552,6 +794,7 @@ impl Game {
         build_time: f64,
         builder_ids: Vec<u64>,
     ) -> u64 {
+        let before = self.capture_editor_snapshot();
         let mut entity = GameObject::new(x, y, Some(format!("{name}_Site")));
         entity.tag = "Building".to_string();
         entity.layer = "Buildings".to_string();
@@ -570,6 +813,11 @@ impl Game {
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Spawn Construction Site");
+        self.push_editor_command(
+            "Create Construction Site",
+            EditorCommandKind::CreateEntity { entity_id: id },
+            before,
+        );
         id
     }
 
@@ -649,6 +897,8 @@ impl Game {
         self.spawn_rts_worker("Worker_A", 10.0, 8.0, 1);
         self.spawn_rts_worker("Worker_B", 10.0, 9.0, 1);
         self.spawn_rts_worker("Scout_A", 9.0, 10.0, 1);
+        self.spawn_archetype("rts_soldier", 11.0, 11.0, Some(1));
+        self.spawn_archetype("rts_soldier", 12.0, 11.0, Some(1));
         self.spawn_resource(13.0, 8.0);
         self.spawn_resource(15.0, 10.0);
         self.spawn_resource(20.0, 20.0);
@@ -731,6 +981,7 @@ impl Game {
     }
 
     pub fn duplicate_entity(&mut self, entity_id: u64) -> Option<u64> {
+        let before = self.capture_editor_snapshot();
         let mut source = self.get_entity_by_id(entity_id)?.clone();
         source.sync_to_components();
         let data = source.serialize();
@@ -746,23 +997,38 @@ impl Game {
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Duplicate Entity");
+        self.push_editor_command(
+            "Duplicate Entity",
+            EditorCommandKind::DuplicateEntity {
+                source_id: entity_id,
+                clone_id: id,
+            },
+            before,
+        );
         Some(id)
     }
 
     pub fn delete_entity(&mut self, entity_id: u64) -> bool {
-        let before = self.units.len();
+        let snapshot_before = self.capture_editor_snapshot();
+        let len_before = self.units.len();
         self.units.retain(|entity| entity.id != entity_id);
-        let deleted = self.units.len() != before;
+        let deleted = self.units.len() != len_before;
         if deleted {
             self.selected_units
                 .retain(|selected| *selected != entity_id);
             self.sync_world();
             self.mark_scene_dirty("Delete Entity");
+            self.push_editor_command(
+                "Delete Entity",
+                EditorCommandKind::DeleteEntity { entity_id },
+                snapshot_before,
+            );
         }
         deleted
     }
 
     pub fn add_component_to_entity(&mut self, entity_id: u64, component_type: &str) -> bool {
+        let before = self.capture_editor_snapshot();
         let Some(component) = default_component(component_type) else {
             return false;
         };
@@ -775,17 +1041,171 @@ impl Game {
         if !already_had {
             self.sync_world();
             self.mark_scene_dirty("Add Component");
+            self.push_editor_command(
+                "Add Component",
+                EditorCommandKind::AddComponent {
+                    entity_id,
+                    component_type: component_type.to_string(),
+                },
+                before,
+            );
         }
         true
     }
 
+    pub fn remove_component_from_entity(
+        &mut self,
+        entity_id: u64,
+        component_type: &str,
+    ) -> Result<(), String> {
+        let before = self.capture_editor_snapshot();
+        let Some(entity) = self.get_entity_by_id_mut(entity_id) else {
+            return Err(format!("Entity no existe: {entity_id}"));
+        };
+        InspectorEditor::remove_component(entity, component_type)?;
+        self.sync_world();
+        self.mark_scene_dirty("Remove Component");
+        self.push_editor_command(
+            "Remove Component",
+            EditorCommandKind::RemoveComponent {
+                entity_id,
+                component_type: component_type.to_string(),
+            },
+            before,
+        );
+        Ok(())
+    }
+
+    pub fn edit_inspector_value(
+        &mut self,
+        entity_id: u64,
+        target: &str,
+        key: &str,
+        value: Value,
+    ) -> Result<Value, String> {
+        let before = self.capture_editor_snapshot();
+        let requested = value.clone();
+        let Some(entity) = self.get_entity_by_id_mut(entity_id) else {
+            return Err(format!("Entity no existe: {entity_id}"));
+        };
+        let previous = InspectorEditor::edit_value(entity, target, key, value)?;
+        self.sync_world();
+        self.mark_scene_dirty("Edit Inspector");
+        self.scene_save_manager.note_entity_dirty(entity_id);
+        self.push_editor_command(
+            "Edit Inspector",
+            EditorCommandKind::EditInspector {
+                entity_id,
+                target: target.to_string(),
+                field: key.to_string(),
+                before: previous.clone(),
+                after: requested,
+            },
+            before,
+        );
+        Ok(previous)
+    }
+
     pub fn paint_tile(&mut self, x: usize, y: usize, value: i32) -> bool {
-        if x >= self.tilemap_layers.width || y >= self.tilemap_layers.height {
+        self.paint_tile_brush(TileBrushMode::Pencil, (x, y), (x, y), value)
+    }
+
+    pub fn paint_tile_brush(
+        &mut self,
+        mode: TileBrushMode,
+        start: (usize, usize),
+        end: (usize, usize),
+        value: i32,
+    ) -> bool {
+        let before = self.capture_editor_snapshot();
+        let stroke = TileBrush::apply(&mut self.tilemap_layers, mode, start, end, value);
+        if stroke.changes.is_empty() {
             return false;
         }
-        self.tilemap_layers.set_tile(x, y, value);
         self.mark_scene_dirty("Paint Tilemap");
+        self.scene_save_manager.note_tilemap_dirty();
+        self.push_editor_command(
+            "Paint Tilemap",
+            EditorCommandKind::PaintTilemap {
+                layer: stroke.layer,
+                cells: stroke
+                    .changes
+                    .iter()
+                    .map(|change| (change.x, change.y, change.before, change.after))
+                    .collect(),
+            },
+            before,
+        );
         true
+    }
+
+    pub fn drop_asset_to_scene(
+        &mut self,
+        payload: &DragPayload,
+        x: f64,
+        y: f64,
+    ) -> io::Result<DropOutcome> {
+        let before = self.capture_editor_snapshot();
+        if payload.kind == DragAssetKind::Prefab {
+            let manager = PrefabManager::new(&self.project_path);
+            let path = self.project_path.join(&payload.relative_path);
+            let Some(id) = manager.instantiate_prefab(&mut self.units, path, x, y)? else {
+                return Ok(DropOutcome::Unsupported(format!(
+                    "No se pudo instanciar prefab {}",
+                    payload.name
+                )));
+            };
+            self.select_entity(id);
+            self.sync_world();
+            self.mark_scene_dirty("Drop Prefab");
+            self.push_editor_command(
+                "Drop Prefab",
+                EditorCommandKind::CreateEntity { entity_id: id },
+                before,
+            );
+            return Ok(DropOutcome::SpawnedEntity(id));
+        }
+
+        if matches!(
+            payload.kind,
+            DragAssetKind::Material | DragAssetKind::VisualGraph
+        ) && let Some(id) = self.selected_units.first().copied()
+            && let Some(entity) = self.get_entity_by_id_mut(id)
+        {
+            let outcome = ContentDropper::apply_to_entity(entity, payload);
+            self.sync_world();
+            self.mark_scene_dirty("Drop Asset On Entity");
+            self.push_editor_command(
+                "Drop Asset On Entity",
+                EditorCommandKind::EditInspector {
+                    entity_id: id,
+                    target: payload.asset_type.clone(),
+                    field: "asset".to_string(),
+                    before: Value::Null,
+                    after: json!(payload.relative_path),
+                },
+                before,
+            );
+            return Ok(outcome);
+        }
+
+        let Some(entity) = ContentDropper::spawn_from_payload(payload, x, y) else {
+            return Ok(DropOutcome::Unsupported(format!(
+                "{} no tiene drop directo",
+                payload.asset_type
+            )));
+        };
+        let id = entity.id;
+        self.units.push(entity);
+        self.select_entity(id);
+        self.sync_world();
+        self.mark_scene_dirty("Drop Asset");
+        self.push_editor_command(
+            "Drop Asset",
+            EditorCommandKind::CreateEntity { entity_id: id },
+            before,
+        );
+        Ok(DropOutcome::SpawnedEntity(id))
     }
 
     pub fn cycle_tilemap_layer(&mut self) -> String {
@@ -838,6 +1258,66 @@ impl Game {
         Ok(manifest)
     }
 
+    pub fn export_runtime(&mut self, profile: ExportProfile) -> io::Result<RuntimeExportReport> {
+        self.save_project()?;
+        let output_root = self.project_path.join("build");
+        let report =
+            RuntimeExporter::export_with_profile(&self.project_path, output_root, profile)?;
+        self.console.log(
+            format!(
+                "Build {} listo: {} archivos, {} assets usados, {} faltantes",
+                profile.label(),
+                report.copied_files,
+                report.used_assets.len(),
+                report.missing_assets.len()
+            ),
+            "BUILD",
+        );
+        for missing in report.missing_assets.iter().take(8) {
+            self.console
+                .log(format!("Asset faltante en build: {missing}"), "WARNING");
+        }
+        Ok(report)
+    }
+
+    pub fn package_distributable(&mut self, profile: ExportProfile, label: &str) -> io::Result<()> {
+        self.save_project()?;
+        let dest = self
+            .project_path
+            .join("packages")
+            .join(format!("{}_{}", label, profile.label()));
+        let report = crate::engine::packaging_manager::PackagingManager::package_project(
+            &self.project_path,
+            &dest,
+            profile,
+        )?;
+        for w in report.warnings.iter().take(20) {
+            self.console.log(w.clone(), "WARNING");
+        }
+        self.console.log(
+            format!(
+                "Paquete {} creado en {}",
+                profile.label(),
+                report.destination.display()
+            ),
+            "BUILD",
+        );
+        Ok(())
+    }
+
+    pub fn recover_from_autosave(&mut self) -> Result<(), String> {
+        let entities = self
+            .autosave_manager
+            .recover_entities()
+            .map_err(|e| e.to_string())?;
+        self.units = entities;
+        self.sync_world();
+        self.mark_scene_dirty("Recovered from autosave");
+        self.console
+            .log("Escena restaurada desde autosave (saves/autosave)", "PROJECT");
+        Ok(())
+    }
+
     pub fn create_project_template(&mut self, template_name: &str) -> io::Result<usize> {
         let created = ProjectTemplates::create(&self.project_path, template_name)?;
         self.refresh_assets().ok();
@@ -874,6 +1354,54 @@ impl Game {
         self.console
             .log(format!("Graph Rust creado: {}", path.display()), "SCRIPT");
         Ok(path)
+    }
+
+    pub fn create_sprite_import_asset(
+        &mut self,
+        name: &str,
+        source_path: &str,
+    ) -> io::Result<PathBuf> {
+        let path = AssetTools::create_sprite_import(&self.project_path, name, source_path)?;
+        self.refresh_assets().ok();
+        self.console.log(
+            format!("Sprite import creado: {}", path.display()),
+            "ASSETS",
+        );
+        Ok(path)
+    }
+
+    pub fn create_sound_cue_asset(&mut self, name: &str, source_path: &str) -> io::Result<PathBuf> {
+        let path = AssetTools::create_sound_cue(&self.project_path, name, source_path)?;
+        self.refresh_assets().ok();
+        self.console
+            .log(format!("Sound cue creado: {}", path.display()), "ASSETS");
+        Ok(path)
+    }
+
+    pub fn create_material_asset(&mut self, name: &str) -> io::Result<PathBuf> {
+        let path = AssetTools::create_material(&self.project_path, name)?;
+        self.refresh_assets().ok();
+        self.console
+            .log(format!("Material creado: {}", path.display()), "ASSETS");
+        Ok(path)
+    }
+
+    pub fn add_audio_to_selected(&mut self, audio_name: &str, play_on_start: bool) -> bool {
+        let Some(id) = self.selected_units.first().copied() else {
+            return false;
+        };
+        let Some(entity) = self.get_entity_by_id_mut(id) else {
+            return false;
+        };
+        if entity.get_component("AudioSource").is_none() {
+            entity.add_component(default_component("AudioSource").expect("AudioSource"));
+        }
+        if let Some(audio) = entity.get_component_mut("AudioSource") {
+            audio.set("audio_name", json!(audio_name));
+            audio.set("play_on_start", json!(play_on_start));
+        }
+        self.mark_scene_dirty("Add AudioSource");
+        true
     }
 
     pub fn attach_program_template_to_selected(&mut self, template_name: &str) -> Option<String> {
@@ -938,6 +1466,7 @@ impl Game {
     }
 
     pub fn instantiate_first_prefab(&mut self, x: f64, y: f64) -> io::Result<Option<u64>> {
+        let before = self.capture_editor_snapshot();
         let Some(prefab) = self
             .asset_database
             .assets
@@ -954,6 +1483,11 @@ impl Game {
             self.select_entity(id);
             self.sync_world();
             self.mark_scene_dirty("Instantiate Prefab");
+            self.push_editor_command(
+                "Instantiate Prefab",
+                EditorCommandKind::CreateEntity { entity_id: id },
+                before,
+            );
             self.console.log(
                 format!("Prefab instanciado: {} #{id}", prefab.name),
                 "PREFAB",
@@ -1292,6 +1826,28 @@ impl Game {
         id
     }
 
+    pub fn ensure_default_ui_canvas_scene_data(&mut self) {
+        if self.ui_canvases.as_array().map(|a| a.is_empty()).unwrap_or(true) {
+            push_canvas(&mut self.ui_canvases, UiCanvasRoot::default_hud());
+            self.mark_scene_dirty("UI Canvas default");
+        }
+    }
+
+    pub fn add_ui_canvas_scene_label(&mut self, text: &str) {
+        self.ensure_default_ui_canvas_scene_data();
+        let mut roots = ui_canvases_from_value(&self.ui_canvases);
+        if let Some(first) = roots.get_mut(0) {
+            first.elements.push(UiCanvasElement::Label {
+                id: generate_entity_name("ui_lbl"),
+                text: text.to_string(),
+                rect: UiRect::default(),
+                font_size: 16.0,
+            });
+        }
+        self.ui_canvases = serde_json::to_value(&roots).unwrap_or_else(|_| json!([]));
+        self.mark_scene_dirty("UI Canvas scene label");
+    }
+
     pub fn add_visual_script_template(
         &mut self,
         entity_id: u64,
@@ -1433,7 +1989,8 @@ impl Game {
 
     pub fn save_scene(&mut self) -> io::Result<()> {
         if self.scene_validator.validate_entities(&self.units) {
-            self.scene_manager.save_current_scene_with_editor_state(
+            self.scene_save_manager.save_scene(
+                &self.scene_manager,
                 &mut self.units,
                 &self.tilemap_layers,
                 &self.camera,
@@ -1442,9 +1999,41 @@ impl Game {
                 self.tile_brush,
                 self.brush_size,
                 &self.grid,
+                &self.ui_canvases,
             )?;
             self.mark_scene_clean();
         }
+        Ok(())
+    }
+
+    pub fn save_project(&mut self) -> io::Result<()> {
+        self.save_scene()?;
+        self.asset_database.scan()?;
+        let manifest = self.build_manifest()?;
+        let state = json!({
+            "engine_version": crate::engine::version::ENGINE_VERSION,
+            "project_path": self.project_path,
+            "current_scene": self.scene_manager.current_scene,
+            "mode": self.mode,
+            "active_tool": self.active_tool,
+            "workspace": self.editor_workspace.active_mode.label(),
+            "asset_count": self.asset_database.assets.len(),
+            "entity_count": self.units.len(),
+            "scene_dirty": self.scene_dirty,
+            "last_dirty_reason": self.scene_dirty_reason,
+            "manifest": {
+                "asset_entries": manifest.get("assets").and_then(Value::as_array).map(Vec::len).unwrap_or(0),
+                "scene_entries": manifest.get("scenes").and_then(Value::as_array).map(Vec::len).unwrap_or(0),
+            }
+        });
+        AssetTools::write_json(
+            self.project_path.join("project").join("project_state.json"),
+            &state,
+        )?;
+        self.console.log(
+            "Proyecto guardado: escena, assets, manifest y estado.",
+            "PROJECT",
+        );
         Ok(())
     }
 }

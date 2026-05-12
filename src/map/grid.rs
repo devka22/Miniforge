@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Grid {
@@ -27,6 +27,81 @@ impl Grid {
 
     pub fn is_walkable(&self, x: i32, y: i32) -> bool {
         self.in_bounds(x, y) && self.tiles[y as usize][x as usize] == 0
+    }
+
+    pub fn neighbors4(&self, point: (i32, i32)) -> Vec<(i32, i32)> {
+        [(1, 0), (-1, 0), (0, 1), (0, -1)]
+            .into_iter()
+            .map(|(dx, dy)| (point.0 + dx, point.1 + dy))
+            .filter(|&(x, y)| self.is_walkable(x, y))
+            .collect()
+    }
+
+    pub fn neighbors8(&self, point: (i32, i32)) -> Vec<(i32, i32)> {
+        [
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
+            (1, 1),
+            (-1, 1),
+            (1, -1),
+            (-1, -1),
+        ]
+        .into_iter()
+        .map(|(dx, dy)| (point.0 + dx, point.1 + dy))
+        .filter(|&(x, y)| self.is_walkable(x, y))
+        .collect()
+    }
+
+    pub fn line_of_sight(&self, start: (i32, i32), end: (i32, i32)) -> bool {
+        if !self.is_walkable(start.0, start.1) || !self.is_walkable(end.0, end.1) {
+            return false;
+        }
+        let (mut x0, mut y0) = start;
+        let (x1, y1) = end;
+        let dx = (x1 - x0).abs();
+        let sx = if x0 < x1 { 1 } else { -1 };
+        let dy = -(y1 - y0).abs();
+        let sy = if y0 < y1 { 1 } else { -1 };
+        let mut error = dx + dy;
+
+        loop {
+            if !self.is_walkable(x0, y0) {
+                return false;
+            }
+            if (x0, y0) == (x1, y1) {
+                return true;
+            }
+            let doubled = error * 2;
+            if doubled >= dy {
+                error += dy;
+                x0 += sx;
+            }
+            if doubled <= dx {
+                error += dx;
+                y0 += sy;
+            }
+        }
+    }
+
+    pub fn reachable_area(&self, start: (i32, i32), max_steps: usize) -> BTreeSet<(i32, i32)> {
+        let Some(start) = self.find_nearest_walkable(start, 12) else {
+            return BTreeSet::new();
+        };
+        let mut visited = BTreeSet::from([start]);
+        let mut queue = VecDeque::from([(start, 0usize)]);
+        while let Some((point, steps)) = queue.pop_front() {
+            if steps >= max_steps {
+                continue;
+            }
+            for next in self.neighbors4(point) {
+                if visited.insert(next) {
+                    queue.push_back((next, steps + 1));
+                }
+            }
+        }
+        visited
     }
 
     pub fn set_tile(&mut self, x: usize, y: usize, value: i32) {

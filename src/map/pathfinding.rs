@@ -52,6 +52,24 @@ pub fn smooth_path(path: &[Point]) -> Vec<Point> {
     smoothed
 }
 
+pub fn smooth_path_with_visibility(grid: &Grid, path: &[Point]) -> Vec<Point> {
+    if path.len() <= 2 {
+        return path.to_vec();
+    }
+    let mut smoothed = vec![path[0]];
+    let mut anchor = 0;
+    let mut cursor = 2;
+    while cursor < path.len() {
+        if !grid.line_of_sight(path[anchor], path[cursor]) {
+            smoothed.push(path[cursor - 1]);
+            anchor = cursor - 1;
+        }
+        cursor += 1;
+    }
+    smoothed.push(*path.last().expect("non-empty path"));
+    smoothed
+}
+
 pub fn astar(grid: &Grid, start: Point, goal: Point, _max_iterations: usize) -> Vec<Point> {
     let Some(start) = grid.find_nearest_walkable(start, 12) else {
         return Vec::new();

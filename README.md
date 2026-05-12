@@ -1,16 +1,36 @@
-# MiniForge / Mini Forte 0.6.0 Beta
+# MiniForge / Mini Forte 0.7.0 Production Editor Update
 
-MiniForge es un motor 2D con runtime/editor principal en Rust y un arbol Python legado en retirada. La version 0.6.0 Beta estabiliza escenas JSON, entidades serializables, inspector editable, browser de assets, programacion visual dentro del motor, consola con comandos, proyectos reparables y Play Mode separado.
+MiniForge es un motor 2D con runtime/editor principal en Rust y un arbol Python legado en retirada. La version 0.7.0 Production Editor Update convierte el editor Rust en un flujo mas serio para crear juegos 2D/RTS: inspector editable real, undo/redo por comandos, drag and drop desde Content Browser, asset preview, export runtime, input visual, tile brushes y gizmos de escena.
 
 ## Ejecutar
 
-Editor Rust con ventana:
+Editor Rust (binario dedicado, recomendado):
+
+```bash
+cargo run --bin miniforge_editor -- --project projects/DefaultProject --no-launcher
+```
+
+Alias de compatibilidad (mismo editor que antes):
+
+```bash
+cargo run --bin miniforge -- --project projects/DefaultProject --no-launcher
+```
+
+Runtime player para **builds exportados** (sin UI de editor; requiere carpeta generada por Export Runtime):
+
+```bash
+cargo run --bin miniforge_runtime -- --build projects/DefaultProject/build/debug/DefaultProject
+```
+
+El runtime valida `runtime_manifest.json` y `build_info.json`, lista assets faltantes en stderr y carga el proyecto exportado en modo juego.
+
+Editor con flags legacy (mismo binario `miniforge`):
 
 ```bash
 cargo run -- --project projects/DefaultProject --no-launcher
 ```
 
-Runtime Rust con ventana:
+Runtime Rust con ventana dentro del editor (modo `--runtime` del editor completo):
 
 ```bash
 cargo run -- --project projects/DefaultProject --runtime --no-launcher
@@ -52,9 +72,25 @@ cargo test
 
 - Workspaces tipo editor profesional: World, Script, Prefab, Profile y Ship.
 - Paneles utiles: Scene, Game, Hierarchy, Inspector, Content Browser, Programming, Prefabs, Console, Profiler, Asset Graph, Build y Diagnostics.
-- `F6` cambia workspace; `Ctrl+P` abre comandos; `Ctrl+G` crea un graph visual Rust; `Ctrl+I` instancia el primer prefab disponible.
+- `F6` cambia workspace; `Ctrl+P` abre comandos; `Ctrl+G` crea un graph visual Rust; `Ctrl+I` instancia el primer prefab disponible; `Cmd/Ctrl+Z` y redo restauran operaciones del editor.
+- Herramientas `Select`, `Move`, `Rotate`, `Scale` y `Paint`, con snap, bounding boxes y gizmos.
 - Browser mejorado: indexa `assets/`, `scripts/visual_graphs/`, escenas y settings; marca compatibilidad, tamano, labels, visual graphs y Python legacy.
+- Content Browser tiene preview de sprites/audio/materiales, GUID, path, labels, import settings, dependencias, warnings y drag/drop hacia escena.
 - Profiler mas accionable: tiempos por Movement, Animation, VisualGraph, Gameplay, RTS, Physics y WorldSync.
+
+## Production Editor 0.7
+
+- Inspector editable por campos reales: transform, stats, inventory, AI, RTS, dialogue, quest, tweens, tilemap collider y componentes custom basados en JSON.
+- Add/Remove Component desde Inspector con validacion de tipos, componentes core protegidos y fallback seguro.
+- Undo/redo con Command Pattern para mover/rotar/escalar entidades, editar inspector, crear, eliminar, duplicar, drop de assets y pintar tilemaps.
+- Tile Palette con `Pencil`, `Eraser`, `Fill`, `Rect` y `Collision`, grid overlay y soporte de undo.
+- Export runtime crea `build/<profile>/<project>/`, `runtime_manifest.json`, `build_info.json`, perfiles debug/release y warnings de assets faltantes.
+- **Packaging**: menu `File > Package Debug/Release` genera `packages/game_<profile>/` copiando el export; define `MINIFORGE_RUNTIME` con la ruta al binario `miniforge_runtime` para incluir el ejecutable. Se evita copiar carpetas `build/`, `target/`, `exports/_pkg_work` dentro del paquete.
+- **Guardado de escena**: backup `.scene.bak`, escritura atomica, `SceneSaveManager` con merge incremental de entidades sin cambios y flags de dirty en inspector/tilemap; campo `ui_canvases` en `.scene` para UI Canvas de escena.
+- **UI Canvas de escena**: modelo con Panel/Button/Label/Image, anchors y preview responsive en Inspector cuando no hay entidad seleccionada; menu `Create > UI Canvas HUD/Label`.
+- **Importadores**: `SpriteSheetImporter` (grid PNG + sidecar `.spritesheet.json`), `AtlasImporter` (JSON con regiones nombradas), `WaveformCache` para preview WAV en Asset Preview.
+- **Autosave**: guardado atomico; `Game::recover_from_autosave()` y menu `File > Recover Autosave`; al abrir proyecto se valida estructura y se avisa si existe autosave.
+- InputMap visual incluye acciones `Move`, `Attack`, `Jump`, `Interact`, `Pause`, `Select`, `Command` y `CameraPan` con teclado, mouse y gamepad cuando aplica.
 
 ## Programacion Dentro Del Motor
 
@@ -173,7 +209,7 @@ duplicate
 
 ## Inspector
 
-El Inspector edita la entidad seleccionada:
+El Inspector edita la entidad seleccionada con controles directos y campos de texto confirmados con Enter:
 
 - nombre
 - activo / visible / locked
@@ -185,8 +221,11 @@ El Inspector edita la entidad seleccionada:
 - script
 - tag / layer
 - componentes
+- stats, inventory, AI, RTS, dialogue, quest, tweens, audio y tilemap collider cuando existen
 
 Si no hay seleccion muestra `No hay entidad seleccionada.`
+
+Los botones `Add / Remove Component` usan el registro de componentes Rust y evitan quitar componentes core protegidos. Los cambios entran al historial de comandos, asi que `Cmd/Ctrl+Z` los revierte.
 
 ## File Browser
 
@@ -211,6 +250,14 @@ El borrado requiere confirmacion: la primera accion marca el borrado pendiente y
 ## Asset Pipeline
 
 Cada asset recibe GUID persistente en `project/asset_metadata.json`. El motor tambien guarda import settings y dependencias para escenas, prefabs y data.
+
+En 0.7 el panel `Asset Preview` muestra:
+
+- preview visual para imagen, audio y material.
+- GUID, path, labels, import settings y detalles de tamano.
+- dependencias directas, reverse dependencies y warnings.
+- toggle `include_in_build` y reconstruccion de dependency graph.
+- drag/drop de sprites, prefabs, materiales, sonidos y visual graphs hacia Scene o entidad seleccionada.
 
 Comandos utiles:
 

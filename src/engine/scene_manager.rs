@@ -41,6 +41,67 @@ impl SceneManager {
         Ok(path)
     }
 
+    pub fn open_scene(&mut self, name: &str) -> io::Result<bool> {
+        let mut scene_name = AssetTools::safe_name(name, "main");
+        if !scene_name.ends_with(".scene") {
+            scene_name.push_str(".scene");
+        }
+        let path = AssetTools::get_project_paths(&self.project_path)
+            .scenes
+            .join(&scene_name);
+        if !path.exists() {
+            return Ok(false);
+        }
+        self.current_scene = scene_name;
+        Ok(true)
+    }
+
+    pub fn duplicate_current_scene(&mut self, new_name: &str) -> io::Result<PathBuf> {
+        let source = self.scene_path();
+        let mut filename = AssetTools::safe_name(new_name, "SceneCopy");
+        if !filename.ends_with(".scene") {
+            filename.push_str(".scene");
+        }
+        let scenes = AssetTools::get_project_paths(&self.project_path).scenes;
+        let target = AssetTools::unique_path(scenes, &filename);
+        if source.exists() {
+            fs::copy(source, &target)?;
+        } else {
+            AssetTools::create_json_file(
+                &target,
+                &AssetTools::template_scene(
+                    target
+                        .file_stem()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("SceneCopy"),
+                ),
+                true,
+            )?;
+        }
+        self.current_scene = target
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("main.scene")
+            .to_string();
+        Ok(target)
+    }
+
+    pub fn scene_metadata(&self) -> io::Result<Value> {
+        let path = self.scene_path();
+        let entity_count = self
+            .load_current_scene_data()?
+            .get("entities")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        Ok(json!({
+            "current_scene": self.current_scene,
+            "path": path,
+            "exists": path.exists(),
+            "entity_count": entity_count,
+        }))
+    }
+
     pub fn save_current_scene(&self, entities: &mut [GameObject]) -> io::Result<()> {
         let tilemap = TilemapLayers::new(0, 0);
         let camera = Camera::default();
@@ -63,7 +124,7 @@ impl SceneManager {
         grid: &Grid,
     ) -> io::Result<()> {
         let data = json!({
-            "version": "0.6.0",
+            "version": crate::engine::version::ENGINE_VERSION,
             "engine_version": crate::engine::version::ENGINE_VERSION,
             "scene_name": self.current_scene.trim_end_matches(".scene"),
             "mode": mode,
@@ -81,6 +142,7 @@ impl SceneManager {
                 "chunk_size": grid.chunk_size,
             },
             "settings": {},
+            "ui_canvases": json!([]),
         });
         AssetTools::write_json(self.scene_path(), &data)
     }

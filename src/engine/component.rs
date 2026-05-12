@@ -1002,6 +1002,30 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "can_produce": false,
             "command_tags": ["move", "stop", "hold", "patrol", "attack_move"],
         }),
+        "SquadMember" => json!({
+            "squad_id": null,
+            "slot": 0,
+            "role": "line",
+            "cohesion_radius": 4.0,
+            "formation_weight": 1.0,
+        }),
+        "RtsBrain" => json!({
+            "enabled": true,
+            "strategy": "balanced",
+            "build_order": ["Worker", "Soldier"],
+            "attack_threshold": 6,
+            "retreat_health_pct": 0.25,
+            "scout_interval": 20.0,
+            "last_decision_time": 0.0,
+        }),
+        "ProductionRecipeBook" => json!({
+            "recipes": [
+                {"unit_type": "Worker", "display_name": "Worker", "build_time": 3.0, "cost": {"Gold": 50.0}},
+                {"unit_type": "Soldier", "display_name": "Soldier", "build_time": 5.0, "cost": {"Gold": 85.0, "Wood": 25.0}}
+            ],
+            "auto_queue": false,
+            "preferred_recipe": "Worker",
+        }),
         "Vision" => json!({
             "radius": 7.0,
             "reveals_fog": true,
@@ -1177,6 +1201,7 @@ pub fn default_component(component_type: &str) -> Option<Component> {
         }),
         "DamageDealer" => json!({
             "damage": 10.0,
+            "range": 1.25,
             "damage_type": "physical",
             "cooldown": 0.5,
             "knockback": 0.0,
@@ -1338,6 +1363,9 @@ pub fn advanced_component_types() -> &'static [&'static str] {
         "Ability",
         "RTSController",
         "Commandable",
+        "SquadMember",
+        "RtsBrain",
+        "ProductionRecipeBook",
         "Vision",
         "FogOfWar",
         "ThreatSource",
@@ -1388,8 +1416,18 @@ pub fn advanced_component_category(component_type: &str) -> Option<&'static str>
         | "CharacterController2D"
         | "EconomyWallet" => "Gameplay",
         "AIController" => "AI",
-        "RTSController" | "Commandable" | "Vision" | "FogOfWar" | "ThreatSource"
-        | "InfluenceSource" | "ProductionQueue" | "Buildable" | "ConstructionSite" => "RTS",
+        "RTSController"
+        | "Commandable"
+        | "SquadMember"
+        | "RtsBrain"
+        | "ProductionRecipeBook"
+        | "Vision"
+        | "FogOfWar"
+        | "ThreatSource"
+        | "InfluenceSource"
+        | "ProductionQueue"
+        | "Buildable"
+        | "ConstructionSite" => "RTS",
         "NavAgent" => "Navigation",
         "DamageDealer" | "StatusEffects" | "CombatTarget" => "Combat",
         "CameraFollow" | "CameraShake" => "Camera",

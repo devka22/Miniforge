@@ -4,6 +4,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
+use crate::engine::archetype_library::ArchetypeLibrary;
 use crate::engine::asset_tools::AssetTools;
 use crate::engine::build_placement::{BuildFootprint, BuildPlacement, PlacementResult};
 use crate::engine::component::{Component, component_from_data, default_component};
@@ -57,6 +58,20 @@ impl GameAPI {
         id
     }
 
+    pub fn spawn_archetype(
+        entities: &mut Vec<GameObject>,
+        library: &ArchetypeLibrary,
+        key: &str,
+        x: f64,
+        y: f64,
+        team_id: Option<i64>,
+    ) -> Option<u64> {
+        let entity = library.instantiate(key, x, y, team_id)?;
+        let id = entity.id;
+        entities.push(entity);
+        Some(id)
+    }
+
     pub fn instantiate_prefab(
         entities: &mut Vec<GameObject>,
         prefab_path: impl AsRef<Path>,
@@ -86,8 +101,57 @@ impl GameAPI {
         entity.sync_to_components();
     }
 
+    pub fn set_x(entity: &mut GameObject, x: f64) {
+        Self::set_position(entity, x, entity.y);
+    }
+
+    pub fn set_y(entity: &mut GameObject, y: f64) {
+        Self::set_position(entity, entity.x, y);
+    }
+
     pub fn translate(entity: &mut GameObject, dx: f64, dy: f64) {
         Self::set_position(entity, entity.x + dx, entity.y + dy);
+    }
+
+    pub fn move_x(entity: &mut GameObject, amount: f64) {
+        Self::translate(entity, amount, 0.0);
+    }
+
+    pub fn move_y(entity: &mut GameObject, amount: f64) {
+        Self::translate(entity, 0.0, amount);
+    }
+
+    pub fn set_scale(entity: &mut GameObject, scale_x: f64, scale_y: f64) {
+        entity.scale_x = scale_x;
+        entity.scale_y = scale_y;
+        entity.sync_to_components();
+    }
+
+    pub fn scale_by(entity: &mut GameObject, scale_x: f64, scale_y: f64) {
+        Self::set_scale(entity, entity.scale_x * scale_x, entity.scale_y * scale_y);
+    }
+
+    pub fn set_size(entity: &mut GameObject, width: f64, height: f64) {
+        entity.width = width.max(0.01);
+        entity.height = height.max(0.01);
+        entity.sync_to_components();
+    }
+
+    pub fn set_rotation(entity: &mut GameObject, rotation: f64) {
+        entity.rotation = rotation;
+        entity.sync_to_components();
+    }
+
+    pub fn rotate_by(entity: &mut GameObject, amount: f64) {
+        Self::set_rotation(entity, entity.rotation + amount);
+    }
+
+    pub fn look_at(entity: &mut GameObject, x: f64, y: f64) {
+        let dx = x - entity.x;
+        let dy = y - entity.y;
+        if dx.abs() + dy.abs() > f64::EPSILON {
+            Self::set_rotation(entity, dy.atan2(dx).to_degrees());
+        }
     }
 
     pub fn move_to(entity: &mut GameObject, x: f64, y: f64) {
@@ -98,6 +162,26 @@ impl GameAPI {
             entity.command = "MOVE".to_string();
             entity.state = "MOVING".to_string();
         }
+    }
+
+    pub fn issue_attack_move(entity: &mut GameObject, x: f64, y: f64) {
+        entity.attack_move_target = Some((x, y));
+        Self::move_to(entity, x, y);
+        entity.command = "ATTACK_MOVE".to_string();
+        entity.state = "MOVING".to_string();
+    }
+
+    pub fn assign_squad(entity: &mut GameObject, squad_id: &str, slot: i64, role: &str) -> bool {
+        if entity.get_component("SquadMember").is_none() {
+            entity.add_component(default_component("SquadMember").expect("SquadMember"));
+        }
+        let Some(squad) = entity.get_component_mut("SquadMember") else {
+            return false;
+        };
+        squad.set("squad_id", json!(squad_id));
+        squad.set("slot", json!(slot.max(0)));
+        squad.set("role", json!(role));
+        true
     }
 
     pub fn query_radius<'a>(
@@ -210,6 +294,66 @@ impl GameAPI {
         entity.remove_component(component_type);
     }
 
+    pub fn set_component_value(
+        entity: &mut GameObject,
+        component_type: &str,
+        key: &str,
+        value: Value,
+    ) -> bool {
+        let Some(component) = entity.get_component_mut(component_type) else {
+            return false;
+        };
+        component.set(key, value);
+        entity.sync_from_components();
+        true
+    }
+
+    pub fn get_component_value(
+        entity: &GameObject,
+        component_type: &str,
+        key: &str,
+    ) -> Option<Value> {
+        entity
+            .get_component(component_type)
+            .and_then(|component| component.get(key))
+            .cloned()
+    }
+
+    pub fn spawn_sprite_entity(
+        entities: &mut Vec<GameObject>,
+        name: &str,
+        sprite_name: &str,
+        x: f64,
+        y: f64,
+    ) -> u64 {
+        let mut entity = GameObject::new(x, y, Some(name.to_string()));
+        entity.sprite_name = Some(sprite_name.to_string());
+        if let Some(sprite) = entity.get_component_mut("SpriteRenderer") {
+            sprite.set("sprite_name", json!(sprite_name));
+            sprite.set("visible", json!(true));
+        }
+        entity.sync_to_components();
+        let id = entity.id;
+        entities.push(entity);
+        id
+    }
+
+    pub fn add_audio_source(
+        entity: &mut GameObject,
+        audio_name: &str,
+        play_on_start: bool,
+    ) -> bool {
+        if entity.get_component("AudioSource").is_none() {
+            entity.add_component(default_component("AudioSource").expect("AudioSource"));
+        }
+        let Some(audio) = entity.get_component_mut("AudioSource") else {
+            return false;
+        };
+        audio.set("audio_name", json!(audio_name));
+        audio.set("play_on_start", json!(play_on_start));
+        true
+    }
+
     pub fn damage(entity: &mut GameObject, amount: f64) -> bool {
         let Some(health) = entity.get_component_mut("Health") else {
             return false;
@@ -279,6 +423,8 @@ impl GameAPI {
         Self::add_component(entity, "Commandable", None);
         Self::add_component(entity, "Vision", None);
         Self::add_component(entity, "NavAgent", None);
+        Self::add_component(entity, "SquadMember", None);
+        Self::add_component(entity, "Blackboard", None);
         if worker {
             Self::add_component(entity, "Worker", None);
             if let Some(commandable) = entity.get_component_mut("Commandable") {

@@ -1,6 +1,6 @@
 [package]
 name = "miniforge"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 
 [lib]
@@ -10,6 +10,14 @@ path = "src/lib.rs"
 [[bin]]
 name = "miniforge"
 path = "src/main.rs"
+
+[[bin]]
+name = "miniforge_editor"
+path = "src/bin/miniforge_editor.rs"
+
+[[bin]]
+name = "miniforge_runtime"
+path = "src/bin/miniforge_runtime.rs"
 
 [dependencies]
 macroquad = "0.4"

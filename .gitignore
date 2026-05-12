@@ -15,10 +15,13 @@ logs/
 *.log
 
 project/asset_metadata.json
+project/project_state.json
 project/recent_projects.json
 projects/*/project/asset_metadata.json
+projects/*/project/project_state.json
 projects/*/builds/
 projects/*/logs/
 projects/*/saves/backups/
 projects/*/saves/autosave/
 saves/autosave/
+.miniforge_cache/

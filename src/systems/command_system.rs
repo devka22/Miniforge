@@ -4,7 +4,7 @@ use crate::engine::formation::Formation;
 use crate::entities::game_object::GameObject;
 use crate::map::flow_field::FlowField;
 use crate::map::grid::Grid;
-use crate::map::pathfinding::{Point, astar, smooth_path, threat_aware_astar};
+use crate::map::pathfinding::{Point, astar, smooth_path_with_visibility, threat_aware_astar};
 
 #[derive(Debug, Clone)]
 pub struct CommandSystem {
@@ -29,7 +29,7 @@ impl CommandSystem {
         if !grid.in_bounds(start.0, start.1) {
             return Vec::new();
         }
-        smooth_path(&astar(grid, start, goal, 3000))
+        smooth_path_with_visibility(grid, &astar(grid, start, goal, 3000))
             .into_iter()
             .map(|(x, y)| (x as f64, y as f64))
             .collect()
@@ -60,7 +60,7 @@ impl CommandSystem {
         let Some(goal) = Self::clean_target(grid, goal) else {
             return Vec::new();
         };
-        smooth_path(&threat_aware_astar(grid, start, goal, threats, 24))
+        smooth_path_with_visibility(grid, &threat_aware_astar(grid, start, goal, threats, 24))
             .into_iter()
             .map(|(x, y)| (x as f64, y as f64))
             .collect()

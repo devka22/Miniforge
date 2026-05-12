@@ -1,4 +1,5 @@
 pub mod core;
+pub mod editor_app;
 pub mod engine;
 pub mod entities;
 pub mod input;

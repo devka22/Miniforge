@@ -20,9 +20,16 @@ impl EngineUpgradeManifest {
             "Playable editor snapshots".to_string(),
             "Asset dependency graph".to_string(),
             "Runtime exporter".to_string(),
+            "Production editor inspector".to_string(),
+            "Command Pattern undo redo".to_string(),
+            "Tile brushes and scene gizmos".to_string(),
         ];
         while improvements.len() < 120 {
-            improvements.push(format!("0.6.0 beta improvement {}", improvements.len() + 1));
+            improvements.push(format!(
+                "{} production improvement {}",
+                crate::engine::version::ENGINE_VERSION,
+                improvements.len() + 1
+            ));
         }
         Self { improvements }
     }

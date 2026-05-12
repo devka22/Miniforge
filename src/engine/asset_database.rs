@@ -260,6 +260,26 @@ fn hash_seed(seed: &str) -> u64 {
 }
 
 fn detect_asset_type(path: &Path) -> String {
+    let filename = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if filename.ends_with(".spritesheet.json") {
+        return "SpriteSheet".to_string();
+    }
+    if filename.ends_with(".atlas.json") {
+        return "Atlas".to_string();
+    }
+    if filename.ends_with(".sprite.json") {
+        return "Sprite".to_string();
+    }
+    if filename.ends_with(".sound.json") {
+        return "Audio".to_string();
+    }
+    if filename.ends_with(".material.json") {
+        return "Material".to_string();
+    }
     match path
         .extension()
         .and_then(|value| value.to_str())
@@ -286,9 +306,24 @@ fn detect_asset_type(path: &Path) -> String {
 
 fn default_import_settings(path: &Path) -> Value {
     match detect_asset_type(path).as_str() {
-        "Sprite" => json!({"filter": "nearest", "include_in_build": true}),
-        "Audio" => json!({"stream": false, "include_in_build": true}),
+        "Sprite" => json!({
+            "filter": "nearest",
+            "include_in_build": true,
+            "pixels_per_unit": 32,
+            "generate_mips": false,
+            "atlas": null,
+        }),
+        "Audio" => json!({
+            "stream": false,
+            "include_in_build": true,
+            "bus": "SFX",
+            "spatial": false,
+            "preload": true,
+        }),
+        "Material" => json!({"shader": "sprite_default", "include_in_build": true}),
         "VisualGraph" => json!({"runtime": "rust_visual_graph", "include_in_build": true}),
+        "SpriteSheet" => json!({"include_in_build": true, "grid": {"w": 32, "h": 32}}),
+        "Atlas" => json!({"include_in_build": true, "filter": "nearest"}),
         "Shader" => json!({"target": "macroquad", "include_in_build": true}),
         "LegacyScript" => json!({"runtime": "python_legacy", "include_in_build": false}),
         _ => json!({"include_in_build": true}),

@@ -118,7 +118,7 @@ impl AssetTools {
                 "start_scene": "main.scene",
                 "author": "",
                 "license": "GPL-3.0",
-                "description": "MiniForge 0.6.0 Beta project",
+                "description": "MiniForge 0.7.0 Production Editor project",
             }),
         )?;
         Self::write_json_if_missing(
@@ -297,7 +297,7 @@ impl AssetTools {
 
     pub fn template_basic_script(class_name: &str) -> String {
         format!(
-            "class {class_name}:\n    \"\"\"\n    Script creado desde MiniForge 0.6.0 Beta.\n    El motor acepta start() / start(entity) y update(dt) / update(entity, dt).\n    \"\"\"\n\n    def __init__(self):\n        self.script_name = \"{class_name}\"\n        self.enabled = True\n        self.started = False\n\n    def start(self):\n        pass\n\n    def update(self, dt):\n        pass\n"
+            "class {class_name}:\n    \"\"\"\n    Script creado desde MiniForge {ENGINE_VERSION}.\n    El motor acepta start() / start(entity) y update(dt) / update(entity, dt).\n    \"\"\"\n\n    def __init__(self):\n        self.script_name = \"{class_name}\"\n        self.enabled = True\n        self.started = False\n\n    def start(self):\n        pass\n\n    def update(self, dt):\n        pass\n"
         )
     }
 
@@ -330,7 +330,7 @@ impl AssetTools {
 
     pub fn template_scene(scene_name: &str) -> Value {
         json!({
-            "version": "0.6.0",
+            "version": ENGINE_VERSION,
             "engine_version": ENGINE_VERSION,
             "scene_name": scene_name,
             "mode": "EDITOR",
@@ -349,7 +349,7 @@ impl AssetTools {
 
     pub fn template_prefab(prefab_name: &str) -> Value {
         json!({
-            "version": "0.6.0",
+            "version": ENGINE_VERSION,
             "engine_version": ENGINE_VERSION,
             "prefab_name": prefab_name,
             "entity": {
@@ -372,6 +372,49 @@ impl AssetTools {
                 "components": [],
                 "scripts": [],
             },
+        })
+    }
+
+    pub fn template_sprite_import(sprite_name: &str, source_path: &str) -> Value {
+        json!({
+            "version": ENGINE_VERSION,
+            "kind": "MiniForgeSpriteImport",
+            "name": sprite_name,
+            "source": source_path,
+            "pixels_per_unit": 32,
+            "filter": "nearest",
+            "pivot": [0.5, 0.5],
+            "atlas": null,
+            "animations": [],
+            "collision": {"generate": false, "shape": "rect"},
+        })
+    }
+
+    pub fn template_sound_cue(cue_name: &str, source_path: &str) -> Value {
+        json!({
+            "version": ENGINE_VERSION,
+            "kind": "MiniForgeSoundCue",
+            "name": cue_name,
+            "source": source_path,
+            "bus": "SFX",
+            "volume": 1.0,
+            "pitch": 1.0,
+            "stream": false,
+            "loop": false,
+            "spatial": {"enabled": false, "min_distance": 4.0, "max_distance": 18.0},
+        })
+    }
+
+    pub fn template_material(material_name: &str) -> Value {
+        json!({
+            "version": ENGINE_VERSION,
+            "kind": "MiniForgeMaterial2D",
+            "name": material_name,
+            "shader": "sprite_default",
+            "tint": [255, 255, 255, 255],
+            "blend_mode": "alpha",
+            "render_queue": 0,
+            "texture": null,
         })
     }
 
@@ -456,7 +499,7 @@ impl AssetTools {
         let path = Self::unique_path(target_folder, &filename);
         Self::create_json_file(
             path,
-            &json!({"created_by": "MiniForge", "version": "0.6.0"}),
+            &json!({"created_by": "MiniForge", "version": ENGINE_VERSION}),
             true,
         )
     }
@@ -502,6 +545,39 @@ impl AssetTools {
             .unwrap_or("NewPrefab");
         let path = Self::unique_path(paths.prefabs, &filename);
         Self::create_json_file(path, &Self::template_prefab(prefab_name), true)
+    }
+
+    pub fn create_sprite_import(
+        project_path: impl AsRef<Path>,
+        name: &str,
+        source_path: &str,
+    ) -> io::Result<PathBuf> {
+        let paths = Self::get_project_paths(project_path);
+        let safe = Self::safe_name(name, "Sprite");
+        let path = Self::unique_path(paths.sprites, &format!("{safe}.sprite.json"));
+        Self::create_json_file(
+            path,
+            &Self::template_sprite_import(&safe, source_path),
+            true,
+        )
+    }
+
+    pub fn create_sound_cue(
+        project_path: impl AsRef<Path>,
+        name: &str,
+        source_path: &str,
+    ) -> io::Result<PathBuf> {
+        let paths = Self::get_project_paths(project_path);
+        let safe = Self::safe_name(name, "SoundCue");
+        let path = Self::unique_path(paths.audio, &format!("{safe}.sound.json"));
+        Self::create_json_file(path, &Self::template_sound_cue(&safe, source_path), true)
+    }
+
+    pub fn create_material(project_path: impl AsRef<Path>, name: &str) -> io::Result<PathBuf> {
+        let paths = Self::get_project_paths(project_path);
+        let safe = Self::safe_name(name, "Material");
+        let path = Self::unique_path(paths.data, &format!("{safe}.material.json"));
+        Self::create_json_file(path, &Self::template_material(&safe), true)
     }
 
     pub fn create_special_folder(

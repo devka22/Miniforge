@@ -400,7 +400,7 @@ class Engine060Tests(unittest.TestCase):
     def test_scene_serializer_migrates_old_data(self):
         data = SceneSerializer.migrate({"objects": [{"name": "Old"}]})
 
-        self.assertEqual(data["version"], "0.6.0")
+        self.assertEqual(data["version"], ENGINE_VERSION)
         self.assertEqual(data["entities"][0]["name"], "Old")
         self.assertEqual(data["brush_size"], 1)
 

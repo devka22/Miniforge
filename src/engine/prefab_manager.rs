@@ -46,7 +46,7 @@ impl PrefabManager {
         AssetTools::write_json(
             &path,
             &json!({
-                "version": "0.6.0",
+                "version": crate::engine::version::ENGINE_VERSION,
                 "prefab_name": path.file_name().and_then(|value| value.to_str()).unwrap_or("prefab"),
                 "entity": entity.serialize(),
             }),
