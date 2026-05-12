@@ -1,0 +1,12 @@
+{
+    "items": [
+        "Default",
+        "Ground",
+        "Units",
+        "Buildings",
+        "UI",
+        "Effects",
+        "IgnoreSelection",
+        "EditorOnly"
+    ]
+}

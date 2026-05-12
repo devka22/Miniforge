@@ -1,0 +1,323 @@
+{
+  "camera": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1.0
+  },
+  "engine_version": "0.6.0",
+  "entities": [
+    {
+      "active": true,
+      "attack_move_target": null,
+      "command": "MOVE",
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "rotation": 0.0,
+          "scale_x": 1.0,
+          "scale_y": 1.0,
+          "x": 6.3194982284682055,
+          "y": 2.0
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.5
+        },
+        {
+          "acceleration": 1.0,
+          "allow_pathfinding": true,
+          "component_type": "RTSMovement",
+          "enabled": true,
+          "formation_role": "unit",
+          "separation": true,
+          "speed": 4.5,
+          "turn_speed": 1.0
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "flip_x": false,
+          "flip_y": false,
+          "sorting_order": 0,
+          "sprite_guid": null,
+          "sprite_name": null,
+          "tint": [
+            255,
+            255,
+            255
+          ],
+          "visible": true
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "height": 1.0,
+          "is_trigger": false,
+          "offset_x": 0.0,
+          "offset_y": 0.0,
+          "radius": 0.45,
+          "shape": "rect",
+          "width": 1.0
+        }
+      ],
+      "enabled": true,
+      "follow_target_id": null,
+      "gather_target_id": null,
+      "guard_target_id": null,
+      "height": 1.0,
+      "id": 1,
+      "is_prefab_instance": false,
+      "layer": "Default",
+      "local_x": 0.0,
+      "local_y": 0.0,
+      "locked": false,
+      "name": "Unit_1",
+      "parent_id": null,
+      "patrol_index": 0,
+      "patrol_points": [],
+      "position": [
+        6.3194982284682055,
+        2.0
+      ],
+      "prefab_guid": null,
+      "prefab_source": null,
+      "radius": 0.45,
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ],
+      "scale_x": 1.0,
+      "scale_y": 1.0,
+      "script": null,
+      "scripts": [],
+      "size": [
+        1.0,
+        1.0
+      ],
+      "speed": 4.5,
+      "sprite_guid": null,
+      "sprite_name": null,
+      "state": "MOVING",
+      "tag": "Untagged",
+      "type": "Unit",
+      "visible": true,
+      "width": 1.0,
+      "x": 6.3194982284682055,
+      "y": 2.0
+    },
+    {
+      "active": true,
+      "attack_move_target": null,
+      "command": "MOVE",
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "rotation": 0.0,
+          "scale_x": 1.0,
+          "scale_y": 1.0,
+          "x": 11.769539081853623,
+          "y": 4.0
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.5
+        },
+        {
+          "acceleration": 1.0,
+          "allow_pathfinding": true,
+          "component_type": "RTSMovement",
+          "enabled": true,
+          "formation_role": "unit",
+          "separation": true,
+          "speed": 4.5,
+          "turn_speed": 1.0
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "flip_x": false,
+          "flip_y": false,
+          "sorting_order": 0,
+          "sprite_guid": null,
+          "sprite_name": null,
+          "tint": [
+            255,
+            255,
+            255
+          ],
+          "visible": true
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "height": 1.0,
+          "is_trigger": false,
+          "offset_x": 0.0,
+          "offset_y": 0.0,
+          "radius": 0.45,
+          "shape": "rect",
+          "width": 1.0
+        }
+      ],
+      "enabled": true,
+      "follow_target_id": null,
+      "gather_target_id": null,
+      "guard_target_id": null,
+      "height": 1.0,
+      "id": 2,
+      "is_prefab_instance": false,
+      "layer": "Default",
+      "local_x": 0.0,
+      "local_y": 0.0,
+      "locked": false,
+      "name": "Unit_2",
+      "parent_id": null,
+      "patrol_index": 0,
+      "patrol_points": [],
+      "position": [
+        11.769539081853623,
+        4.0
+      ],
+      "prefab_guid": null,
+      "prefab_source": null,
+      "radius": 0.45,
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ],
+      "scale_x": 1.0,
+      "scale_y": 1.0,
+      "script": null,
+      "scripts": [],
+      "size": [
+        1.0,
+        1.0
+      ],
+      "speed": 4.5,
+      "sprite_guid": null,
+      "sprite_name": null,
+      "state": "MOVING",
+      "tag": "Untagged",
+      "type": "Unit",
+      "visible": true,
+      "width": 1.0,
+      "x": 11.769539081853623,
+      "y": 4.0
+    },
+    {
+      "active": true,
+      "attack_move_target": null,
+      "command": "MOVE",
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "rotation": 0.0,
+          "scale_x": 1.0,
+          "scale_y": 1.0,
+          "x": 10.0,
+          "y": 8.0
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.5
+        },
+        {
+          "acceleration": 1.0,
+          "allow_pathfinding": true,
+          "component_type": "RTSMovement",
+          "enabled": true,
+          "formation_role": "unit",
+          "separation": true,
+          "speed": 4.5,
+          "turn_speed": 1.0
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "flip_x": false,
+          "flip_y": false,
+          "sorting_order": 0,
+          "sprite_guid": null,
+          "sprite_name": null,
+          "tint": [
+            255,
+            255,
+            255
+          ],
+          "visible": true
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "height": 1.0,
+          "is_trigger": false,
+          "offset_x": 0.0,
+          "offset_y": 0.0,
+          "radius": 0.45,
+          "shape": "rect",
+          "width": 1.0
+        }
+      ],
+      "enabled": true,
+      "follow_target_id": null,
+      "gather_target_id": null,
+      "guard_target_id": null,
+      "height": 1.0,
+      "id": 3,
+      "is_prefab_instance": false,
+      "layer": "Default",
+      "local_x": 0.0,
+      "local_y": 0.0,
+      "locked": false,
+      "name": "Unit_3",
+      "parent_id": null,
+      "patrol_index": 0,
+      "patrol_points": [],
+      "position": [
+        10.0,
+        8.0
+      ],
+      "prefab_guid": null,
+      "prefab_source": null,
+      "radius": 0.45,
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ],
+      "scale_x": 1.0,
+      "scale_y": 1.0,
+      "script": null,
+      "scripts": [],
+      "size": [
+        1.0,
+        1.0
+      ],
+      "speed": 4.5,
+      "sprite_guid": null,
+      "sprite_name": null,
+      "state": "IDLE",
+      "tag": "Untagged",
+      "type": "Unit",
+      "visible": true,
+      "width": 1.0,
+      "x": 10.0,
+      "y": 8.0
+    }
+  ],
+  "scene_name": "main",
+  "settings": {},
+  "tiles": [],
+  "version": "0.6.0"
+}

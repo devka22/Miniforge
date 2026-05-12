@@ -1,0 +1,25 @@
+{
+    "version": "0.6.0",
+    "engine_version": "0.6.0 Beta",
+    "prefab_name": "xd",
+    "entity": {
+        "type": "Unit",
+        "name": "xd",
+        "enabled": true,
+        "visible": true,
+        "locked": false,
+        "x": 0,
+        "y": 0,
+        "speed": 3.5,
+        "radius": 0.45,
+        "sprite_name": null,
+        "tag": "Untagged",
+        "layer": "Default",
+        "state": "IDLE",
+        "command": "IDLE",
+        "prefab_source": null,
+        "is_prefab_instance": false,
+        "components": [],
+        "scripts": []
+    }
+}

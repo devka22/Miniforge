@@ -1,0 +1,24 @@
+{
+    "version": "0.5.6",
+    "prefab_name": "NewPrefab",
+    "entity": {
+        "type": "Unit",
+        "name": "NewPrefab",
+        "enabled": true,
+        "visible": true,
+        "locked": false,
+        "x": 0,
+        "y": 0,
+        "speed": 3.5,
+        "radius": 0.45,
+        "sprite_name": null,
+        "tag": "Untagged",
+        "layer": "Default",
+        "state": "IDLE",
+        "command": "IDLE",
+        "prefab_source": null,
+        "is_prefab_instance": false,
+        "components": [],
+        "scripts": []
+    }
+}

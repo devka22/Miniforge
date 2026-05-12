@@ -1,0 +1,50 @@
+{
+    "hierarchy": {
+        "x": 830,
+        "y": 70,
+        "width": 260,
+        "height": 170,
+        "visible": true,
+        "collapsed": false
+    },
+    "inspector": {
+        "x": 722,
+        "y": 250,
+        "width": 240,
+        "height": 390,
+        "visible": true,
+        "collapsed": false
+    },
+    "minimap": {
+        "x": 830,
+        "y": 500,
+        "width": 260,
+        "height": 130,
+        "visible": true,
+        "collapsed": false
+    },
+    "asset_preview": {
+        "x": 220,
+        "y": 365,
+        "width": 600,
+        "height": 120,
+        "visible": true,
+        "collapsed": false
+    },
+    "content_browser": {
+        "x": 220,
+        "y": 500,
+        "width": 600,
+        "height": 130,
+        "visible": true,
+        "collapsed": false
+    },
+    "console": {
+        "x": 220,
+        "y": 635,
+        "width": 600,
+        "height": 95,
+        "visible": false,
+        "collapsed": false
+    }
+}

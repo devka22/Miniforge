@@ -1,0 +1,18 @@
+{
+    "project_name": "RTS Engine Project",
+    "current_scene": "scene_1.scene",
+    "mode": "EDITOR",
+    "active_tool": "Move",
+    "tile_brush": 0,
+    "left_panel_scroll": 280,
+    "camera": {
+        "x": 1161.5714285714284,
+        "y": 215.85428571428562,
+        "zoom": 1.1199999999999994
+    },
+    "window": {
+        "width": 1000,
+        "height": 700
+    },
+    "engine_version": "0.6.0"
+}

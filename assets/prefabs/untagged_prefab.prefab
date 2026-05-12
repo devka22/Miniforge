@@ -1,0 +1,42 @@
+{
+    "prefab_name": "untagged_prefab.prefab",
+    "entity": {
+        "type": "Unit",
+        "x": 22.0,
+        "y": 11.0,
+        "speed": 3.5,
+        "radius": 0.45,
+        "sprite_name": null,
+        "tag": "Untagged",
+        "layer": "Default",
+        "components": [
+            {
+                "type": "Transform",
+                "enabled": true,
+                "x": 22.0,
+                "y": 11.0,
+                "rotation": 0.0,
+                "scale": 1.0
+            },
+            {
+                "type": "Selectable",
+                "enabled": true,
+                "selectable": true
+            },
+            {
+                "type": "RTSMovement",
+                "enabled": true,
+                "speed": 3.5,
+                "allow_pathfinding": true,
+                "separation": true
+            },
+            {
+                "type": "SpriteRenderer",
+                "enabled": true,
+                "sprite_name": null,
+                "visible": true
+            }
+        ],
+        "scripts": []
+    }
+}

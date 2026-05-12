@@ -1,0 +1,9 @@
+{
+  "debug": true,
+  "fullscreen": false,
+  "game_name": "DefaultProject",
+  "start_scene": "main.scene",
+  "target_fps": 60,
+  "window_height": 740,
+  "window_width": 1100
+}

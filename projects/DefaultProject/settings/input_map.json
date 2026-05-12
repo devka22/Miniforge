@@ -1,0 +1,38 @@
+{
+    "bindings": {
+        "move_up": [
+            "w",
+            "up"
+        ],
+        "move_down": [
+            "s",
+            "down"
+        ],
+        "move_left": [
+            "a",
+            "left"
+        ],
+        "move_right": [
+            "d",
+            "right"
+        ],
+        "jump": [
+            "space"
+        ],
+        "attack": [
+            "mouse1"
+        ],
+        "interact": [
+            "e"
+        ],
+        "pause": [
+            "escape"
+        ],
+        "save": [
+            "s"
+        ],
+        "duplicate": [
+            "d"
+        ]
+    }
+}

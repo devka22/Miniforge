@@ -1,0 +1,68 @@
+{
+    "engine_version": "0.6.0",
+    "project": "RTS Engine Project",
+    "current_scene": "scene_1.scene",
+    "build_settings": {
+        "game_name": "NewProject",
+        "start_scene": "main.scene",
+        "window_width": 1100,
+        "window_height": 740,
+        "fullscreen": false,
+        "target_fps": 60,
+        "show_debug": true,
+        "include_all_assets": true,
+        "debug_mode": true,
+        "export_folder": "builds"
+    },
+    "runtime_config": {
+        "game_name": "MiniForge Game",
+        "start_scene": "main.scene",
+        "window_width": 1100,
+        "window_height": 740,
+        "fullscreen": false,
+        "target_fps": 60,
+        "show_debug": false,
+        "show_fps": true,
+        "allow_console": true,
+        "allow_editor_hotkeys": true
+    },
+    "editor_view_settings": {
+        "show_grid": true,
+        "show_gizmos": true,
+        "show_paths": true,
+        "show_names": true,
+        "show_bounds": true,
+        "show_colliders": false,
+        "show_chunks": false,
+        "show_tile_coordinates": false,
+        "show_mouse_tile": true,
+        "show_entity_ids": false,
+        "show_layer_colors": false,
+        "show_brush_preview": true
+    },
+    "assets": {
+        "sprites": [],
+        "scripts": [],
+        "prefabs": [],
+        "scenes": [
+            "main.scene",
+            "scene_1.scene"
+        ]
+    },
+    "scene_data": {
+        "entity_count": 3,
+        "components": [
+            "Collider2D",
+            "RTSMovement",
+            "Selectable",
+            "SpriteRenderer",
+            "Transform"
+        ],
+        "tags_used": [
+            "Untagged"
+        ],
+        "layers_used": [
+            "Default"
+        ]
+    }
+}

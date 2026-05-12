@@ -1,0 +1,21 @@
+{
+    "active": "Debug",
+    "profiles": {
+        "Debug": {
+            "show_debug": true,
+            "include_all_assets": true,
+            "target_fps": 60
+        },
+        "Release": {
+            "show_debug": false,
+            "include_all_assets": false,
+            "target_fps": 60
+        },
+        "Desktop": {
+            "fullscreen": false,
+            "window_width": 1280,
+            "window_height": 720,
+            "show_debug": false
+        }
+    }
+}

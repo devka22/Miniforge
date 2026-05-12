@@ -1,0 +1,22 @@
+{
+    "visible_layers": {
+        "Default": true,
+        "Ground": true,
+        "Units": true,
+        "Buildings": true,
+        "UI": true,
+        "Effects": true,
+        "IgnoreSelection": true,
+        "EditorOnly": true
+    },
+    "locked_layers": {
+        "Default": false,
+        "Ground": false,
+        "Units": false,
+        "Buildings": false,
+        "UI": false,
+        "Effects": false,
+        "IgnoreSelection": false,
+        "EditorOnly": false
+    }
+}

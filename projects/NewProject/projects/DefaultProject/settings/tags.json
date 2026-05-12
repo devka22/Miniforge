@@ -1,0 +1,11 @@
+{
+    "items": [
+        "Untagged",
+        "Player",
+        "Enemy",
+        "Resource",
+        "Building",
+        "Projectile",
+        "Neutral"
+    ]
+}

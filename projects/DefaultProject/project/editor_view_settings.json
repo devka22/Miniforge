@@ -1,0 +1,14 @@
+{
+    "show_grid": true,
+    "show_gizmos": true,
+    "show_paths": false,
+    "show_names": true,
+    "show_bounds": true,
+    "show_colliders": false,
+    "show_chunks": false,
+    "show_tile_coordinates": false,
+    "show_mouse_tile": true,
+    "show_entity_ids": false,
+    "show_layer_colors": false,
+    "show_brush_preview": true
+}

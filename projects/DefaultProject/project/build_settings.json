@@ -1,0 +1,9 @@
+{
+    "game_name": "My MiniForge Game",
+    "start_scene": "main.scene",
+    "window_width": 1100,
+    "window_height": 740,
+    "fullscreen": false,
+    "target_fps": 60,
+    "show_debug": false
+}

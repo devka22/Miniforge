@@ -1,0 +1,15 @@
+{
+    "engine_name": "MiniForge",
+    "engine_alt_name": "Mini Forte",
+    "engine_version": "0.6.0 Beta",
+    "start_scene": "main.scene",
+    "autosave": true,
+    "autosave_interval_seconds": 60,
+    "safe_mode": true,
+    "pause_input_in_play": false,
+    "logs": {
+        "engine": "logs/engine.log",
+        "error": "logs/error.log"
+    },
+    "project_name": "DefaultProject"
+}
