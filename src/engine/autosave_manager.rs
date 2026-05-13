@@ -10,8 +10,10 @@ use crate::entities::game_object::GameObject;
 #[derive(Debug, Clone)]
 pub struct AutosaveManager {
     pub path: PathBuf,
+    pub backup_path: PathBuf,
     pub interval: Duration,
     pub last_save: Instant,
+    pub last_error: Option<String>,
 }
 
 impl AutosaveManager {
@@ -22,8 +24,14 @@ impl AutosaveManager {
                 .join("saves")
                 .join("autosave")
                 .join("autosave.scene"),
+            backup_path: project_path
+                .as_ref()
+                .join("saves")
+                .join("autosave")
+                .join("autosave.scene.bak"),
             interval: Duration::from_secs(interval_seconds),
             last_save: Instant::now(),
+            last_error: None,
         }
     }
 
@@ -32,18 +40,30 @@ impl AutosaveManager {
     }
 
     pub fn save(&mut self, entities: &mut [GameObject]) -> io::Result<()> {
+        if self.path.exists() {
+            let _ = std::fs::copy(&self.path, &self.backup_path);
+        }
         let data = serde_json::json!({
             "version": crate::engine::version::ENGINE_VERSION,
             "scene_name": "autosave",
             "entities": entities.iter_mut().map(GameObject::serialize).collect::<Vec<_>>(),
         });
-        write_json_atomic(&self.path, &data)?;
-        self.last_save = Instant::now();
-        Ok(())
+        match write_json_atomic(&self.path, &data) {
+            Ok(()) => {
+                self.last_save = Instant::now();
+                self.last_error = None;
+                Ok(())
+            }
+            Err(error) => {
+                self.last_error = Some(error.to_string());
+                Err(error)
+            }
+        }
     }
 
     pub fn recover_entities(&self) -> io::Result<Vec<GameObject>> {
-        let raw = AssetTools::read_json(&self.path)?;
+        let raw = AssetTools::read_json(&self.path)
+            .or_else(|_| AssetTools::read_json(&self.backup_path))?;
         let data = SceneSerializer::migrate(raw);
         let entities = data
             .get("entities")
@@ -56,5 +76,19 @@ impl AutosaveManager {
             })
             .unwrap_or_default();
         Ok(entities)
+    }
+
+    pub fn should_save(&self) -> bool {
+        self.last_save.elapsed() >= self.interval
+    }
+
+    pub fn health(&self) -> &'static str {
+        if self.last_error.is_some() {
+            "error"
+        } else if self.autosave_exists() {
+            "ready"
+        } else {
+            "empty"
+        }
     }
 }

@@ -4,7 +4,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use miniforge::core::game::Game;
 use miniforge::engine::advanced_prefabs::AdvancedPrefabSystem;
-use miniforge::engine::animation_graph::AnimationGraphLibrary;
+use miniforge::engine::animation_editor::AnimationEditor;
+use miniforge::engine::animation_graph::{
+    AnimationClip, AnimationGraphLibrary, AnimationKeyframe, AnimationTransition, AnimatorState,
+};
 use miniforge::engine::archetype_library::ArchetypeLibrary;
 use miniforge::engine::asset_database::AssetDatabase;
 use miniforge::engine::asset_tools::AssetTools;
@@ -25,6 +28,7 @@ use miniforge::engine::game_api::GameAPI;
 use miniforge::engine::game_clock::GameClock;
 use miniforge::engine::hierarchy_manager::HierarchyManager;
 use miniforge::engine::input_map::InputMap;
+use miniforge::engine::material_system::{Material2D, MaterialLibrary};
 use miniforge::engine::play_mode_manager::PlayModeManager;
 use miniforge::engine::plugin_manager::PluginManager;
 use miniforge::engine::prefab_manager::PrefabManager;
@@ -38,11 +42,13 @@ use miniforge::engine::rhai_scripting::RhaiScriptRuntime;
 use miniforge::engine::runtime_exporter::{ExportProfile, RuntimeExporter};
 use miniforge::engine::scene_serializer::SceneSerializer;
 use miniforge::engine::scene_view_tools::SceneViewTools;
+use miniforge::engine::script_debugger::ScriptDebugger;
 use miniforge::engine::script_editor::ScriptEditor;
 use miniforge::engine::spatial_index::SpatialIndex;
 use miniforge::engine::tile_brush::{TileBrush, TileBrushMode};
 use miniforge::engine::tilemap_layers::TilemapLayers;
 use miniforge::engine::ui_canvas::UICanvas;
+use miniforge::engine::ui_runtime::{UiEventKind, UiRuntime};
 use miniforge::engine::upgrade_manifest::EngineUpgradeManifest;
 use miniforge::engine::visual_input_editor::VisualInputEditor;
 use miniforge::engine::visual_scripting::VisualScriptRuntime;
@@ -56,6 +62,7 @@ use miniforge::systems::audio_system::{AudioCommandKind, AudioSystem};
 use miniforge::systems::camera_system::CameraSystem;
 use miniforge::systems::command_system::CommandSystem;
 use miniforge::systems::gameplay_system::GameplaySystem;
+use miniforge::systems::particle_system::ParticleSystem;
 use miniforge::systems::physics_system::{PairType, PhysicsEventPhase, PhysicsSystem};
 use miniforge::systems::render_system::RenderSystem;
 use miniforge::systems::rts_system::RTSSystem;
@@ -437,6 +444,180 @@ fn game_loop_runs_rhai_and_records_profiler_counters() {
             .unwrap_or(0)
             >= 1
     );
+}
+
+#[test]
+fn production_polish_animation_particles_materials_ui_and_debugger() {
+    let mut library = AnimationGraphLibrary::new();
+    let controller = library.controllers.get_mut("Default").unwrap();
+    controller.clips.insert(
+        "Run".to_string(),
+        AnimationClip {
+            name: "Run".to_string(),
+            duration: 0.5,
+            tint_from: (255, 255, 255),
+            tint_to: (255, 120, 90),
+            keyframes: vec![
+                AnimationKeyframe {
+                    time: 0.0,
+                    sprite_name: Some("run_0".to_string()),
+                    x: Some(0.0),
+                    y: Some(0.0),
+                    rotation: Some(0.0),
+                    scale_x: Some(1.0),
+                    scale_y: Some(1.0),
+                    tint: Some((255, 255, 255)),
+                },
+                AnimationKeyframe {
+                    time: 0.5,
+                    sprite_name: Some("run_1".to_string()),
+                    x: Some(2.0),
+                    y: Some(0.0),
+                    rotation: Some(15.0),
+                    scale_x: Some(1.2),
+                    scale_y: Some(1.0),
+                    tint: Some((255, 120, 90)),
+                },
+            ],
+            events: Vec::new(),
+        },
+    );
+    controller.states.insert(
+        "Run".to_string(),
+        AnimatorState {
+            name: "Run".to_string(),
+            clip: "Run".to_string(),
+            speed: 1.0,
+            looped: true,
+            preview_time: 0.0,
+        },
+    );
+    controller.add_transition(AnimationTransition {
+        from: "Idle".to_string(),
+        to: "Run".to_string(),
+        parameter: Some("moving".to_string()),
+        equals: json!(true),
+        exit_time: Some(0.0),
+        duration: 0.1,
+    });
+
+    let mut editor = AnimationEditor::new(controller.clone());
+    assert!(editor.select_state("Run"));
+    editor.timeline.playing = true;
+    let preview = editor.tick(0.25);
+    assert_eq!(preview.clip, "Run");
+    assert!(preview.sample.x.unwrap() > 0.0);
+    assert!(editor.validate());
+
+    let mut animated = GameObject::new(0.0, 0.0, Some("Animated".to_string()));
+    let mut animator = default_component("Animator").unwrap();
+    animator.set("parameters", json!({"moving": true}));
+    animated.add_component(animator);
+    let mut entities = vec![animated];
+    AnimationSystem.update_entities(&mut entities, &library, 0.016, "PLAY");
+    assert_eq!(
+        entities[0]
+            .get_component("Animator")
+            .unwrap()
+            .get_string("current_state", ""),
+        "Run"
+    );
+
+    entities[0].add_component(default_component("ParticleEmitter").unwrap());
+    let mut particles = ParticleSystem::default();
+    particles.update_entities(&entities, 0.25, "PLAY");
+    assert!(particles.preview(entities[0].id).unwrap().particle_count > 0);
+
+    let mut materials = MaterialLibrary::default();
+    materials.upsert_material(Material2D::lit_fog("LitFog"));
+    let material_preview = materials.apply_to_entity(&mut entities[0], "LitFog");
+    assert_eq!(material_preview.shader, "sprite_lit_fog");
+    assert!(material_preview.warnings.is_empty());
+
+    let mut ui_runtime = UiRuntime::default();
+    let canvas = miniforge::engine::ui_canvas::UiCanvasRoot::default_hud();
+    let events =
+        ui_runtime.update_canvas_interaction(&canvas, (1920.0, 1080.0), Some((24.0, 24.0)), true);
+    assert!(events.iter().all(|event| event.kind != UiEventKind::Click));
+
+    let mut button = GameObject::new(0.0, 0.0, Some("Button".to_string()));
+    let mut ui = default_component("UIElement").unwrap();
+    ui.set("element_type", json!("Button"));
+    ui.set("interactable", json!(true));
+    ui.set("on_click", json!("start_game"));
+    ui.set_f64("x", 0.0);
+    ui.set_f64("y", 0.0);
+    ui.set_f64("width", 100.0);
+    ui.set_f64("height", 40.0);
+    button.add_component(ui);
+    let mut ui_entities = vec![button];
+    let events = ui_runtime.update_entity_interaction(&mut ui_entities, (10.0, 10.0), true);
+    assert!(events.iter().any(|event| event.kind == UiEventKind::Click));
+}
+
+#[test]
+fn production_polish_launcher_export_autosave_debugger_and_demo() {
+    let tmp = temp_dir("polish-demo");
+    AssetTools::ensure_project_folders(&tmp).unwrap();
+    let created = ProjectTemplates::create(&tmp, "complete_demo").unwrap();
+    assert!(
+        created
+            .iter()
+            .any(|path| path.to_string_lossy().contains("Demo_Game"))
+    );
+    assert!(tmp.join("scripts").join("DemoPlayer.rhai").exists());
+    assert!(
+        tmp.join("assets")
+            .join("data")
+            .join("ImpactSparks.particles.json")
+            .exists()
+    );
+
+    let mut game = Game::from_project(&tmp, true).unwrap();
+    game.load_scene("Demo_Game.scene").unwrap();
+    assert!(
+        game.units
+            .iter()
+            .any(|entity| entity.get_component("ParticleEmitter").is_some())
+    );
+    game.run_headless_once(1.0 / 60.0);
+    assert!(game.profiler.counters.contains_key("Particles"));
+    assert!(
+        game.script_debugger
+            .active_scripts
+            .iter()
+            .any(|script| script.ends_with("DemoPlayer.rhai"))
+    );
+
+    let mut debugger = ScriptDebugger::default();
+    debugger.refresh(&game.rhai_script_runtime, &tmp, &game.units);
+    assert!(!debugger.active_scripts.is_empty());
+    assert!(!debugger.has_errors());
+
+    let mut launcher = EguiProjectLauncher::new(temp_dir("launcher-polish"));
+    launcher.settings.validate_on_open = true;
+    let repair_notes = launcher.repair_project(&tmp).unwrap();
+    assert!(!repair_notes.is_empty());
+    let report =
+        RuntimeExporter::export_with_profile(&tmp, tmp.join("exports"), ExportProfile::Release)
+            .unwrap();
+    assert!(report.release_optimized);
+    assert!(
+        report.validation_errors.is_empty(),
+        "{:?}",
+        report.validation_errors
+    );
+
+    assert!(matches!(game.autosave_manager.health(), "empty" | "ready"));
+    game.autosave_manager.save(&mut game.units).unwrap();
+    assert_eq!(game.autosave_manager.health(), "ready");
+    assert!(!game.autosave_manager.recover_entities().unwrap().is_empty());
+
+    game.audio_mixer.set_bus_fade("Music", 0.25, 0.5);
+    game.audio_mixer.tick_fades(0.5);
+    assert!(game.audio_mixer.buses["Music"].volume <= 1.0);
+    game.diagnostics.push_warning("asset fallback used");
+    assert!(game.diagnostics.stability_score() <= 1.0);
 }
 
 #[test]

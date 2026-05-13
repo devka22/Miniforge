@@ -531,6 +531,33 @@ fn on_destroy() {{
             "blend_mode": "alpha",
             "render_queue": 0,
             "texture": null,
+            "lighting": false,
+            "fog": false,
+            "roughness": 0.5,
+            "emission": [0, 0, 0],
+            "fallback": "Default",
+        })
+    }
+
+    pub fn template_particle_preset(name: &str) -> Value {
+        let mut preset = crate::systems::particle_system::default_particle_emitter();
+        if let Some(map) = preset.as_object_mut() {
+            map.insert("version".to_string(), json!(ENGINE_VERSION));
+            map.insert("kind".to_string(), json!("MiniForgeParticlePreset"));
+            map.insert("name".to_string(), json!(name));
+        }
+        preset
+    }
+
+    pub fn template_shader(shader_name: &str) -> Value {
+        json!({
+            "version": ENGINE_VERSION,
+            "kind": "MiniForgeShader2D",
+            "name": shader_name,
+            "source": format!("builtin://{shader_name}"),
+            "supports_lighting": shader_name.contains("lit"),
+            "supports_fog": shader_name.contains("fog"),
+            "fallback": "sprite_default",
         })
     }
 
@@ -761,6 +788,23 @@ fn on_destroy() {{
         let safe = Self::safe_name(name, "Material");
         let path = Self::unique_path(paths.data, &format!("{safe}.material.json"));
         Self::create_json_file(path, &Self::template_material(&safe), true)
+    }
+
+    pub fn create_particle_preset(
+        project_path: impl AsRef<Path>,
+        name: &str,
+    ) -> io::Result<PathBuf> {
+        let paths = Self::get_project_paths(project_path);
+        let safe = Self::safe_name(name, "Particles");
+        let path = Self::unique_path(paths.data, &format!("{safe}.particles.json"));
+        Self::create_json_file(path, &Self::template_particle_preset(&safe), true)
+    }
+
+    pub fn create_shader(project_path: impl AsRef<Path>, name: &str) -> io::Result<PathBuf> {
+        let paths = Self::get_project_paths(project_path);
+        let safe = Self::safe_name(name, "sprite_lit_fog");
+        let path = Self::unique_path(paths.data, &format!("{safe}.shader.json"));
+        Self::create_json_file(path, &Self::template_shader(&safe), true)
     }
 
     pub fn create_special_folder(

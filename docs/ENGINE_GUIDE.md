@@ -34,6 +34,11 @@ cargo run --bin miniforge -- --headless-once
 - `EditorCommand`: snapshots y Command Pattern para undo/redo de operaciones del editor.
 - `TileBrush`: pencil, eraser, fill, rectangle y collision brush sobre `TilemapLayers`.
 - `RuntimeExporter`: empaqueta proyecto en `build/debug` o `build/release` con manifest runtime.
+- `AnimationEditor`: timeline, clips, keyframes, preview y transiciones de Animator.
+- `ParticleSystem`: emitters con burst/loop, velocity, lifetime, size y preview en editor.
+- `MaterialLibrary`: materiales 2D editables, shaders builtin y soporte lighting/fog.
+- `UiRuntime`: layout responsive, hover/click y comandos para botones.
+- `ScriptDebugger`: errores Rhai, scripts activos, trazas de funciones y reload.
 - `RTSSystem`: economia, produccion, construccion, fog of war, combate tactico, auto-queue por recetas y destruccion.
 - `GameplaySystem`: AI, spawners, timers, tweens, estado, status effects, interacciones y NavAgent.
 
@@ -103,10 +108,15 @@ Las rutas usan A*, flow fields, line-of-sight, influence maps y rutas threat-awa
 | Arquitectura por componentes | `GameObject`, `Component`, `ComponentRegistry`, `InspectorEditor` |
 | Prefabs + overrides | `prefab_manager`, `prefab_overrides`, `advanced_prefabs` |
 | Scripting Rhai | `rhai_scripting`, scripts `.rhai`, eventos `on_start/on_update/on_key_down/on_collision_enter/on_destroy` |
+| Debug scripts | `script_debugger`, errores runtime, trazas por linea, reload y scripts activos |
+| Animation Editor | `animation_editor`, `animation_graph`, clips, keyframes, timeline, preview y transitions |
+| Particulas | `ParticleSystem`, `ParticleEmitter`, burst/loop, velocity/lifetime/size y preview |
 | Visual scripting | `visual_scripting`, assets `.mfgraph`, contadores en Profiler |
 | Fisica 2D | `PhysicsSystem`, rect/circle/polygon colliders, triggers, layers, raycasts, rigidbodies, gravedad, friccion y rebote |
 | Escenas | `SceneManager`, load/unload/restart, aditivas, transiciones, DontDestroyOnLoad y scene stack |
 | Audio | `AudioSystem`, `AudioMixer`, comandos Kira para music/sfx/volume/fade |
+| Materiales/shaders | `MaterialLibrary`, `.material.json`, `.shader.json`, lighting/fog/fallbacks |
+| UI Runtime | `UiRuntime`, `UiCanvasRoot`, anchors responsive, hover/click events |
 | Asset browser + GUID | `AssetDatabase`, `AssetPreview`, `FileBrowser`, panel Assets del editor |
 | Profiler y debug | `Profiler`, `Diagnostics`, `DeveloperConsole`, pestaña Profiler |
 | Jerarquia + inspector | `draw_hierarchy`, `draw_inspector`, `SceneViewTools` |

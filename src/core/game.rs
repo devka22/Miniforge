@@ -31,6 +31,7 @@ use crate::engine::game_clock::GameClock;
 use crate::engine::input_map::InputMap;
 use crate::engine::inspector_editor::InspectorEditor;
 use crate::engine::manifest_builder::ManifestBuilder;
+use crate::engine::material_system::MaterialLibrary;
 use crate::engine::play_mode_manager::PlayModeManager;
 use crate::engine::prefab_manager::PrefabManager;
 use crate::engine::profiler::Profiler;
@@ -43,6 +44,7 @@ use crate::engine::runtime_exporter::{ExportProfile, RuntimeExportReport, Runtim
 use crate::engine::scene_manager::SceneManager;
 use crate::engine::scene_save_manager::SceneSaveManager;
 use crate::engine::scene_validator::SceneValidator;
+use crate::engine::script_debugger::ScriptDebugger;
 use crate::engine::spatial_index::SpatialIndex;
 use crate::engine::tags_layers_manager::TagsLayersManager;
 use crate::engine::tile_brush::{TileBrush, TileBrushMode};
@@ -50,6 +52,7 @@ use crate::engine::tilemap_layers::TilemapLayers;
 use crate::engine::ui_canvas::{
     UiCanvasElement, UiCanvasRoot, UiRect, push_canvas, ui_canvases_from_value,
 };
+use crate::engine::ui_runtime::UiRuntime;
 use crate::engine::upgrade_manifest::EngineUpgradeManifest;
 use crate::engine::visual_scripting::VisualScriptRuntime;
 use crate::engine::world::World;
@@ -59,6 +62,7 @@ use crate::map::pathfinding::Point;
 use crate::systems::animation_system::AnimationSystem;
 use crate::systems::gameplay_system::GameplaySystem;
 use crate::systems::movement_system::MovementSystem;
+use crate::systems::particle_system::ParticleSystem;
 use crate::systems::physics_system::{PhysicsEventPhase, PhysicsSystem};
 use crate::systems::rts_system::RTSSystem;
 
@@ -102,12 +106,16 @@ pub struct Game {
     pub diagnostics: Diagnostics,
     pub audio_mixer: AudioMixer,
     pub animation_graphs: AnimationGraphLibrary,
+    pub material_library: MaterialLibrary,
     pub visual_script_runtime: VisualScriptRuntime,
     pub rhai_script_runtime: RhaiScriptRuntime,
+    pub script_debugger: ScriptDebugger,
+    pub ui_runtime: UiRuntime,
     pub play_mode_manager: PlayModeManager,
     pub gameplay_system: GameplaySystem,
     pub rts_system: RTSSystem,
     pub physics_system: PhysicsSystem,
+    pub particle_system: ParticleSystem,
     pub advanced_prefabs: AdvancedPrefabSystem,
     pub archetypes: ArchetypeLibrary,
     pub upgrade_manifest: EngineUpgradeManifest,
@@ -205,12 +213,16 @@ impl Game {
             diagnostics: Diagnostics::default(),
             audio_mixer: AudioMixer::new(),
             animation_graphs: AnimationGraphLibrary::new(),
+            material_library: MaterialLibrary::default(),
             visual_script_runtime: VisualScriptRuntime::default(),
             rhai_script_runtime: RhaiScriptRuntime::new(&project_path),
+            script_debugger: ScriptDebugger::default(),
+            ui_runtime: UiRuntime::default(),
             play_mode_manager: PlayModeManager::default(),
             gameplay_system: GameplaySystem::default(),
             rts_system: RTSSystem::default(),
             physics_system: PhysicsSystem::new(),
+            particle_system: ParticleSystem::default(),
             advanced_prefabs: AdvancedPrefabSystem::default(),
             archetypes: ArchetypeLibrary::with_defaults(),
             upgrade_manifest: EngineUpgradeManifest::new(),
@@ -333,6 +345,11 @@ impl Game {
         self.profiler
             .record_system("Animation", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
+        self.particle_system
+            .update_entities(&self.units, dt, &self.mode);
+        self.profiler
+            .record_system("Particles", marker.elapsed().as_secs_f64() * 1000.0);
+        marker = Instant::now();
         self.visual_script_runtime
             .update_entities(&mut self.units, dt, &self.mode);
         self.profiler
@@ -408,6 +425,16 @@ impl Game {
             .set_counter("RhaiReloads", self.rhai_script_runtime.reload_count);
         self.profiler
             .set_counter("RhaiErrors", self.rhai_script_runtime.last_errors.len());
+        self.profiler.set_counter(
+            "Particles",
+            self.particle_system
+                .stats
+                .get("particles")
+                .copied()
+                .unwrap_or(0),
+        );
+        self.script_debugger
+            .refresh(&self.rhai_script_runtime, &self.project_path, &self.units);
         self.profiler
             .set_counter("FixedTicks", clock_advance.fixed_steps);
         self.profiler

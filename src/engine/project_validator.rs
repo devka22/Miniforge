@@ -78,27 +78,40 @@ impl ProjectValidator {
 
     fn validate_program_assets(&mut self, root: &PathBuf) {
         for path in walk_files(root) {
-            if path.extension().and_then(|value| value.to_str()) != Some("mfgraph") {
-                continue;
-            }
-            match AssetTools::read_json(&path) {
-                Ok(data) => {
-                    if data.get("nodes").and_then(Value::as_array).is_none() {
-                        self.errors
-                            .push(format!("Graph sin nodes: {}", path.display()));
+            match path.extension().and_then(|value| value.to_str()) {
+                Some("mfgraph") => match AssetTools::read_json(&path) {
+                    Ok(data) => {
+                        if data.get("nodes").and_then(Value::as_array).is_none() {
+                            self.errors
+                                .push(format!("Graph sin nodes: {}", path.display()));
+                        }
+                        if data
+                            .get("runtime")
+                            .and_then(Value::as_str)
+                            .is_some_and(|runtime| runtime != "rust_visual_graph")
+                        {
+                            self.warnings
+                                .push(format!("Graph con runtime desconocido: {}", path.display()));
+                        }
                     }
-                    if data
-                        .get("runtime")
-                        .and_then(Value::as_str)
-                        .is_some_and(|runtime| runtime != "rust_visual_graph")
-                    {
-                        self.warnings
-                            .push(format!("Graph con runtime desconocido: {}", path.display()));
+                    Err(error) => self
+                        .errors
+                        .push(format!("Graph invalido: {} | {error}", path.display())),
+                },
+                Some("rhai") => {
+                    let Ok(source) = fs::read_to_string(&path) else {
+                        self.errors
+                            .push(format!("Script Rhai ilegible: {}", path.display()));
+                        continue;
+                    };
+                    if let Err(error) = rhai::Engine::new().compile(rewrite_spawn_api(&source)) {
+                        self.errors.push(format!(
+                            "Script Rhai invalido: {} | {error}",
+                            path.display()
+                        ));
                     }
                 }
-                Err(error) => self
-                    .errors
-                    .push(format!("Graph invalido: {} | {error}", path.display())),
+                _ => {}
             }
         }
     }
@@ -165,6 +178,18 @@ impl ProjectValidator {
                 ));
             }
         }
+        for entity in entities {
+            if let Some(script) = &entity.script {
+                let exists = database
+                    .assets
+                    .values()
+                    .any(|asset| asset.relative_path.ends_with(script));
+                if !exists {
+                    self.warnings
+                        .push(format!("Script referenciado no existe: {script}"));
+                }
+            }
+        }
     }
 
     fn validate_build_settings(&mut self, settings: &Path, scenes: &Path) {
@@ -212,4 +237,8 @@ fn walk_files(root: &Path) -> Vec<PathBuf> {
         }
     }
     files
+}
+
+fn rewrite_spawn_api(source: &str) -> String {
+    source.replace("spawn(", "spawn_entity(")
 }

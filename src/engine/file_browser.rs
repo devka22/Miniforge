@@ -300,6 +300,14 @@ impl FileBrowser {
         AssetTools::create_material(&self.project_path, name)
     }
 
+    pub fn create_particle_preset(&self, name: &str) -> io::Result<PathBuf> {
+        AssetTools::create_particle_preset(&self.project_path, name)
+    }
+
+    pub fn create_shader(&self, name: &str) -> io::Result<PathBuf> {
+        AssetTools::create_shader(&self.project_path, name)
+    }
+
     pub fn selected_asset_value(&self) -> serde_json::Value {
         if let Some(asset) = &self.selected_asset {
             json!({
@@ -340,6 +348,12 @@ fn asset_type(path: &Path) -> String {
     }
     if filename.ends_with(".material.json") {
         return "Material".to_string();
+    }
+    if filename.ends_with(".particles.json") {
+        return "ParticlePreset".to_string();
+    }
+    if filename.ends_with(".shader.json") {
+        return "Shader".to_string();
     }
     if filename.ends_with(".ui.prefab") {
         return "UI".to_string();

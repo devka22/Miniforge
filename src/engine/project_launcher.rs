@@ -2,7 +2,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::engine::asset_tools::AssetTools;
+use crate::engine::manifest_builder::ManifestBuilder;
 use crate::engine::project_templates::ProjectTemplates;
+use crate::engine::project_validator::ProjectValidator;
 use crate::engine::runtime_exporter::{ExportProfile, RuntimeExportReport, RuntimeExporter};
 
 #[derive(Debug, Clone, Default)]
@@ -55,6 +57,7 @@ pub enum LauncherAction {
     NewProject(PathBuf),
     OpenProject(PathBuf),
     ExportGame(PathBuf),
+    RepairProject(PathBuf),
 }
 
 #[derive(Debug, Clone)]
@@ -65,8 +68,26 @@ pub struct EguiProjectLauncher {
     pub selected_template: LauncherTemplate,
     pub recent_projects: Vec<PathBuf>,
     pub export_profile: ExportProfile,
+    pub settings: LauncherSettings,
     pub status: String,
     pub last_action: Option<LauncherAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LauncherSettings {
+    pub safe_mode: bool,
+    pub validate_on_open: bool,
+    pub remember_recent: bool,
+}
+
+impl Default for LauncherSettings {
+    fn default() -> Self {
+        Self {
+            safe_mode: true,
+            validate_on_open: true,
+            remember_recent: true,
+        }
+    }
 }
 
 impl Default for EguiProjectLauncher {
@@ -84,6 +105,7 @@ impl EguiProjectLauncher {
             selected_template: LauncherTemplate::TopDown,
             recent_projects: Vec::new(),
             export_profile: ExportProfile::Debug,
+            settings: LauncherSettings::default(),
             status: String::new(),
             last_action: None,
         }
@@ -103,8 +125,22 @@ impl EguiProjectLauncher {
     pub fn open_project(&mut self, path: impl AsRef<Path>) -> io::Result<PathBuf> {
         let path = path.as_ref().to_path_buf();
         AssetTools::ensure_project_folders(&path)?;
-        self.record_recent(path.clone());
-        self.status = format!("Proyecto abierto: {}", path.display());
+        let mut validation_status = None;
+        if self.settings.validate_on_open {
+            let mut validator = ProjectValidator::default();
+            validator.validate(&path);
+            if !validator.errors.is_empty() {
+                validation_status = Some(format!(
+                    "Proyecto abierto con errores: {}",
+                    validator.errors.join("; ")
+                ));
+            }
+        }
+        if self.settings.remember_recent {
+            self.record_recent(path.clone());
+        }
+        self.status =
+            validation_status.unwrap_or_else(|| format!("Proyecto abierto: {}", path.display()));
         self.last_action = Some(LauncherAction::OpenProject(path.clone()));
         Ok(path)
     }
@@ -131,6 +167,37 @@ impl EguiProjectLauncher {
         self.status = format!("Export listo: {}", report.output_path.display());
         self.last_action = Some(LauncherAction::ExportGame(report.output_path.clone()));
         Ok(report)
+    }
+
+    pub fn repair_project(&mut self, path: impl AsRef<Path>) -> io::Result<Vec<String>> {
+        let path = path.as_ref();
+        AssetTools::ensure_project_folders(path)?;
+        let manifest = ManifestBuilder::build_manifest(path)?;
+        let mut validator = ProjectValidator::default();
+        validator.validate(path);
+        let mut notes = vec![format!(
+            "Manifest reconstruido con {} scripts",
+            manifest
+                .get("scripts")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0)
+        )];
+        notes.extend(
+            validator
+                .warnings
+                .iter()
+                .map(|warning| format!("Warning: {warning}")),
+        );
+        notes.extend(
+            validator
+                .errors
+                .iter()
+                .map(|error| format!("Error: {error}")),
+        );
+        self.status = format!("Repair listo: {} notas", notes.len());
+        self.last_action = Some(LauncherAction::RepairProject(path.to_path_buf()));
+        Ok(notes)
     }
 
     pub fn record_recent(&mut self, path: PathBuf) {
@@ -209,6 +276,23 @@ impl EguiProjectLauncher {
                         Err(error) => self.status = error.to_string(),
                     }
                 }
+
+                if ui.button("Repair project").clicked() {
+                    let path = self
+                        .recent_projects
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(AssetTools::default_project_path);
+                    match self.repair_project(&path) {
+                        Ok(_) => action = Some(LauncherAction::RepairProject(path)),
+                        Err(error) => self.status = error.to_string(),
+                    }
+                }
+
+                ui.separator();
+                ui.checkbox(&mut self.settings.safe_mode, "Safe mode");
+                ui.checkbox(&mut self.settings.validate_on_open, "Validate on open");
+                ui.checkbox(&mut self.settings.remember_recent, "Remember recent");
 
                 if !self.status.is_empty() {
                     ui.separator();

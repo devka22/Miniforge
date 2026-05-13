@@ -64,6 +64,22 @@ pub struct RhaiRunReport {
     pub errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ScriptTraceEntry {
+    pub path: PathBuf,
+    pub line: usize,
+    pub function: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ScriptDebugSnapshot {
+    pub watcher_active: bool,
+    pub reload_count: usize,
+    pub active_scripts: Vec<String>,
+    pub errors: Vec<String>,
+    pub traces: Vec<ScriptTraceEntry>,
+}
+
 impl RhaiRunReport {
     pub fn merge(&mut self, other: RhaiRunReport) {
         self.scripts_run += other.scripts_run;
@@ -257,6 +273,49 @@ impl RhaiScriptRuntime {
             .lock()
             .map(|host| host.inputs_pressed.contains(key))
             .unwrap_or(false)
+    }
+
+    pub fn reload_all(&mut self) -> usize {
+        let count = self.cache.len();
+        self.cache.clear();
+        self.reload_count += count.max(1);
+        count
+    }
+
+    pub fn active_scripts(&self, entities: &[GameObject]) -> Vec<String> {
+        let mut scripts = self
+            .collect_script_calls(entities)
+            .into_iter()
+            .flat_map(|call| call.script_paths)
+            .map(|path| {
+                path.strip_prefix(&self.project_path)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        scripts.sort();
+        scripts.dedup();
+        scripts
+    }
+
+    pub fn debug_snapshot(
+        &self,
+        project_path: impl AsRef<Path>,
+        entities: &[GameObject],
+    ) -> ScriptDebugSnapshot {
+        let mut traces = Vec::new();
+        for script in self.active_scripts(entities) {
+            let path = project_path.as_ref().join(&script);
+            traces.extend(trace_script_lines(&path));
+        }
+        ScriptDebugSnapshot {
+            watcher_active: self.watcher_active,
+            reload_count: self.reload_count,
+            active_scripts: self.active_scripts(entities),
+            errors: self.last_errors.clone(),
+            traces,
+        }
     }
 
     pub fn update_entities(
@@ -948,4 +1007,30 @@ fn is_ident_byte(byte: u8) -> bool {
 
 fn normalize_path(path: impl AsRef<Path>) -> PathBuf {
     path.as_ref().components().collect()
+}
+
+fn trace_script_lines(path: &Path) -> Vec<ScriptTraceEntry> {
+    let Ok(source) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    source
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let line = line.trim_start();
+            let rest = line
+                .strip_prefix("fn ")
+                .or_else(|| line.strip_prefix("private fn "))
+                .or_else(|| line.strip_prefix("public fn "))?;
+            let function = rest.split('(').next()?.trim();
+            if function.is_empty() {
+                return None;
+            }
+            Some(ScriptTraceEntry {
+                path: path.to_path_buf(),
+                line: index + 1,
+                function: function.to_string(),
+            })
+        })
+        .collect()
 }

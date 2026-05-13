@@ -71,6 +71,11 @@ cargo test
 ## Production Editor 0.7
 
 - Inspector editable por campos reales: transform, stats, inventory, AI, RTS, dialogue, quest, tweens, tilemap collider y componentes custom basados en JSON.
+- Animation Editor backend: clips con keyframes, timeline, preview, estados de Animator y transiciones por parametros.
+- Particle System: componente `ParticleEmitter`, burst/loop, velocity/lifetime/size/color y preview estable en editor/runtime.
+- Shader/Material 2D: materiales editables, shaders builtin `sprite_default` / `sprite_lit_fog`, lighting/fog flags y fallback de material.
+- UI Runtime: canvas responsive, botones/paneles/labels/images, hover/click events y compatibilidad con `UIElement`.
+- Script Debugger: errores runtime Rhai, trazas de funciones por linea, reload manual y panel de scripts activos.
 - Add/Remove Component desde Inspector con validacion de tipos, componentes core protegidos y fallback seguro.
 - Undo/redo con Command Pattern para mover/rotar/escalar entidades, editar inspector, crear, eliminar, duplicar, drop de assets y pintar tilemaps.
 - Tile Palette con `Pencil`, `Eraser`, `Fill`, `Rect` y `Collision`, grid overlay y soporte de undo.
@@ -80,6 +85,7 @@ cargo test
 - **UI Canvas de escena**: modelo con Panel/Button/Label/Image, anchors y preview responsive en Inspector cuando no hay entidad seleccionada; menu `Create > UI Canvas HUD/Label`.
 - **Importadores**: `SpriteSheetImporter` (grid PNG + sidecar `.spritesheet.json`), `AtlasImporter` (JSON con regiones nombradas), `WaveformCache` para preview WAV en Asset Preview.
 - **Autosave**: guardado atomico; `Game::recover_from_autosave()` y menu `File > Recover Autosave`; al abrir proyecto se valida estructura y se avisa si existe autosave.
+- **Autosave reforzado**: backup `.bak`, health status y recuperacion desde backup si el archivo principal falla.
 - InputMap visual incluye acciones `Move`, `Attack`, `Jump`, `Interact`, `Pause`, `Select`, `Command` y `CameraPan` con teclado, mouse y gamepad cuando aplica.
 
 ## Programacion Dentro Del Motor
@@ -124,6 +130,14 @@ Desde el editor Rust:
 Crear archivos base para un proyecto RTS:
 
 usa `Command Palette > Create RTS template files` o llama `game.create_project_template("RTS")`.
+
+Demo completa de produccion:
+
+```rust
+game.create_project_template("complete_demo")?;
+```
+
+Genera menu, escena jugable, UI, audio events, save slot, RTS starter, scripts Rhai, particulas, materiales, shader lit/fog y prefabs demo.
 
 O desde codigo Rust:
 

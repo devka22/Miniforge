@@ -283,6 +283,12 @@ fn detect_asset_type(path: &Path) -> String {
     if filename.ends_with(".material.json") {
         return "Material".to_string();
     }
+    if filename.ends_with(".particles.json") {
+        return "ParticlePreset".to_string();
+    }
+    if filename.ends_with(".shader.json") {
+        return "Shader".to_string();
+    }
     match path
         .extension()
         .and_then(|value| value.to_str())
@@ -330,6 +336,7 @@ fn default_import_settings(path: &Path) -> Value {
             "preload": true,
         }),
         "Material" => json!({"shader": "sprite_default", "include_in_build": true}),
+        "ParticlePreset" => json!({"include_in_build": true, "runtime": "particle_system"}),
         "RhaiScript" => json!({"runtime": "rhai", "include_in_build": true, "hot_reload": true}),
         "VisualGraph" => json!({"runtime": "rust_visual_graph", "include_in_build": true}),
         "SpriteSheet" => json!({"include_in_build": true, "grid": {"w": 32, "h": 32}}),

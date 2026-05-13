@@ -21,6 +21,9 @@ impl ProjectTemplates {
             "rts" => Self::rts(project_path),
             "topdown" | "top_down" => Self::topdown(project_path),
             "platformer" => Self::platformer(project_path),
+            "demo" | "complete_demo" | "playable_demo" => {
+                Self::complete_playable_demo(project_path)
+            }
             "actionrpg" | "action_rpg" => Self::action_rpg(project_path),
             "survival" => Self::survival(project_path),
             _ => Self::empty(project_path),
@@ -117,6 +120,82 @@ impl ProjectTemplates {
         ])
     }
 
+    pub fn complete_playable_demo(
+        project_path: impl AsRef<Path>,
+    ) -> io::Result<Vec<std::path::PathBuf>> {
+        let project_path = project_path.as_ref().to_path_buf();
+        AssetTools::ensure_project_folders(&project_path)?;
+        let paths = AssetTools::get_project_paths(&project_path);
+        let mut created = Vec::new();
+
+        let menu = AssetTools::create_scene(&project_path, "Demo_Menu")?;
+        AssetTools::write_json(&menu, &Self::demo_menu_scene("Demo_Menu"))?;
+        created.push(menu);
+
+        let game = AssetTools::create_scene(&project_path, "Demo_Game")?;
+        AssetTools::write_json(&game, &Self::demo_game_scene("Demo_Game"))?;
+        created.push(game);
+
+        created.push(AssetTools::create_rhai_script(&project_path, "DemoPlayer")?);
+        AssetTools::create_file(
+            paths.scripts.join("DemoPlayer.rhai"),
+            r#"fn on_start() { ui_text("Commander ready"); }
+fn on_update(dt) {
+    if input_pressed("A") { move(-4.0 * dt, 0.0); }
+    if input_pressed("D") { move(4.0 * dt, 0.0); }
+    if input_pressed("W") { move(0.0, -4.0 * dt); }
+    if input_pressed("S") { move(0.0, 4.0 * dt); }
+}
+fn on_key_down(key) {
+    if key == "Space" { spawn("SparkBurst", entity_id, 0); play_sound("ui_confirm"); }
+    if key == "Escape" { load_scene("Demo_Menu.scene"); }
+}
+fn on_collision_enter(other) { set_ui_text("HUD_Status", "Contact: " + other); }
+fn on_destroy() { play_sound("unit_lost"); }
+"#,
+            true,
+        )?;
+
+        created.push(AssetTools::create_rhai_script(&project_path, "DemoMenu")?);
+        AssetTools::create_file(
+            paths.scripts.join("DemoMenu.rhai"),
+            r#"fn on_key_down(key) {
+    if key == "Enter" { load_scene("Demo_Game.scene"); }
+}
+"#,
+            true,
+        )?;
+
+        created.push(AssetTools::create_visual_graph(
+            &project_path,
+            "DemoButtonClick",
+        )?);
+        created.push(AssetTools::create_particle_preset(
+            &project_path,
+            "ImpactSparks",
+        )?);
+        created.push(AssetTools::create_shader(&project_path, "sprite_lit_fog")?);
+        created.push(AssetTools::create_material(
+            &project_path,
+            "DemoLitMaterial",
+        )?);
+        created.push(AssetTools::create_audio_event(&project_path, "ui_confirm")?);
+        created.push(AssetTools::create_audio_event(&project_path, "unit_lost")?);
+        created.push(AssetTools::create_prefab(&project_path, "DemoWorker")?);
+        created.push(AssetTools::create_prefab(&project_path, "DemoEnemy")?);
+        AssetTools::write_json(
+            paths.data.join("DemoSaveSlot.json"),
+            &json!({
+                "kind": "MiniForgeDemoSave",
+                "checkpoint": "start",
+                "resources": {"Gold": 500.0, "Wood": 250.0},
+                "unlocked": ["worker", "soldier", "barracks"]
+            }),
+        )?;
+        created.push(paths.data.join("DemoSaveSlot.json"));
+        Ok(created)
+    }
+
     fn rts_scene_data(scene_name: &str) -> Value {
         let mut entities = vec![
             Self::rts_controller(1),
@@ -141,6 +220,109 @@ impl ProjectTemplates {
             "starter_features": ["economy", "production", "fog_of_war", "formation_move"]
         });
         data
+    }
+
+    fn demo_menu_scene(scene_name: &str) -> Value {
+        let mut title = GameObject::new(0.0, 0.0, Some("MenuTitle".to_string()));
+        title.script = Some("DemoMenu.rhai".to_string());
+        title.add_component(default_component("UIElement").expect("UIElement"));
+        if let Some(ui) = title.get_component_mut("UIElement") {
+            ui.set("element_type", json!("Label"));
+            ui.set("text", json!("MiniForge Complete Demo"));
+            ui.set_f64("x", 80.0);
+            ui.set_f64("y", 60.0);
+            ui.set_f64("width", 420.0);
+            ui.set_f64("height", 48.0);
+        }
+        let mut start = GameObject::new(0.0, 0.0, Some("StartButton".to_string()));
+        start.add_component(default_component("UIElement").expect("UIElement"));
+        if let Some(ui) = start.get_component_mut("UIElement") {
+            ui.set("element_type", json!("Button"));
+            ui.set("text", json!("Press Enter / Click Start"));
+            ui.set("interactable", json!(true));
+            ui.set("on_click", json!("Demo_Game.scene"));
+            ui.set_f64("x", 96.0);
+            ui.set_f64("y", 132.0);
+            ui.set_f64("width", 260.0);
+            ui.set_f64("height", 48.0);
+        }
+        let mut data = AssetTools::template_scene(scene_name);
+        data["entities"] = json!([title.serialize(), start.serialize()]);
+        data["ui_canvases"] =
+            json!([crate::engine::ui_canvas::UiCanvasRoot::default_hud().to_value()]);
+        data
+    }
+
+    fn demo_game_scene(scene_name: &str) -> Value {
+        let mut entities = vec![
+            Self::demo_player(),
+            Self::rts_controller(1),
+            Self::rts_building("CommandCenter", 8.0, 8.0, 1),
+            Self::rts_worker("Worker_A", 10.0, 8.0, 1),
+            Self::rts_worker("Worker_B", 10.0, 9.0, 1),
+            Self::rts_resource("GoldNode_A", 13.0, 8.0),
+            Self::rts_building("EnemyBase", 28.0, 20.0, 2),
+            Self::rts_soldier("EnemyScout", 25.0, 19.0, 2),
+            Self::demo_particles(),
+            Self::demo_hud_status(),
+        ];
+        let serialized = entities
+            .iter_mut()
+            .map(GameObject::serialize)
+            .collect::<Vec<_>>();
+        let mut data = AssetTools::template_scene(scene_name);
+        data["camera"] = json!({"x": 120.0, "y": 120.0, "zoom": 1.05});
+        data["entities"] = Value::Array(serialized);
+        data["settings"] = json!({
+            "genre": "complete_demo",
+            "shows": ["menus", "gameplay", "ui", "audio", "save_load", "rts", "scripting", "particles", "animations"]
+        });
+        data["ui_canvases"] =
+            json!([crate::engine::ui_canvas::UiCanvasRoot::default_hud().to_value()]);
+        data
+    }
+
+    fn demo_player() -> GameObject {
+        let mut player = GameObject::new_unit(5.0, 5.0, Some("DemoPlayer".to_string()));
+        player.tag = "Player".to_string();
+        player.layer = "Units".to_string();
+        player.script = Some("DemoPlayer.rhai".to_string());
+        player.add_component(default_component("Health").expect("Health"));
+        player.add_component(default_component("Stats").expect("Stats"));
+        player.add_component(default_component("Animator").expect("Animator"));
+        player.add_component(default_component("ParticleEmitter").expect("ParticleEmitter"));
+        player.add_component(default_component("Saveable").expect("Saveable"));
+        player.add_component(default_component("Material2D").expect("Material2D"));
+        if let Some(save) = player.get_component_mut("Saveable") {
+            save.set("save_key", json!("demo_player"));
+        }
+        player.sync_to_components();
+        player
+    }
+
+    fn demo_particles() -> GameObject {
+        let mut particles = GameObject::new(6.0, 5.0, Some("ImpactSparksEmitter".to_string()));
+        particles.add_component(default_component("ParticleEmitter").expect("ParticleEmitter"));
+        if let Some(emitter) = particles.get_component_mut("ParticleEmitter") {
+            emitter.set("looped", json!(true));
+            emitter.set("rate", json!(24.0));
+            emitter.set("burst_count", json!(12));
+        }
+        particles
+    }
+
+    fn demo_hud_status() -> GameObject {
+        let mut hud = GameObject::new(0.0, 0.0, Some("HUD_Status".to_string()));
+        hud.add_component(default_component("UIElement").expect("UIElement"));
+        if let Some(ui) = hud.get_component_mut("UIElement") {
+            ui.set("element_type", json!("Label"));
+            ui.set("text", json!("Gather gold, build units, survive."));
+            ui.set_f64("x", 24.0);
+            ui.set_f64("y", 24.0);
+            ui.set_f64("width", 360.0);
+            ui.set_f64("height", 36.0);
+        }
+        hud
     }
 
     fn rts_controller(team_id: i64) -> GameObject {

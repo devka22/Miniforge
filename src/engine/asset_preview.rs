@@ -15,6 +15,7 @@ pub enum AssetPreviewKind {
     Data,
     SpriteSheet,
     Atlas,
+    ParticlePreset,
     Other,
 }
 
@@ -31,6 +32,7 @@ impl AssetPreviewKind {
             Self::Data => "Data",
             Self::SpriteSheet => "SpriteSheet",
             Self::Atlas => "Atlas",
+            Self::ParticlePreset => "ParticlePreset",
             Self::Other => "Asset",
         }
     }
@@ -155,6 +157,7 @@ fn preview_kind(asset_type: &str) -> AssetPreviewKind {
         "VisualGraph" => AssetPreviewKind::VisualGraph,
         "RhaiScript" => AssetPreviewKind::RhaiScript,
         "Data" | "Tilemap" | "Font" | "Video" => AssetPreviewKind::Data,
+        "ParticlePreset" => AssetPreviewKind::ParticlePreset,
         "SpriteSheet" => AssetPreviewKind::SpriteSheet,
         "Atlas" => AssetPreviewKind::Atlas,
         _ => AssetPreviewKind::Other,
