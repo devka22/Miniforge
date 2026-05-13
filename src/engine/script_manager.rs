@@ -14,13 +14,16 @@ impl ScriptManager {
         self.script_paths.clear();
         for root in [
             project_path.as_ref().join("scripts"),
-            project_path.as_ref().join("systems"),
+            project_path.as_ref().join("scripts").join("visual_graphs"),
         ] {
             if !root.exists() {
                 continue;
             }
             for path in walk_files(&root)? {
-                if path.extension().and_then(|value| value.to_str()) != Some("py") {
+                if !matches!(
+                    path.extension().and_then(|value| value.to_str()),
+                    Some("mfgraph" | "rhai")
+                ) {
                     continue;
                 }
                 let name = path

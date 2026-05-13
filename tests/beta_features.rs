@@ -9,6 +9,7 @@ use miniforge::engine::asset_importers::{SpriteSheetImporter, WaveformCache};
 use miniforge::engine::asset_tools::AssetTools;
 use miniforge::engine::camera::Camera;
 use miniforge::engine::packaging_manager::PackagingManager;
+use miniforge::engine::profiler::Profiler;
 use miniforge::engine::runtime_exporter::ExportProfile;
 use miniforge::engine::runtime_manifest_loader::RuntimeManifestLoader;
 use miniforge::engine::scene_manager::SceneManager;
@@ -75,8 +76,7 @@ fn scene_save_manager_incremental_merge() {
     let scenes = proj.join("scenes");
     fs::create_dir_all(&scenes).unwrap();
     fs::create_dir_all(proj.join("project")).unwrap();
-    AssetTools::write_json(&proj.join("project").join("project.json"), &json!({}))
-        .unwrap();
+    AssetTools::write_json(&proj.join("project").join("project.json"), &json!({})).unwrap();
 
     let mut sm = SceneManager::new(&proj);
     sm.current_scene = "test.scene".to_string();
@@ -96,16 +96,7 @@ fn scene_save_manager_incremental_merge() {
     let mut mgr = SceneSaveManager::new();
     mgr.bootstrap_from_scene(&mut units, &tilemap);
     mgr.save_scene(
-        &sm,
-        &mut units,
-        &tilemap,
-        &camera,
-        "EDITOR",
-        "Select",
-        0,
-        1,
-        &grid,
-        &ui,
+        &sm, &mut units, &tilemap, &camera, "EDITOR", "Select", 0, 1, &grid, &ui,
     )
     .unwrap();
 
@@ -115,16 +106,7 @@ fn scene_save_manager_incremental_merge() {
     }
     mgr.note_entity_dirty(id_b);
     mgr.save_scene(
-        &sm,
-        &mut units,
-        &tilemap,
-        &camera,
-        "EDITOR",
-        "Select",
-        0,
-        1,
-        &grid,
-        &ui,
+        &sm, &mut units, &tilemap, &camera, "EDITOR", "Select", 0, 1, &grid, &ui,
     )
     .unwrap();
 
@@ -191,4 +173,15 @@ fn packaging_manager_creates_destination() {
     let report = PackagingManager::package_project(&proj, &dest, ExportProfile::Debug).unwrap();
     assert!(report.destination.exists());
     assert!(dest.join("runtime_manifest.json").exists());
+}
+
+#[test]
+fn profiler_reports_slowest_and_total() {
+    let mut p = Profiler::new();
+    p.record_system("Animation", 2.5);
+    p.record_system("RTS", 0.4);
+    let (name, ms) = p.slowest_system().unwrap();
+    assert_eq!(name, "Animation");
+    assert!((ms - 2.5).abs() < 0.001);
+    assert!((p.systems_time_total_ms() - 2.9).abs() < 0.001);
 }

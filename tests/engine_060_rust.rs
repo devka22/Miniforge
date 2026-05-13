@@ -30,9 +30,11 @@ use miniforge::engine::plugin_manager::PluginManager;
 use miniforge::engine::prefab_manager::PrefabManager;
 use miniforge::engine::prefab_overrides::PrefabOverrides;
 use miniforge::engine::profiler::Profiler;
+use miniforge::engine::project_launcher::{EguiProjectLauncher, LauncherTemplate};
 use miniforge::engine::project_templates::ProjectTemplates;
 use miniforge::engine::project_validator::ProjectValidator;
 use miniforge::engine::resource_manager::ResourceManager;
+use miniforge::engine::rhai_scripting::RhaiScriptRuntime;
 use miniforge::engine::runtime_exporter::{ExportProfile, RuntimeExporter};
 use miniforge::engine::scene_serializer::SceneSerializer;
 use miniforge::engine::scene_view_tools::SceneViewTools;
@@ -50,11 +52,11 @@ use miniforge::map::flow_field::FlowField;
 use miniforge::map::grid::Grid;
 use miniforge::map::pathfinding::{influence_map, threat_aware_astar};
 use miniforge::systems::animation_system::AnimationSystem;
-use miniforge::systems::audio_system::AudioSystem;
+use miniforge::systems::audio_system::{AudioCommandKind, AudioSystem};
 use miniforge::systems::camera_system::CameraSystem;
 use miniforge::systems::command_system::CommandSystem;
 use miniforge::systems::gameplay_system::GameplaySystem;
-use miniforge::systems::physics_system::PhysicsSystem;
+use miniforge::systems::physics_system::{PairType, PhysicsEventPhase, PhysicsSystem};
 use miniforge::systems::render_system::RenderSystem;
 use miniforge::systems::rts_system::RTSSystem;
 use serde_json::json;
@@ -129,7 +131,7 @@ fn prefab_override_diff() {
 #[test]
 fn script_editor_validates_syntax() {
     let mut editor = ScriptEditor {
-        lines: vec!["def broken(".to_string()],
+        lines: vec!["{\"nodes\": []}".to_string()],
         ..Default::default()
     };
     assert!(!editor.validate());
@@ -190,18 +192,22 @@ fn programming_environment_creates_graph_assets_and_attaches_without_engine_sour
 }
 
 #[test]
-fn rust_game_indexes_visual_graphs_and_separates_legacy_python() {
+fn rust_game_indexes_visual_graph_assets() {
     let tmp = temp_dir("graph-index");
     AssetTools::ensure_project_folders(&tmp).unwrap();
     let mut game = Game::from_project(&tmp, false).unwrap();
     let graph_path = game.create_program_asset("LogAndMove").unwrap();
-    AssetTools::create_script(&tmp, "LegacyOnly").unwrap();
+    let alias_path = AssetTools::create_script(&tmp, "AliasGraph").unwrap();
     game.refresh_assets().unwrap();
     assert!(game.asset_database.assets.values().any(|asset| {
         asset.asset_type == "VisualGraph"
             && graph_path.to_string_lossy().ends_with(&asset.relative_path)
     }));
-    assert!(game.legacy_python_asset_count() >= 1);
+    assert_eq!(
+        alias_path.extension().and_then(|value| value.to_str()),
+        Some("mfgraph")
+    );
+    assert!(game.visual_graph_asset_count() >= 2);
     let manifest = game.build_manifest().unwrap();
     assert!(
         manifest["scripts"]
@@ -210,13 +216,7 @@ fn rust_game_indexes_visual_graphs_and_separates_legacy_python() {
             .iter()
             .any(|entry| entry.as_str().unwrap_or_default().ends_with(".mfgraph"))
     );
-    assert!(
-        manifest["legacy_python_scripts"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|entry| entry.as_str().unwrap_or_default().ends_with(".py"))
-    );
+    assert!(manifest.get("legacy_runtime_scripts").is_none());
 }
 
 #[test]
@@ -310,6 +310,133 @@ fn visual_scripting_moves_entity() {
     VisualScriptRuntime::default().update_entities(&mut entities, 0.016, "PLAY");
     assert_eq!(entities[0].x, 3.0);
     assert_eq!(entities[0].y, 4.0);
+}
+
+#[test]
+fn rhai_scripts_drive_gameplay_events_and_hot_reload() {
+    let tmp = temp_dir("rhai-runtime");
+    AssetTools::ensure_project_folders(&tmp).unwrap();
+    let script = AssetTools::create_rhai_script(&tmp, "PlayerController").unwrap();
+    fs::write(
+        &script,
+        r#"
+fn on_start() {
+    set_position(2.0, 3.0);
+    ui_text("ready");
+}
+
+fn on_update(dt) {
+    if input_pressed("D") {
+        move(10.0 * dt, 0.0);
+    }
+}
+
+fn on_key_down(key) {
+    if key == "Space" {
+        spawn("Bullet", 7.0, 8.0);
+        play_sound("jump");
+        load_scene("Arena.scene");
+    }
+}
+
+fn on_collision_enter(other) {
+    set_ui_text("Hud", "hit " + other);
+}
+
+fn on_destroy() {
+    spawn("Poof", 1.0, 1.0);
+}
+"#,
+    )
+    .unwrap();
+
+    let mut player = GameObject::new(0.0, 0.0, Some("Player".to_string()));
+    player.script = Some("PlayerController.rhai".to_string());
+    let player_id = player.id;
+    let mut hud = GameObject::new(0.0, 0.0, Some("Hud".to_string()));
+    hud.add_component(default_component("UIElement").unwrap());
+    let mut entities = vec![player, hud];
+
+    let mut runtime = RhaiScriptRuntime::new(&tmp);
+    runtime.set_input_pressed("D", true);
+    let update_report = runtime.update_entities(&mut entities, 0.5, "PLAY");
+    assert!(
+        update_report.errors.is_empty(),
+        "{:?}",
+        update_report.errors
+    );
+    assert_eq!(entities[0].x, 7.0);
+    assert_eq!(entities[0].y, 3.0);
+    assert_eq!(
+        entities[0]
+            .get_component("UIElement")
+            .unwrap()
+            .get("text")
+            .and_then(|value| value.as_str()),
+        Some("ready")
+    );
+
+    let key_report = runtime.run_key_down(&mut entities, "Space");
+    assert_eq!(key_report.spawned.len(), 1);
+    assert!(key_report.sounds.contains(&"jump".to_string()));
+    assert!(
+        key_report
+            .scene_requests
+            .contains(&"Arena.scene".to_string())
+    );
+    assert!(entities.iter().any(|entity| entity.name == "Bullet"));
+    assert!(
+        entities
+            .iter()
+            .any(|entity| entity.name == "Audio_jump"
+                && entity.get_component("AudioSource").is_some())
+    );
+
+    let collision_report = runtime.run_collision_enter(&mut entities, player_id, "Wall");
+    assert_eq!(collision_report.ui_updates, 1);
+    let hud = entities.iter().find(|entity| entity.name == "Hud").unwrap();
+    assert_eq!(
+        hud.get_component("UIElement")
+            .unwrap()
+            .get("text")
+            .and_then(|value| value.as_str()),
+        Some("hit Wall")
+    );
+
+    let destroy_report = runtime.run_destroy(&mut entities, player_id);
+    assert!(destroy_report.destroyed.contains(&player_id));
+    assert!(!entities.iter().any(|entity| entity.id == player_id));
+    assert!(entities.iter().any(|entity| entity.name == "Poof"));
+
+    runtime.mark_script_changed(&script);
+    assert_eq!(runtime.poll_hot_reload(), 1);
+    assert_eq!(runtime.reload_count, 1);
+}
+
+#[test]
+fn game_loop_runs_rhai_and_records_profiler_counters() {
+    let tmp = temp_dir("game-rhai");
+    AssetTools::ensure_project_folders(&tmp).unwrap();
+    fs::write(
+        tmp.join("scripts").join("Mover.rhai"),
+        r#"fn on_update(dt) { if input_pressed("D") { move(4.0 * dt, 0.0); } }"#,
+    )
+    .unwrap();
+    let mut game = Game::from_project(&tmp, true).unwrap();
+    let mut entity = GameObject::new(0.0, 0.0, Some("Mover".to_string()));
+    entity.script = Some("Mover.rhai".to_string());
+    game.units = vec![entity];
+    game.set_script_input_pressed("D", true);
+    game.run_headless_once(0.25);
+    assert_eq!(game.units[0].x, 1.0);
+    assert!(
+        game.profiler
+            .counters
+            .get("RhaiScripts")
+            .copied()
+            .unwrap_or(0)
+            >= 1
+    );
 }
 
 #[test]
@@ -505,13 +632,13 @@ fn beta_entity_serializes_standard_fields() {
     entity.scale_y = 3.0;
     entity.width = 32.0;
     entity.height = 48.0;
-    entity.script = Some("player.py".to_string());
+    entity.script = Some("player.mfgraph".to_string());
     entity.sync_to_components();
     let data = entity.serialize();
     assert_eq!(data["position"], json!([5.0, 7.0]));
     assert_eq!(data["scale"], json!([2.0, 3.0]));
     assert_eq!(data["size"], json!([32.0, 48.0]));
-    assert_eq!(data["script"], "player.py");
+    assert_eq!(data["script"], "player.mfgraph");
     assert_eq!(data["active"], true);
 }
 
@@ -548,7 +675,9 @@ fn beta_play_mode_restores_snapshot() {
     manager.exit_play_mode(&mut entities, &mut mode, "test");
     assert_eq!(mode, "EDITOR");
     assert_eq!(entities[0].x, 1.0);
-    assert_eq!(manager.frame_count, 1);
+    assert_eq!(manager.frame_count, 0);
+    assert_eq!(manager.last_session_frames, 1);
+    assert_eq!(manager.last_session_entity_count, 1);
     assert_eq!(manager.last_exit_reason, "test");
 }
 
@@ -623,18 +752,106 @@ fn file_browser_and_asset_tools_manage_game_assets() {
 }
 
 #[test]
+fn asset_browser_templates_launcher_and_kira_audio_cover_game_creation_flow() {
+    let tmp = temp_dir("creation-flow");
+    AssetTools::ensure_project_folders(&tmp).unwrap();
+    let browser = FileBrowser::new(&tmp);
+
+    let rhai = browser.create_script("EnemyBrain").unwrap();
+    let graph = browser.create_visual_graph("SpawnGraph").unwrap();
+    let enemy = browser.create_enemy("Slime").unwrap();
+    let ui = browser.create_ui("ScoreLabel").unwrap();
+    let audio_event = browser.create_audio_event("Explosion").unwrap();
+    assert_eq!(
+        rhai.extension().and_then(|value| value.to_str()),
+        Some("rhai")
+    );
+    assert_eq!(
+        graph.extension().and_then(|value| value.to_str()),
+        Some("mfgraph")
+    );
+    assert!(
+        enemy
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with(".prefab")
+    );
+    assert!(
+        ui.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with(".ui.prefab")
+    );
+    assert!(
+        audio_event
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with(".audio.json")
+    );
+
+    let mut database = AssetDatabase::new(tmp.join("assets"), &tmp).unwrap();
+    database.scan().unwrap();
+    assert!(
+        database
+            .assets
+            .values()
+            .any(|record| record.asset_type == "RhaiScript")
+    );
+    assert!(
+        database
+            .assets
+            .values()
+            .any(|record| record.asset_type == "AudioEvent")
+    );
+
+    let created = ProjectTemplates::create(&tmp, "Platformer").unwrap();
+    assert!(created.iter().any(|path| {
+        path.extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|extension| extension == "rhai")
+    }));
+
+    let workspace = temp_dir("launcher-workspace");
+    let mut launcher = EguiProjectLauncher::new(&workspace);
+    launcher.project_name = "LauncherGame".to_string();
+    launcher.selected_template = LauncherTemplate::Rts;
+    let project = launcher.create_new_project().unwrap();
+    assert!(project.join("project.json").exists());
+    assert_eq!(launcher.recent_projects.first(), Some(&project));
+    let export = launcher.export_game(&project).unwrap();
+    assert!(export.output_path.exists());
+
+    let mut audio = AudioSystem::default();
+    audio.play_music("theme", 0.8, 1.25);
+    audio.play_sfx("click", 0.5);
+    audio.set_volume("SFX", 0.4);
+    let tween = audio.fade("Music", 0.2, 2.0);
+    assert_eq!(tween.duration.as_secs_f64(), 2.0);
+    assert!(
+        audio
+            .command_log
+            .iter()
+            .any(|command| command.kind == AudioCommandKind::Music && command.looped)
+    );
+    assert!(
+        audio
+            .command_log
+            .iter()
+            .any(|command| command.kind == AudioCommandKind::Fade && command.bus == "Music")
+    );
+    assert!(AudioSystem::volume_to_decibels(0.0).0 <= -60.0);
+}
+
+#[test]
 fn plugin_manager_emits_hooks() {
     let tmp = temp_dir("plugins");
     let plugin_dir = tmp.join("plugins").join("hello");
     fs::create_dir_all(&plugin_dir).unwrap();
     fs::write(
         plugin_dir.join("plugin.json"),
-        "{\"name\":\"hello\",\"enabled\":true}",
-    )
-    .unwrap();
-    fs::write(
-        plugin_dir.join("plugin.py"),
-        "def on_editor_start(game):\n    game.called = True\n",
+        "{\"name\":\"hello\",\"enabled\":true,\"hooks\":[\"on_editor_start\"]}",
     )
     .unwrap();
     let mut manager = PluginManager::new(&tmp);
@@ -656,7 +873,7 @@ fn scene_view_tools_drag_moves_selected() {
 #[test]
 fn build_report_summary() {
     let tmp = temp_dir("report");
-    fs::write(tmp.join("run_game.py"), "# run").unwrap();
+    fs::write(tmp.join("runtime_manifest.json"), "{}").unwrap();
     let report = BuildReport::generate(&tmp).unwrap();
     assert!(report["summary"]["files"].as_u64().unwrap() >= 1);
     assert!(tmp.join("build_report.json").exists());
@@ -1140,6 +1357,198 @@ fn physics_resolves_collisions_and_honors_layer_matrix() {
     physics.set_layer_collision("A", "B", false);
     physics.update_entities_mut(&mut entities, 0.016, "PLAY");
     assert_eq!(physics.stats["contacts"], 0);
+}
+
+#[test]
+fn physics_supports_body_types_materials_events_and_raycast() {
+    let mut ball = GameObject::new(0.0, 0.0, Some("Ball".to_string()));
+    let mut ball_body = default_component("Rigidbody2D").unwrap();
+    ball_body.set_f64("velocity_x", 5.0);
+    ball_body.set_f64("velocity_y", 2.0);
+    ball_body.set_f64("bounciness", 1.0);
+    ball_body.set_f64("friction", 0.5);
+    ball.add_component(ball_body);
+    if let Some(collider) = ball.get_component_mut("Collider2D") {
+        collider.set("shape", json!("circle"));
+        collider.set_f64("radius", 0.55);
+    }
+
+    let wall = GameObject::new(0.4, 0.0, Some("Wall".to_string()));
+    let mut entities = vec![ball, wall];
+    let mut physics = PhysicsSystem::new();
+    physics.gravity = (0.0, 0.0);
+    physics.update_entities_mut(&mut entities, 0.0, "PLAY");
+    let velocity_x = entities[0]
+        .get_component("Rigidbody2D")
+        .unwrap()
+        .get_f64("velocity_x", 0.0);
+    let velocity_y = entities[0]
+        .get_component("Rigidbody2D")
+        .unwrap()
+        .get_f64("velocity_y", 0.0);
+    assert!(velocity_x < 0.0);
+    assert!(velocity_y.abs() < 2.0);
+    assert!(physics.events.iter().any(|event| {
+        event.phase == PhysicsEventPhase::Enter && event.pair_type == PairType::Collision
+    }));
+
+    let mut kinematic = GameObject::new(0.0, 4.0, Some("Mover".to_string()));
+    let mut kin_body = default_component("Rigidbody2D").unwrap();
+    kin_body.set("body_type", json!("kinematic"));
+    kin_body.set_f64("velocity_x", 10.0);
+    kinematic.add_component(kin_body);
+    let mut static_body = GameObject::new(0.0, 8.0, Some("Static".to_string()));
+    let mut st_body = default_component("Rigidbody2D").unwrap();
+    st_body.set("body_type", json!("static"));
+    st_body.set_f64("velocity_x", 10.0);
+    static_body.add_component(st_body);
+    let mut bodies = vec![kinematic, static_body];
+    physics.update_entities_mut(&mut bodies, 0.1, "PLAY");
+    assert!(bodies[0].x > 0.4);
+    assert_eq!(bodies[1].x, 0.0);
+
+    let mut sensor = GameObject::new(3.0, 0.0, Some("Sensor".to_string()));
+    sensor.layer = "Sensors".to_string();
+    if let Some(collider) = sensor.get_component_mut("Collider2D") {
+        collider.set("shape", json!("polygon"));
+        collider.set(
+            "points",
+            json!([[-0.75, -0.75], [0.75, -0.75], [0.75, 0.75], [-0.75, 0.75]]),
+        );
+        collider.set("is_trigger", json!(true));
+        collider.set("collision_layer", json!("Sensors"));
+    }
+    let layers = vec!["Sensors".to_string()];
+    assert!(
+        physics
+            .raycast_filtered(&[sensor.clone()], (0.0, 0.0), (1.0, 0.0), 10.0, false, None)
+            .is_none()
+    );
+    let hit = physics
+        .raycast_filtered(&[sensor], (0.0, 0.0), (1.0, 0.0), 10.0, true, Some(&layers))
+        .unwrap();
+    assert_eq!(hit.entity_name, "Sensor");
+    assert!(hit.is_trigger);
+}
+
+#[test]
+fn physics_reports_trigger_enter_stay_and_exit() {
+    let mut player = GameObject::new(0.0, 0.0, Some("Player".to_string()));
+    player.add_component(default_component("Rigidbody2D").unwrap());
+    let mut sensor = GameObject::new(0.0, 0.0, Some("Sensor".to_string()));
+    if let Some(collider) = sensor.get_component_mut("Collider2D") {
+        collider.set("is_trigger", json!(true));
+    }
+
+    let mut entities = vec![player, sensor];
+    let mut physics = PhysicsSystem::new();
+    physics.gravity = (0.0, 0.0);
+    physics.update_entities_mut(&mut entities, 0.016, "PLAY");
+    assert!(physics.events.iter().any(|event| {
+        event.phase == PhysicsEventPhase::Enter && event.pair_type == PairType::Trigger
+    }));
+    physics.update_entities_mut(&mut entities, 0.016, "PLAY");
+    assert!(
+        physics
+            .events
+            .iter()
+            .any(|event| event.phase == PhysicsEventPhase::Stay)
+    );
+    entities[0].x = 10.0;
+    entities[0].sync_to_components();
+    physics.update_entities_mut(&mut entities, 0.016, "PLAY");
+    assert!(
+        physics
+            .events
+            .iter()
+            .any(|event| event.phase == PhysicsEventPhase::Exit)
+    );
+}
+
+#[test]
+fn scene_manager_loads_additive_restarts_transitions_and_stack() {
+    let tmp = temp_dir("scene-flow");
+    AssetTools::ensure_project_folders(&tmp).unwrap();
+
+    fn write_scene(project: &std::path::Path, name: &str, entity_name: &str, x: f64) {
+        let mut entity = GameObject::new(x, 0.0, Some(entity_name.to_string()));
+        entity.scene_name = Some(format!("{name}.scene"));
+        let data = json!({
+            "version": miniforge::ENGINE_VERSION,
+            "engine_version": miniforge::ENGINE_VERSION,
+            "scene_name": name,
+            "entities": [entity.serialize()],
+            "tiles": [],
+            "tilemap_layers": TilemapLayers::new(2, 2).serialize(),
+            "camera": {"x": x, "y": 0.0, "zoom": 1.0},
+            "settings": {},
+            "ui_canvases": [],
+        });
+        AssetTools::write_json(
+            project
+                .join("saves")
+                .join("scenes")
+                .join(format!("{name}.scene")),
+            &data,
+        )
+        .unwrap();
+    }
+
+    write_scene(&tmp, "main", "MainEntity", 1.0);
+    write_scene(&tmp, "battle", "BattleEntity", 2.0);
+    write_scene(&tmp, "hud", "HudEntity", 3.0);
+    write_scene(&tmp, "menu", "MenuEntity", 4.0);
+
+    let mut game = Game::from_project(&tmp, false).unwrap();
+    let mut global = GameObject::new(99.0, 0.0, Some("GlobalAudio".to_string()));
+    global.add_component(default_component("DontDestroyOnLoad").unwrap());
+    game.units.push(global);
+    let loaded = game.load_scene("battle").unwrap();
+    assert_eq!(loaded, 2);
+    assert!(game.units.iter().any(|entity| entity.name == "GlobalAudio"));
+    assert!(
+        game.units
+            .iter()
+            .any(|entity| entity.name == "BattleEntity")
+    );
+
+    assert_eq!(game.load_scene_additive("hud").unwrap(), 1);
+    assert!(
+        game.scene_manager
+            .loaded_scenes
+            .contains(&"hud.scene".to_string())
+    );
+    assert_eq!(game.unload_scene("hud"), 1);
+    assert!(!game.units.iter().any(|entity| entity.name == "HudEntity"));
+
+    game.units
+        .iter_mut()
+        .find(|entity| entity.name == "BattleEntity")
+        .unwrap()
+        .x = 42.0;
+    game.restart_scene().unwrap();
+    assert_eq!(
+        game.units
+            .iter()
+            .find(|entity| entity.name == "BattleEntity")
+            .unwrap()
+            .x,
+        2.0
+    );
+
+    game.push_scene("menu").unwrap();
+    assert_eq!(game.scene_manager.current_scene, "menu.scene");
+    assert!(game.scene_manager.scene_stack.len() >= 2);
+    game.pop_scene().unwrap();
+    assert_eq!(game.scene_manager.current_scene, "battle.scene");
+
+    game.transition_to_scene("menu", "fade", 0.25).unwrap();
+    assert_eq!(game.scene_manager.current_scene, "menu.scene");
+    assert_eq!(
+        game.scene_manager.transition.as_ref().unwrap().from_scene,
+        "battle.scene"
+    );
+    assert!(game.scene_manager.update_transition(0.25).unwrap().complete);
 }
 
 #[test]

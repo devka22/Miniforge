@@ -36,6 +36,8 @@ impl ProjectTemplates {
         let scene = AssetTools::create_scene(&project_path, "RTS_Map")?;
         AssetTools::write_json(&scene, &Self::rts_scene_data("RTS_Map"))?;
         Ok(vec![
+            AssetTools::create_rhai_script(&project_path, "RTSCameraController")?,
+            AssetTools::create_rhai_script(&project_path, "RTSUnitCommands")?,
             AssetTools::create_visual_graph(&project_path, "CameraController")?,
             AssetTools::create_visual_graph(&project_path, "SelectionMarquee")?,
             AssetTools::create_json(&project_path, Some(&paths.data), "EconomySystem")?,
@@ -67,6 +69,8 @@ impl ProjectTemplates {
     pub fn topdown(project_path: impl AsRef<Path>) -> io::Result<Vec<std::path::PathBuf>> {
         let paths = AssetTools::get_project_paths(&project_path);
         Ok(vec![
+            AssetTools::create_rhai_script(&project_path, "PlayerController")?,
+            AssetTools::create_rhai_script(&project_path, "EnemyBrain")?,
             AssetTools::create_visual_graph(&project_path, "PlayerController")?,
             AssetTools::create_json(&project_path, Some(&paths.data), "InputBindings")?,
             AssetTools::create_scene(&project_path, "TopDown_Level")?,
@@ -75,6 +79,8 @@ impl ProjectTemplates {
 
     pub fn platformer(project_path: impl AsRef<Path>) -> io::Result<Vec<std::path::PathBuf>> {
         Ok(vec![
+            AssetTools::create_rhai_script(&project_path, "PlatformerMotor")?,
+            AssetTools::create_rhai_script(&project_path, "JumpController")?,
             AssetTools::create_visual_graph(&project_path, "PlatformerMotor")?,
             AssetTools::create_visual_graph(&project_path, "JumpController")?,
             AssetTools::create_scene(&project_path, "Platformer_Level")?,

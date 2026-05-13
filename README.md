@@ -1,6 +1,6 @@
 # MiniForge / Mini Forte 0.7.0 Production Editor Update
 
-MiniForge es un motor 2D con runtime/editor principal en Rust y un arbol Python legado en retirada. La version 0.7.0 Production Editor Update convierte el editor Rust en un flujo mas serio para crear juegos 2D/RTS: inspector editable real, undo/redo por comandos, drag and drop desde Content Browser, asset preview, export runtime, input visual, tile brushes y gizmos de escena.
+MiniForge es un motor 2D con runtime/editor en Rust. La version 0.7.0 Production Editor Update convierte el editor en un flujo mas serio para crear juegos 2D/RTS: inspector editable real, scripting Rhai por entidad, fisica 2D, escenas aditivas/stack, audio Kira-ready, undo/redo por comandos, drag and drop desde Content Browser, asset preview, export runtime, input visual, tile brushes y gizmos de escena.
 
 ## Ejecutar
 
@@ -36,27 +36,17 @@ Runtime Rust con ventana dentro del editor (modo `--runtime` del editor completo
 cargo run -- --project projects/DefaultProject --runtime --no-launcher
 ```
 
-`main.py` ahora es solo un puente temporal hacia Rust y tambien abre la ventana:
-
-```bash
-python3 main.py --project projects/DefaultProject --no-launcher
-```
-
 Verificacion sin ventana:
 
 ```bash
 cargo run -- --project projects/DefaultProject --runtime --no-launcher --headless-once
 ```
 
-Fallback temporal del motor Python legado:
-
-```bash
-MINIFORGE_LEGACY_PYTHON=1 python3 main.py --project projects/DefaultProject --no-launcher
-```
-
 ## Rust Port
 
-El motor principal vive en `src/`. El arbol Python queda como legado temporal y el flujo nuevo usa assets `.mfgraph`, componentes Rust, sistemas Rust y manifest con `legacy_python_scripts` separado.
+El motor vive en `src/`. El flujo nuevo usa assets `.mfgraph`, componentes Rust, sistemas Rust y manifests runtime Rust.
+
+**Capas destacadas** (detalle en `docs/ENGINE_GUIDE.md` → *Mapa de capacidades*): runtime/editor Rust, Play Mode con snapshot y contador de frames en barra de estado, RTS (A*, flow fields, fog, influence), entidades por componentes, prefabs y overrides, visual graphs `.mfgraph`, Asset Database con GUID y preview, profiler/diagnostics, jerarquía + inspector, Macroquad, IA/NavAgent, tilemaps y pinceles.
 
 ```bash
 cargo run -- --project projects/DefaultProject --runtime --no-launcher
@@ -74,9 +64,9 @@ cargo test
 - Paneles utiles: Scene, Game, Hierarchy, Inspector, Content Browser, Programming, Prefabs, Console, Profiler, Asset Graph, Build y Diagnostics.
 - `F6` cambia workspace; `Ctrl+P` abre comandos; `Ctrl+G` crea un graph visual Rust; `Ctrl+I` instancia el primer prefab disponible; `Cmd/Ctrl+Z` y redo restauran operaciones del editor.
 - Herramientas `Select`, `Move`, `Rotate`, `Scale` y `Paint`, con snap, bounding boxes y gizmos.
-- Browser mejorado: indexa `assets/`, `scripts/visual_graphs/`, escenas y settings; marca compatibilidad, tamano, labels, visual graphs y Python legacy.
+- Browser mejorado: indexa `assets/`, scripts `.rhai`, `scripts/visual_graphs/`, escenas y settings; marca compatibilidad, tamano, labels y visual graphs.
 - Content Browser tiene preview de sprites/audio/materiales, GUID, path, labels, import settings, dependencias, warnings y drag/drop hacia escena.
-- Profiler mas accionable: tiempos por Movement, Animation, VisualGraph, Gameplay, RTS, Physics y WorldSync.
+- Profiler mas accionable: tiempos por Movement, Animation, VisualGraph, Rhai, Gameplay, RTS, Physics, RhaiCollision y WorldSync.
 
 ## Production Editor 0.7
 
@@ -94,12 +84,17 @@ cargo test
 
 ## Programacion Dentro Del Motor
 
-El desarrollador puede crear logica sin tocar el codigo fuente del motor usando assets `.mfgraph`:
+El desarrollador puede crear logica sin tocar el codigo fuente del motor usando scripts `.rhai` y assets `.mfgraph`:
+
+- Scripts Rhai por entidad: asigna `script = "PlayerController.rhai"` o agrega `{"runtime":"rhai","path":"PlayerController.rhai"}` en `scripts`.
+- Eventos disponibles: `on_start()`, `on_update(dt)`, `on_key_down(key)`, `on_collision_enter(other)` y `on_destroy()`.
+- API de gameplay: `move`, `set_position`, `spawn`, `destroy`, `play_sound`, `load_scene`, `input_pressed`, `ui_text` y `set_ui_text`.
+- Hot reload: el runtime observa `scripts/` con `notify`, recompila cache y actualiza contadores en Profiler.
 
 - Templates incluidos: `LogAndMove`, `ButtonClick`, `HealthPickup`, `RTSOrder` y `Spawner`.
 - Los graphs se guardan en `scripts/visual_graphs/` y se ejecutan con `VisualScriptRuntime` en Rust.
 - El panel `Programming` permite crear graphs, adjuntarlos a la entidad seleccionada y ver validacion/runtime events.
-- Los templates de proyecto nuevos ya priorizan `.mfgraph` y data JSON sobre scripts Python.
+- Los templates de proyecto nuevos crean scripts Rhai, `.mfgraph`, prefabs y data JSON.
 
 ## Prefabs Y Escenas
 
@@ -233,13 +228,13 @@ Trabaja con `assets/`, `scripts/`, `saves/scenes/`, `settings/`, `logs/` y carpe
 
 Funciones:
 
-- crear `.py`
+- crear `.mfgraph`
 - crear carpetas
 - renombrar archivos/carpetas
 - duplicar assets
 - eliminar con confirmacion
 - refrescar
-- abrir scripts con doble clic
+- abrir visual graphs con doble clic
 - abrir escenas
 - cambiar import settings
 - ver dependencias del asset seleccionado
@@ -269,32 +264,34 @@ asset import
 
 `asset import` alterna opciones segun tipo: sprites cambian filtro, audio cambia streaming y otros assets alternan `include_in_build`.
 
-## Script Editor
+## Graph Editor
 
-Abre scripts desde File Browser o `F2`.
+Abre visual graphs desde File Browser o `F2`.
 
 Funciones:
 
 - New
 - Save
-- Run
+- Validate
 - Reload
 - tabs
-- validacion simple de sintaxis
-- snippets y autocompletado basico
+- validacion de JSON y nodos runtime
+- snippets de nodos y plantillas
 
 Plantilla base:
 
-```python
-class NewScript:
-    def start(self):
-        pass
-
-    def update(self, dt):
-        pass
+```json
+{
+  "kind": "MiniForgeVisualGraph",
+  "runtime": "rust_visual_graph",
+  "nodes": [
+    {"id": "start", "type": "EventStart", "next": "log"},
+    {"id": "log", "type": "Log", "message": "Hello", "next": null}
+  ]
+}
 ```
 
-El runtime tambien mantiene compatibilidad con scripts antiguos `start(entity)` y `update(entity, dt)`.
+El runtime ejecuta los graphs con `VisualScriptRuntime`.
 
 ## Consola
 
@@ -331,7 +328,7 @@ plugin scan
 plugin hook on_editor_start
 example ui
 example actionrpg
-create script PlayerController
+create graph PlayerController
 component add Health
 ```
 
@@ -361,33 +358,30 @@ La toolbar y menus activan funciones reales:
 
 ## Plugins
 
-Los plugins viven en `plugins/<nombre>/` o `packages/<nombre>/` y pueden incluir `plugin.json` y `plugin.py`.
+Los plugins viven en `plugins/<nombre>/` o `packages/<nombre>/` y se declaran con `plugin.json`.
 
 Hooks soportados:
 
-```python
-def on_editor_start(game):
-    game.console.log("Plugin activo", "ENGINE")
-
-def on_scene_saved(game):
-    pass
-
-def on_asset_imported(game):
-    pass
+```json
+{
+  "name": "hello",
+  "enabled": true,
+  "hooks": ["on_editor_start", "on_scene_saved", "on_asset_imported"]
+}
 ```
 
 ## Problemas Comunes
 
 - Falta una carpeta: abrir el proyecto repara la estructura.
 - Una escena esta corrupta: se registra error y se crea respaldo `.corrupt_YYYYMMDD_HHMMSS`.
-- Un script no carga: revisar `logs/error.log` y el panel de errores del Script Editor.
+- Un graph no carga: revisar `logs/error.log` y el panel de errores del Graph Editor.
 - File Browser no muestra cambios: usar `Refresh` o comando `reload`.
 
 ## Checklist Beta
 
 - Editor abre sin errores.
 - File Browser crea, renombra, duplica, abre y elimina con confirmacion.
-- Script Editor crea, edita, guarda, ejecuta y recarga scripts.
+- Graph Editor crea, edita, guarda, valida y recarga visual graphs.
 - Escenas guardan/cargan entidades, tiles, camara y settings.
 - Inspector edita propiedades basicas.
 - Entidades tienen ID, nombre, posicion, rotacion, escala y tamano.

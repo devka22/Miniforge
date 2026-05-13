@@ -17,12 +17,12 @@ impl ManifestBuilder {
         let script_files = walk_files(&paths.scripts)?;
         let scripts = script_files
             .iter()
-            .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("mfgraph"))
-            .cloned()
-            .collect::<Vec<_>>();
-        let legacy_scripts = script_files
-            .iter()
-            .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("py"))
+            .filter(|path| {
+                matches!(
+                    path.extension().and_then(|value| value.to_str()),
+                    Some("mfgraph" | "rhai")
+                )
+            })
             .cloned()
             .collect::<Vec<_>>();
         let components = walk_files(&paths.components)?;
@@ -33,7 +33,6 @@ impl ManifestBuilder {
             "runtime": "rust",
             "assets": rels(project_path, &assets),
             "scripts": rels(project_path, &scripts),
-            "legacy_python_scripts": rels(project_path, &legacy_scripts),
             "components": rels(project_path, &components),
             "systems": rels(project_path, &systems),
             "scenes": rels(project_path, &scenes),
@@ -80,8 +79,5 @@ fn ignored_dir(path: &Path) -> bool {
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("");
-    matches!(
-        name,
-        "__pycache__" | ".git" | "target" | "builds" | ".pytest_cache" | ".mypy_cache"
-    )
+    matches!(name, ".git" | "target" | "builds" | ".cache")
 }

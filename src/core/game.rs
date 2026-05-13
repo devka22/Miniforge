@@ -25,6 +25,7 @@ use crate::engine::editor_command::{EditorCommand, EditorCommandKind, EditorSnap
 use crate::engine::editor_history::EditorHistory;
 use crate::engine::editor_workspace::{EditorWorkspace, WorkspaceMode};
 use crate::engine::engine_programming::ProgrammingEnvironment;
+use crate::engine::entity_id::generate_entity_name;
 use crate::engine::event_bus::EventBus;
 use crate::engine::game_clock::GameClock;
 use crate::engine::input_map::InputMap;
@@ -36,6 +37,7 @@ use crate::engine::profiler::Profiler;
 use crate::engine::project_templates::ProjectTemplates;
 use crate::engine::project_validator::ProjectValidator;
 use crate::engine::resource_manager::ResourceManager;
+use crate::engine::rhai_scripting::{RhaiRunReport, RhaiScriptRuntime};
 use crate::engine::runtime_config::RuntimeConfig;
 use crate::engine::runtime_exporter::{ExportProfile, RuntimeExportReport, RuntimeExporter};
 use crate::engine::scene_manager::SceneManager;
@@ -46,10 +48,9 @@ use crate::engine::tags_layers_manager::TagsLayersManager;
 use crate::engine::tile_brush::{TileBrush, TileBrushMode};
 use crate::engine::tilemap_layers::TilemapLayers;
 use crate::engine::ui_canvas::{
-    push_canvas, ui_canvases_from_value, UiCanvasElement, UiCanvasRoot, UiRect,
+    UiCanvasElement, UiCanvasRoot, UiRect, push_canvas, ui_canvases_from_value,
 };
 use crate::engine::upgrade_manifest::EngineUpgradeManifest;
-use crate::engine::entity_id::generate_entity_name;
 use crate::engine::visual_scripting::VisualScriptRuntime;
 use crate::engine::world::World;
 use crate::entities::game_object::GameObject;
@@ -58,7 +59,7 @@ use crate::map::pathfinding::Point;
 use crate::systems::animation_system::AnimationSystem;
 use crate::systems::gameplay_system::GameplaySystem;
 use crate::systems::movement_system::MovementSystem;
-use crate::systems::physics_system::PhysicsSystem;
+use crate::systems::physics_system::{PhysicsEventPhase, PhysicsSystem};
 use crate::systems::rts_system::RTSSystem;
 
 #[derive(Debug)]
@@ -102,6 +103,7 @@ pub struct Game {
     pub audio_mixer: AudioMixer,
     pub animation_graphs: AnimationGraphLibrary,
     pub visual_script_runtime: VisualScriptRuntime,
+    pub rhai_script_runtime: RhaiScriptRuntime,
     pub play_mode_manager: PlayModeManager,
     pub gameplay_system: GameplaySystem,
     pub rts_system: RTSSystem,
@@ -204,6 +206,7 @@ impl Game {
             audio_mixer: AudioMixer::new(),
             animation_graphs: AnimationGraphLibrary::new(),
             visual_script_runtime: VisualScriptRuntime::default(),
+            rhai_script_runtime: RhaiScriptRuntime::new(&project_path),
             play_mode_manager: PlayModeManager::default(),
             gameplay_system: GameplaySystem::default(),
             rts_system: RTSSystem::default(),
@@ -249,7 +252,11 @@ impl Game {
         if let Some(entities) = data.get("entities").and_then(Value::as_array) {
             self.units = entities
                 .iter()
-                .map(|entity| GameObject::from_data(entity, true))
+                .map(|entity| {
+                    let mut entity = GameObject::from_data(entity, true);
+                    entity.scene_name = Some(self.scene_manager.current_scene.clone());
+                    entity
+                })
                 .collect();
             for entity in &mut self.units {
                 entity.sync_from_components();
@@ -261,7 +268,10 @@ impl Game {
                 "SCENE",
             );
         }
+        self.apply_scene_environment(data);
+    }
 
+    fn apply_scene_environment(&mut self, data: &Value) {
         let tile_data = data
             .get("tilemap_layers")
             .or_else(|| data.get("tiles"))
@@ -328,6 +338,13 @@ impl Game {
         self.profiler
             .record_system("VisualGraph", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
+        let rhai_report = self
+            .rhai_script_runtime
+            .update_entities(&mut self.units, dt, &self.mode);
+        self.handle_rhai_report(rhai_report);
+        self.profiler
+            .record_system("Rhai", marker.elapsed().as_secs_f64() * 1000.0);
+        marker = Instant::now();
         self.gameplay_system
             .update_entities(&mut self.units, dt, &self.mode);
         self.profiler
@@ -347,6 +364,27 @@ impl Game {
         self.profiler
             .record_system("Physics", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
+        let collision_events = self.physics_system.events.clone();
+        let mut collision_report = RhaiRunReport::default();
+        for event in collision_events
+            .iter()
+            .filter(|event| event.phase == PhysicsEventPhase::Enter)
+        {
+            collision_report.merge(self.rhai_script_runtime.run_collision_enter(
+                &mut self.units,
+                event.first_id,
+                event.second_name.clone(),
+            ));
+            collision_report.merge(self.rhai_script_runtime.run_collision_enter(
+                &mut self.units,
+                event.second_id,
+                event.first_name.clone(),
+            ));
+        }
+        self.handle_rhai_report(collision_report);
+        self.profiler
+            .record_system("RhaiCollision", marker.elapsed().as_secs_f64() * 1000.0);
+        marker = Instant::now();
         self.world.entities = self.units.clone();
         self.spatial_index.rebuild(&self.units);
         self.profiler
@@ -365,6 +403,12 @@ impl Game {
         self.profiler
             .set_counter("VisualNodes", self.visual_script_runtime.executed_nodes);
         self.profiler
+            .set_counter("RhaiScripts", self.rhai_script_runtime.last_frame_scripts);
+        self.profiler
+            .set_counter("RhaiReloads", self.rhai_script_runtime.reload_count);
+        self.profiler
+            .set_counter("RhaiErrors", self.rhai_script_runtime.last_errors.len());
+        self.profiler
             .set_counter("FixedTicks", clock_advance.fixed_steps);
         self.profiler
             .set_counter("SpatialCells", self.spatial_index.cells.len());
@@ -372,6 +416,30 @@ impl Game {
         self.profiler
             .set_counter("PlayFrames", self.play_mode_manager.frame_count);
         self.profiler.end_frame();
+    }
+
+    fn handle_rhai_report(&mut self, report: RhaiRunReport) {
+        for error in report.errors.iter().take(6) {
+            self.console.log(error.clone(), "SCRIPT");
+        }
+        for scene in report.scene_requests.iter().take(1) {
+            if let Err(error) = self.load_scene(scene) {
+                self.console
+                    .log(format!("Rhai load_scene({scene}) falló: {error}"), "SCRIPT");
+            }
+        }
+        if !report.spawned.is_empty() || !report.destroyed.is_empty() || report.ui_updates > 0 {
+            self.sync_world();
+        }
+    }
+
+    pub fn dispatch_script_key_down(&mut self, key: &str) {
+        let report = self.rhai_script_runtime.run_key_down(&mut self.units, key);
+        self.handle_rhai_report(report);
+    }
+
+    pub fn set_script_input_pressed(&mut self, key: &str, pressed: bool) {
+        self.rhai_script_runtime.set_input_pressed(key, pressed);
     }
 
     pub fn project_join(&self, parts: &[&str]) -> PathBuf {
@@ -452,8 +520,18 @@ impl Game {
         self.play_mode_manager
             .enter_play_mode(&self.units, &mut self.mode);
         self.sync_world();
-        self.console
-            .log("Play Mode iniciado con snapshot seguro.", "ENGINE");
+        let dirty = if self.scene_dirty {
+            format!("dirty ({})", self.scene_dirty_reason)
+        } else {
+            "clean".to_string()
+        };
+        self.console.log(
+            format!(
+                "Play Mode ON: snapshot de {} entidades (live). F11 pausa simulación; F5 vuelve al editor y restaura escena. Estado: {dirty}.",
+                self.units.len()
+            ),
+            "ENGINE",
+        );
     }
 
     pub fn exit_play_mode(&mut self, reason: &str) {
@@ -462,10 +540,16 @@ impl Game {
         }
         self.play_mode_manager
             .exit_play_mode(&mut self.units, &mut self.mode, reason);
+        let frames = self.play_mode_manager.last_session_frames;
         self.clear_selection();
         self.sync_world();
-        self.console
-            .log("Play Mode terminado y escena restaurada.", "ENGINE");
+        self.console.log(
+            format!(
+                "Play Mode OFF ({reason}): {frames} frames simulados; escena restaurada al snapshot de {} entidades.",
+                self.play_mode_manager.last_session_entity_count
+            ),
+            "ENGINE",
+        );
     }
 
     pub fn toggle_play_mode(&mut self) {
@@ -1282,10 +1366,10 @@ impl Game {
 
     pub fn package_distributable(&mut self, profile: ExportProfile, label: &str) -> io::Result<()> {
         self.save_project()?;
-        let dest = self
-            .project_path
-            .join("packages")
-            .join(format!("{}_{}", label, profile.label()));
+        let dest =
+            self.project_path
+                .join("packages")
+                .join(format!("{}_{}", label, profile.label()));
         let report = crate::engine::packaging_manager::PackagingManager::package_project(
             &self.project_path,
             &dest,
@@ -1313,8 +1397,10 @@ impl Game {
         self.units = entities;
         self.sync_world();
         self.mark_scene_dirty("Recovered from autosave");
-        self.console
-            .log("Escena restaurada desde autosave (saves/autosave)", "PROJECT");
+        self.console.log(
+            "Escena restaurada desde autosave (saves/autosave)",
+            "PROJECT",
+        );
         Ok(())
     }
 
@@ -1511,11 +1597,11 @@ impl Game {
         )
     }
 
-    pub fn legacy_python_asset_count(&self) -> usize {
+    pub fn visual_graph_asset_count(&self) -> usize {
         self.asset_database
             .assets
             .values()
-            .filter(|asset| asset.asset_type == "LegacyScript")
+            .filter(|asset| asset.asset_type == "VisualGraph")
             .count()
     }
 
@@ -1531,12 +1617,12 @@ impl Game {
             .filter(|entity| entity.get_component("VisualScript").is_some())
             .count();
         format!(
-            "{} entities | {} prefab instances | {} visual graphs | {} assets | {} legacy py",
+            "{} entities | {} prefab instances | {} visual graph components | {} assets | {} graph assets",
             self.units.len(),
             prefab_instances,
             visual_graphs,
             self.asset_database.assets.len(),
-            self.legacy_python_asset_count()
+            self.visual_graph_asset_count()
         )
     }
 
@@ -1827,7 +1913,12 @@ impl Game {
     }
 
     pub fn ensure_default_ui_canvas_scene_data(&mut self) {
-        if self.ui_canvases.as_array().map(|a| a.is_empty()).unwrap_or(true) {
+        if self
+            .ui_canvases
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(true)
+        {
             push_canvas(&mut self.ui_canvases, UiCanvasRoot::default_hud());
             self.mark_scene_dirty("UI Canvas default");
         }
@@ -2004,6 +2095,136 @@ impl Game {
             self.mark_scene_clean();
         }
         Ok(())
+    }
+
+    pub fn load_scene(&mut self, name: &str) -> io::Result<usize> {
+        let data = self.scene_manager.load_scene_data(name)?;
+        let entities = self.scene_manager.load_scene(name, &self.units)?;
+        self.units = entities;
+        self.apply_scene_environment(&data);
+        self.clear_selection();
+        self.sync_world();
+        self.scene_save_manager
+            .bootstrap_from_scene(&mut self.units, &self.tilemap_layers);
+        self.mark_scene_clean();
+        self.console.log(
+            format!(
+                "Escena cargada: {} ({} entidades)",
+                self.scene_manager.current_scene,
+                self.units.len()
+            ),
+            "SCENE",
+        );
+        Ok(self.units.len())
+    }
+
+    pub fn load_scene_additive(&mut self, name: &str) -> io::Result<usize> {
+        let added = self
+            .scene_manager
+            .load_scene_additive(name, &mut self.units)?;
+        self.sync_world();
+        self.mark_scene_dirty("Load Additive Scene");
+        self.console.log(
+            format!(
+                "Escena aditiva cargada: {} (+{} entidades)",
+                self.scene_manager.current_scene, added
+            ),
+            "SCENE",
+        );
+        Ok(added)
+    }
+
+    pub fn unload_scene(&mut self, name: &str) -> usize {
+        let removed = self.scene_manager.unload_scene(name, &mut self.units);
+        self.clear_selection();
+        self.sync_world();
+        self.mark_scene_dirty("Unload Scene");
+        self.console.log(
+            format!("Escena descargada: {name} (-{removed} entidades)"),
+            "SCENE",
+        );
+        removed
+    }
+
+    pub fn restart_scene(&mut self) -> io::Result<usize> {
+        let data = self
+            .scene_manager
+            .load_scene_data(&self.scene_manager.current_scene)?;
+        let entities = self.scene_manager.restart_scene(&self.units)?;
+        self.units = entities;
+        self.apply_scene_environment(&data);
+        self.clear_selection();
+        self.sync_world();
+        self.mark_scene_clean();
+        self.console.log(
+            format!("Escena reiniciada: {}", self.scene_manager.current_scene),
+            "SCENE",
+        );
+        Ok(self.units.len())
+    }
+
+    pub fn push_scene(&mut self, name: &str) -> io::Result<usize> {
+        let data = self.scene_manager.load_scene_data(name)?;
+        let entities = self.scene_manager.push_scene(name, &self.units)?;
+        self.units = entities;
+        self.apply_scene_environment(&data);
+        self.clear_selection();
+        self.sync_world();
+        self.mark_scene_clean();
+        self.console.log(
+            format!("Scene stack push: {}", self.scene_manager.current_scene),
+            "SCENE",
+        );
+        Ok(self.units.len())
+    }
+
+    pub fn pop_scene(&mut self) -> io::Result<Option<usize>> {
+        let Some(entities) = self.scene_manager.pop_scene(&self.units)? else {
+            return Ok(None);
+        };
+        let data = self
+            .scene_manager
+            .load_scene_data(&self.scene_manager.current_scene)?;
+        self.units = entities;
+        self.apply_scene_environment(&data);
+        self.clear_selection();
+        self.sync_world();
+        self.mark_scene_clean();
+        self.console.log(
+            format!("Scene stack pop: {}", self.scene_manager.current_scene),
+            "SCENE",
+        );
+        Ok(Some(self.units.len()))
+    }
+
+    pub fn transition_to_scene(
+        &mut self,
+        name: &str,
+        kind: &str,
+        duration: f64,
+    ) -> io::Result<usize> {
+        let data = self.scene_manager.load_scene_data(name)?;
+        let entities = self
+            .scene_manager
+            .transition_to_scene(name, kind, duration, &self.units)?;
+        self.units = entities;
+        self.apply_scene_environment(&data);
+        self.clear_selection();
+        self.sync_world();
+        self.mark_scene_clean();
+        self.console.log(
+            format!(
+                "Transicion {kind}: {} -> {} ({duration:.2}s)",
+                self.scene_manager
+                    .transition
+                    .as_ref()
+                    .map(|transition| transition.from_scene.as_str())
+                    .unwrap_or(""),
+                self.scene_manager.current_scene
+            ),
+            "SCENE",
+        );
+        Ok(self.units.len())
     }
 
     pub fn save_project(&mut self) -> io::Result<()> {

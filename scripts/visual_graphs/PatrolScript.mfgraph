@@ -1,0 +1,17 @@
+{
+  "version": "0.7.0",
+  "kind": "MiniForgeVisualGraph",
+  "runtime": "rust_visual_graph",
+  "name": "PatrolScript",
+  "variables": {
+    "direction": 1.0,
+    "distance": 0.0,
+    "max_distance": 3.0
+  },
+  "nodes": [
+    {"id": "start", "type": "EventStart", "next": "log"},
+    {"id": "log", "type": "Log", "message": "Patrol graph ready", "next": null},
+    {"id": "update", "type": "EventUpdate", "next": "move"},
+    {"id": "move", "type": "Move", "x": 0.016, "y": 0.0, "next": null}
+  ]
+}

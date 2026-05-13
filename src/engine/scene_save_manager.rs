@@ -1,10 +1,10 @@
 //! Incremental scene persistence: backup, atomic write, merge unchanged entity JSON blobs.
 
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io;
-use serde_json::{Value, json};
 
 use crate::engine::asset_tools::AssetTools;
 use crate::engine::camera::Camera;
@@ -33,9 +33,7 @@ impl SceneSaveManager {
     pub fn bootstrap_from_scene(&mut self, entities: &mut [GameObject], tilemap: &TilemapLayers) {
         self.entity_hashes.clear();
         for e in entities.iter_mut() {
-            self
-                .entity_hashes
-                .insert(e.id, stable_hash(&e.serialize()));
+            self.entity_hashes.insert(e.id, stable_hash(&e.serialize()));
         }
         self.last_tilemap_hash = stable_hash(&tilemap.serialize());
         self.dirty_entities.clear();
@@ -105,6 +103,9 @@ impl SceneSaveManager {
         let use_merge = !old_entities.is_empty();
         let mut merged_entities: Vec<Value> = Vec::new();
         for entity in entities.iter_mut() {
+            if entity.scene_name.is_none() {
+                entity.scene_name = Some(scene_manager.current_scene.clone());
+            }
             if use_merge && !self.entity_changed(entity) {
                 if let Some(prev) = old_entities.get(&entity.id) {
                     merged_entities.push(prev.clone());

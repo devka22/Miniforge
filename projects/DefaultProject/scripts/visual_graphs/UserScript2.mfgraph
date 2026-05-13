@@ -1,0 +1,15 @@
+{
+  "version": "0.7.0",
+  "kind": "MiniForgeVisualGraph",
+  "runtime": "rust_visual_graph",
+  "name": "UserScript2",
+  "variables": {
+    "speed": 2.0
+  },
+  "nodes": [
+    {"id": "start", "type": "EventStart", "next": "log"},
+    {"id": "log", "type": "Log", "message": "UserScript2 graph started", "next": null},
+    {"id": "update", "type": "EventUpdate", "next": "move"},
+    {"id": "move", "type": "Move", "x": 0.032, "y": 0.0, "next": null}
+  ]
+}

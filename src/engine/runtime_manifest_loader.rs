@@ -65,10 +65,7 @@ impl RuntimeManifestLoader {
         let manifest_path = root.join("runtime_manifest.json");
         if !manifest_path.is_file() {
             return Err(RuntimeLoadError {
-                message: format!(
-                    "No se encontró runtime_manifest.json en {}",
-                    root.display()
-                ),
+                message: format!("No se encontró runtime_manifest.json en {}", root.display()),
             });
         }
         let value: Value = AssetTools::read_json(&manifest_path).map_err(|e| RuntimeLoadError {

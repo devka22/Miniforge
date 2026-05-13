@@ -1,0 +1,12 @@
+{
+  "version": "0.7.0",
+  "kind": "MiniForgeSystemDefinition",
+  "runtime": "rust_system_data",
+  "system": "NewSystem",
+  "enabled": true,
+  "run_in_editor": false,
+  "run_in_play": true,
+  "reads": [],
+  "writes": [],
+  "schedule": {"phase": "Gameplay", "order": 100}
+}

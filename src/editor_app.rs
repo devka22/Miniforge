@@ -14,7 +14,7 @@ use crate::engine::runtime_exporter::ExportProfile;
 use crate::engine::runtime_manifest_loader::RuntimeManifestLoader;
 use crate::engine::scene_view_tools::SceneViewTools;
 use crate::engine::tile_brush::TileBrushMode;
-use crate::engine::ui_canvas::{layout_element_pixels, ui_canvases_from_value, UiCanvasElement};
+use crate::engine::ui_canvas::{UiCanvasElement, layout_element_pixels, ui_canvases_from_value};
 use crate::entities::game_object::GameObject;
 use crate::systems::command_system::CommandSystem;
 use crate::systems::rts_system::RTSSystem;
@@ -1218,6 +1218,13 @@ fn draw_hierarchy(game: &mut Game, rect: RectSpec) {
         14.0,
         Color::from_rgba(150, 158, 174, 255),
     );
+    draw_text(
+        "F5 Play snapshot | F11 pausa sim | F2/F3 Hierarchy/Inspector",
+        rect.x + 14.0,
+        rect.y + 66.0,
+        12.0,
+        Color::from_rgba(120, 132, 158, 255),
+    );
     if button(
         rect.x + rect.w - 72.0,
         rect.y + 9.0,
@@ -1229,8 +1236,8 @@ fn draw_hierarchy(game: &mut Game, rect: RectSpec) {
         create_new_scene(game);
     }
 
-    let mut y = rect.y + 76.0;
-    let max_rows = ((rect.h - 90.0) / 25.0).max(0.0) as usize;
+    let mut y = rect.y + 86.0;
+    let max_rows = ((rect.h - 102.0) / 25.0).max(0.0) as usize;
     let rows: Vec<(u64, String, String, bool)> = game
         .units
         .iter()
@@ -1339,13 +1346,7 @@ fn draw_inspector_scene_ui_canvas(game: &mut Game, rect: RectSpec) {
     if let Some(c) = roots.first() {
         let vw = rect.w - 28.0;
         let vh = (rect.h - y - 24.0).max(40.0);
-        draw_rectangle(
-            rect.x + 14.0,
-            y,
-            vw,
-            vh,
-            Color::from_rgba(16, 18, 24, 255),
-        );
+        draw_rectangle(rect.x + 14.0, y, vw, vh, Color::from_rgba(16, 18, 24, 255));
         draw_rectangle_lines(
             rect.x + 14.0,
             y,
@@ -1375,15 +1376,11 @@ fn draw_inspector_scene_ui_canvas(game: &mut Game, rect: RectSpec) {
                 }
                 UiCanvasElement::Button { label, .. } => {
                     draw_rectangle(px, py, ew, eh, Color::from_rgba(68, 126, 196, 255));
-                    draw_text(
-                        label,
-                        px + 8.0,
-                        py + eh * 0.62,
-                        14.0,
-                        WHITE,
-                    );
+                    draw_text(label, px + 8.0, py + eh * 0.62, 14.0, WHITE);
                 }
-                UiCanvasElement::Label { text, font_size, .. } => {
+                UiCanvasElement::Label {
+                    text, font_size, ..
+                } => {
                     draw_text(text, px, py + *font_size, *font_size, WHITE);
                 }
                 UiCanvasElement::Image { .. } => {
@@ -2133,8 +2130,13 @@ fn draw_ui_elements(game: &Game) {
 
 fn draw_scene_hud(game: &Game, state: &EditorState, viewport: Viewport) {
     let layer = &game.tilemap_layers.layers[game.tilemap_layers.active_layer].name;
+    let play_bit = if game.mode == "PLAY" {
+        format!(" | LIVE {}f", game.play_mode_manager.frame_count)
+    } else {
+        String::new()
+    };
     let text = format!(
-        "{} | Tool {} | Brush {} {} | Tile {} | Layer {} | Snap {} | Scene {}",
+        "{} | Tool {} | Brush {} {} | Tile {} | Layer {} | Snap {} | Scene {}{}",
         game.editor_workspace.active_mode.label(),
         state.tool.label(),
         game.brush_size,
@@ -2142,7 +2144,8 @@ fn draw_scene_hud(game: &Game, state: &EditorState, viewport: Viewport) {
         state.tile_brush,
         layer,
         if state.snap_to_grid { "on" } else { "off" },
-        if game.scene_dirty { "dirty" } else { "clean" }
+        if game.scene_dirty { "dirty" } else { "clean" },
+        play_bit
     );
     let w = measure_text(&text, None, 16, 1.0).width + 22.0;
     draw_rectangle(
@@ -2255,9 +2258,9 @@ fn draw_assets_panel(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
     }
     draw_text(
         &format!(
-            "Content Browser ({}) | legacy py {}",
+            "Content Browser ({}) | graphs {}",
             game.asset_database.assets.len(),
-            game.legacy_python_asset_count()
+            game.visual_graph_asset_count()
         ),
         rect.x + 14.0,
         rect.y + 20.0,
@@ -2367,7 +2370,6 @@ fn draw_assets_panel(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
             "Audio" => Color::from_rgba(255, 185, 120, 255),
             "Prefab" => Color::from_rgba(180, 145, 255, 255),
             "VisualGraph" => Color::from_rgba(110, 230, 205, 255),
-            "LegacyScript" => Color::from_rgba(255, 198, 120, 255),
             "Data" => Color::from_rgba(160, 235, 180, 255),
             _ => Color::from_rgba(210, 216, 230, 255),
         };
@@ -2475,7 +2477,21 @@ fn draw_asset_preview(game: &mut Game, state: &mut EditorState, rect: RectSpec) 
         13.0,
         Color::from_rgba(170, 185, 210, 255),
     );
-    y += 18.0;
+    y += 16.0;
+    for chunk in preview.guid.as_bytes().chunks(24) {
+        let s = std::str::from_utf8(chunk).unwrap_or("");
+        if !s.is_empty() {
+            draw_text(
+                s,
+                rect.x + 128.0,
+                y,
+                11.0,
+                Color::from_rgba(130, 148, 175, 255),
+            );
+            y += 13.0;
+        }
+    }
+    y += 6.0;
     draw_text(
         &ellipsize(&preview.path, 46),
         rect.x + 128.0,
@@ -2483,8 +2499,8 @@ fn draw_asset_preview(game: &mut Game, state: &mut EditorState, rect: RectSpec) 
         13.0,
         Color::from_rgba(170, 185, 210, 255),
     );
-
-    let button_y = rect.y + 120.0;
+    y += 20.0;
+    let button_y = (y + 6.0).max(rect.y + 118.0);
     if button(
         rect.x + 12.0,
         button_y,
@@ -2506,7 +2522,7 @@ fn draw_asset_preview(game: &mut Game, state: &mut EditorState, rect: RectSpec) 
         state.drag_payload = Some(DragPayload::from_asset(asset));
     }
 
-    y = rect.y + 160.0;
+    y = button_y + 38.0;
     draw_asset_preview_section(rect.x + 12.0, &mut y, "Labels", &preview.labels);
     draw_asset_preview_section(rect.x + 12.0, &mut y, "Details", &preview.details);
     draw_asset_preview_section(rect.x + 12.0, &mut y, "Deps", &preview.dependencies);
@@ -2938,6 +2954,17 @@ fn draw_profiler_panel(game: &Game, rect: RectSpec) {
         Color::from_rgba(180, 220, 255, 255),
     );
     y4 += 20.0;
+    if let Some((name, ms)) = game.profiler.slowest_system() {
+        let total = game.profiler.systems_time_total_ms();
+        draw_text(
+            &format!("Peak: {name} {ms:.1} ms | Σ {total:.1} ms"),
+            rect.x + 650.0,
+            y4,
+            13.0,
+            Color::from_rgba(255, 210, 140, 255),
+        );
+        y4 += 17.0;
+    }
     for (name, value) in game.profiler.rows().iter().take(7) {
         draw_text(
             &format!("{name}: {value}"),
@@ -2993,6 +3020,7 @@ fn draw_command_palette(game: &mut Game, state: &mut EditorState, sw: f32, sh: f
         ("Create TopDown starter scene", "starter_topdown"),
         ("Create Platformer starter scene", "starter_platformer"),
         ("Create RTS skirmish scene", "rts_skirmish"),
+        ("Toggle Play Mode (snapshot)", "toggle_play"),
         ("Add Health to selected", "add_health"),
         ("Add NavAgent to selected", "add_nav"),
         ("Add VisualScript to selected", "add_visual"),
@@ -3103,6 +3131,7 @@ fn run_palette_command(game: &mut Game, state: &mut EditorState, command: &str) 
             game.create_platformer_starter();
         }
         "rts_skirmish" => game.create_rts_skirmish(),
+        "toggle_play" => toggle_play_mode(game),
         "add_health" => {
             if let Some(id) = selected_id(game) {
                 add_component(game, id, "Health");
@@ -3249,7 +3278,7 @@ fn draw_status_bar(game: &Game, state: &EditorState, rect: RectSpec) {
     let layer = &game.tilemap_layers.layers[game.tilemap_layers.active_layer].name;
     draw_text(
         &format!(
-            "FPS {:.0} | frame {:.2} ms avg {:.2} | {} | zoom {:.2} | camera {:.0},{:.0} | tool {} | layer {} | {}{}",
+            "FPS {:.0} | frame {:.2} ms avg {:.2} | {} | zoom {:.2} | camera {:.0},{:.0} | tool {} | layer {} | {}{}{}",
             game.diagnostics.fps,
             game.diagnostics.frame_time_ms,
             game.diagnostics.average_frame_time_ms,
@@ -3261,6 +3290,11 @@ fn draw_status_bar(game: &Game, state: &EditorState, rect: RectSpec) {
             state.tool.label(),
             layer,
             if game.scene_dirty { "dirty" } else { "clean" },
+            if game.mode == "PLAY" {
+                format!(" | PLAY#{}", game.play_mode_manager.frame_count)
+            } else {
+                String::new()
+            },
             if state.paused { " | paused" } else { "" }
         ),
         rect.x + 12.0,
@@ -3657,7 +3691,9 @@ pub async fn run_exported_runtime_player() {
             }
         }
         Err(e) => {
-            eprintln!("Advertencia: no se pudo validar runtime_manifest.json ({e}). Se intenta cargar el proyecto igualmente.");
+            eprintln!(
+                "Advertencia: no se pudo validar runtime_manifest.json ({e}). Se intenta cargar el proyecto igualmente."
+            );
         }
     }
     if let Err(error) = AssetTools::ensure_project_folders(&build_root) {
@@ -3673,10 +3709,7 @@ pub async fn run_exported_runtime_player() {
     };
     game.selected_units.clear();
     game.console.log(
-        format!(
-            "Runtime player: {} (Esc para salir)",
-            build_root.display()
-        ),
+        format!("Runtime player: {} (Esc para salir)", build_root.display()),
         "RUNTIME",
     );
     loop {

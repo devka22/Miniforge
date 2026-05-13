@@ -1,0 +1,14 @@
+{
+  "version": "0.7.0",
+  "kind": "MiniForgeVisualGraph",
+  "runtime": "rust_visual_graph",
+  "name": "NewScript1",
+  "variables": {
+    "enabled": true
+  },
+  "nodes": [
+    {"id": "start", "type": "EventStart", "next": "log"},
+    {"id": "log", "type": "Log", "message": "NewScript1 graph started", "next": null},
+    {"id": "update", "type": "EventUpdate", "next": null}
+  ]
+}

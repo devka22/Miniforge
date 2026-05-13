@@ -2,6 +2,8 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
+use serde_json::Value;
+
 #[derive(Debug, Clone, Default)]
 pub struct ScriptDocument {
     pub path: Option<PathBuf>,
@@ -37,31 +39,27 @@ impl ScriptEditor {
 
     pub fn validate(&mut self) -> bool {
         let source = self.lines.join("\n");
-        let mut paren = 0i32;
-        for (line_number, ch) in source.chars().enumerate() {
-            match ch {
-                '(' | '[' | '{' => paren += 1,
-                ')' | ']' | '}' => paren -= 1,
-                _ => {}
-            }
-            if paren < 0 {
-                self.document.syntax_error =
-                    Some(format!("Unbalanced closing delimiter near {line_number}"));
+        let data = match serde_json::from_str::<Value>(&source) {
+            Ok(data) => data,
+            Err(error) => {
+                self.document.syntax_error = Some(format!("Invalid graph JSON: {error}"));
                 return false;
             }
+        };
+        let Some(nodes) = data.get("nodes").and_then(Value::as_array) else {
+            self.document.syntax_error = Some("Graph is missing nodes array".to_string());
+            return false;
+        };
+        if nodes.is_empty() {
+            self.document.syntax_error = Some("Graph has no nodes".to_string());
+            return false;
         }
-        for (index, line) in self.lines.iter().enumerate() {
-            let trimmed = line.trim_end();
-            if trimmed.starts_with("def ") && !trimmed.ends_with(':') {
-                self.document.syntax_error = Some(format!(
-                    "Function declaration missing ':' at line {}",
-                    index + 1
-                ));
-                return false;
-            }
-        }
-        if paren != 0 {
-            self.document.syntax_error = Some("Unbalanced delimiters".to_string());
+        if !nodes.iter().any(|node| {
+            node.get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind.starts_with("Event"))
+        }) {
+            self.document.syntax_error = Some("Graph needs an Event node".to_string());
             return false;
         }
         self.document.syntax_error = None;

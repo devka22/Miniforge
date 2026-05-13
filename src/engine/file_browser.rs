@@ -241,7 +241,11 @@ impl FileBrowser {
     }
 
     pub fn create_script(&self, name: &str) -> io::Result<PathBuf> {
-        AssetTools::create_script(&self.project_path, name)
+        AssetTools::create_rhai_script(&self.project_path, name)
+    }
+
+    pub fn create_rhai_script(&self, name: &str) -> io::Result<PathBuf> {
+        AssetTools::create_rhai_script(&self.project_path, name)
     }
 
     pub fn create_visual_graph(&self, name: &str) -> io::Result<PathBuf> {
@@ -272,12 +276,24 @@ impl FileBrowser {
         AssetTools::create_prefab(&self.project_path, name)
     }
 
+    pub fn create_enemy(&self, name: &str) -> io::Result<PathBuf> {
+        AssetTools::create_enemy_prefab(&self.project_path, name)
+    }
+
+    pub fn create_ui(&self, name: &str) -> io::Result<PathBuf> {
+        AssetTools::create_ui_asset(&self.project_path, name)
+    }
+
     pub fn create_sprite_import(&self, name: &str, source_path: &str) -> io::Result<PathBuf> {
         AssetTools::create_sprite_import(&self.project_path, name, source_path)
     }
 
     pub fn create_sound_cue(&self, name: &str, source_path: &str) -> io::Result<PathBuf> {
         AssetTools::create_sound_cue(&self.project_path, name, source_path)
+    }
+
+    pub fn create_audio_event(&self, name: &str) -> io::Result<PathBuf> {
+        AssetTools::create_audio_event(&self.project_path, name)
     }
 
     pub fn create_material(&self, name: &str) -> io::Result<PathBuf> {
@@ -319,8 +335,14 @@ fn asset_type(path: &Path) -> String {
     if filename.ends_with(".sound.json") {
         return "Audio".to_string();
     }
+    if filename.ends_with(".audio.json") {
+        return "AudioEvent".to_string();
+    }
     if filename.ends_with(".material.json") {
         return "Material".to_string();
+    }
+    if filename.ends_with(".ui.prefab") {
+        return "UI".to_string();
     }
     match path
         .extension()
@@ -333,8 +355,8 @@ fn asset_type(path: &Path) -> String {
         "wav" | "mp3" | "ogg" | "flac" => "Audio",
         "prefab" => "Prefab",
         "scene" => "Scene",
+        "rhai" => "RhaiScript",
         "mfgraph" => "VisualGraph",
-        "py" => "LegacyScript",
         "json" | "txt" | "csv" | "ron" | "toml" => "Data",
         "glsl" | "wgsl" => "Shader",
         "ttf" | "otf" => "Font",
@@ -370,7 +392,7 @@ fn ignored_path(path: &Path) -> bool {
         .unwrap_or("");
     matches!(
         name,
-        ".git" | "target" | "__pycache__" | ".DS_Store" | "asset_metadata.json"
+        ".git" | "target" | ".DS_Store" | "asset_metadata.json"
     )
 }
 

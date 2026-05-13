@@ -78,15 +78,20 @@ impl PluginManager {
             if !plugin.enabled {
                 continue;
             }
-            let plugin_py = plugin.path.join("plugin.py");
-            if !plugin_py.exists() {
-                continue;
-            }
-            let source = fs::read_to_string(plugin_py).unwrap_or_default();
-            if source.contains(&format!("def {hook_name}(")) {
+            if manifest_declares_hook(&plugin.manifest, hook_name) {
                 count += 1;
             }
         }
         Ok(count)
     }
+}
+
+fn manifest_declares_hook(manifest: &Value, hook_name: &str) -> bool {
+    if let Some(hooks) = manifest.get("hooks").and_then(Value::as_array) {
+        return hooks.iter().any(|hook| hook.as_str() == Some(hook_name));
+    }
+    if let Some(hooks) = manifest.get("hooks").and_then(Value::as_object) {
+        return hooks.contains_key(hook_name);
+    }
+    false
 }

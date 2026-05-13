@@ -1,11 +1,3 @@
-__pycache__/
-*.py[cod]
-*$py.class
-
-.venv/
-venv/
-env/
-
 target/
 target/tmp/
 

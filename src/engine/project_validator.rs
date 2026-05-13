@@ -31,7 +31,7 @@ impl ProjectValidator {
         self.validate_folders(&paths);
         self.validate_project_files(project_path);
         self.validate_json_files(project_path);
-        self.validate_scripts(&[&paths.scripts, &paths.components, &paths.systems]);
+        self.validate_program_assets(&paths.scripts);
         self.validate_scenes(&paths.scenes);
         self.validate_prefabs(&paths.prefabs);
         self.validate_asset_references(entities, asset_database);
@@ -76,17 +76,29 @@ impl ProjectValidator {
         }
     }
 
-    fn validate_scripts(&mut self, roots: &[&PathBuf]) {
-        for root in roots {
-            for path in walk_files(root) {
-                if path.extension().and_then(|value| value.to_str()) != Some("py") {
-                    continue;
+    fn validate_program_assets(&mut self, root: &PathBuf) {
+        for path in walk_files(root) {
+            if path.extension().and_then(|value| value.to_str()) != Some("mfgraph") {
+                continue;
+            }
+            match AssetTools::read_json(&path) {
+                Ok(data) => {
+                    if data.get("nodes").and_then(Value::as_array).is_none() {
+                        self.errors
+                            .push(format!("Graph sin nodes: {}", path.display()));
+                    }
+                    if data
+                        .get("runtime")
+                        .and_then(Value::as_str)
+                        .is_some_and(|runtime| runtime != "rust_visual_graph")
+                    {
+                        self.warnings
+                            .push(format!("Graph con runtime desconocido: {}", path.display()));
+                    }
                 }
-                let source = fs::read_to_string(&path).unwrap_or_default();
-                if !rough_python_syntax_ok(&source) {
-                    self.errors
-                        .push(format!("Script con error probable: {}", path.display()));
-                }
+                Err(error) => self
+                    .errors
+                    .push(format!("Graph invalido: {} | {error}", path.display())),
             }
         }
     }
@@ -200,27 +212,4 @@ fn walk_files(root: &Path) -> Vec<PathBuf> {
         }
     }
     files
-}
-
-fn rough_python_syntax_ok(source: &str) -> bool {
-    let mut delimiters = Vec::new();
-    for ch in source.chars() {
-        match ch {
-            '(' | '[' | '{' => delimiters.push(ch),
-            ')' if delimiters.pop() != Some('(') => {
-                return false;
-            }
-            ']' if delimiters.pop() != Some('[') => {
-                return false;
-            }
-            '}' if delimiters.pop() != Some('{') => {
-                return false;
-            }
-            _ => {}
-        }
-    }
-    delimiters.is_empty()
-        && source
-            .lines()
-            .all(|line| !line.trim_start().starts_with("def ") || line.trim_end().ends_with(':'))
 }

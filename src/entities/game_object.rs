@@ -35,6 +35,7 @@ pub struct GameObject {
     pub prefab_source: Option<String>,
     pub prefab_guid: Option<String>,
     pub is_prefab_instance: bool,
+    pub scene_name: Option<String>,
     pub state: String,
     pub command: String,
     pub path: Vec<(f64, f64)>,
@@ -103,6 +104,7 @@ impl GameObject {
             prefab_source: None,
             prefab_guid: None,
             is_prefab_instance: false,
+            scene_name: None,
             state: "IDLE".to_string(),
             command: "IDLE".to_string(),
             path: Vec::new(),
@@ -291,6 +293,7 @@ impl GameObject {
             "prefab_source": self.prefab_source,
             "prefab_guid": self.prefab_guid,
             "is_prefab_instance": self.is_prefab_instance,
+            "scene_name": self.scene_name,
             "patrol_points": self.patrol_points,
             "patrol_index": self.patrol_index,
             "follow_target_id": self.follow_target_id,
@@ -408,6 +411,10 @@ impl GameObject {
             .get("is_prefab_instance")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        object.scene_name = data
+            .get("scene_name")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
         object.state = data
             .get("state")
             .and_then(Value::as_str)

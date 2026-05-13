@@ -190,7 +190,7 @@ impl AssetTools {
             fs::write(
                 readme,
                 format!(
-                    "# {project_name}\n\nProyecto creado con MiniForge {ENGINE_VERSION}.\n\n## Carpetas\n\n- assets/sprites\n- assets/audio\n- assets/data\n- assets/prefabs\n- scripts\n- components\n- systems\n- scenes\n- settings\n"
+                    "# {project_name}\n\nProyecto creado con MiniForge {ENGINE_VERSION}.\n\n## Carpetas\n\n- assets/sprites\n- assets/audio\n- assets/data\n- assets/prefabs\n- scripts/visual_graphs\n- components\n- systems\n- scenes\n- settings\n"
                 ),
             )?;
         }
@@ -295,12 +295,6 @@ impl AssetTools {
         Ok(path)
     }
 
-    pub fn template_basic_script(class_name: &str) -> String {
-        format!(
-            "class {class_name}:\n    \"\"\"\n    Script creado desde MiniForge {ENGINE_VERSION}.\n    El motor acepta start() / start(entity) y update(dt) / update(entity, dt).\n    \"\"\"\n\n    def __init__(self):\n        self.script_name = \"{class_name}\"\n        self.enabled = True\n        self.started = False\n\n    def start(self):\n        pass\n\n    def update(self, dt):\n        pass\n"
-        )
-    }
-
     pub fn template_visual_graph(graph_name: &str) -> Value {
         json!({
             "version": ENGINE_VERSION,
@@ -316,16 +310,70 @@ impl AssetTools {
         })
     }
 
-    pub fn template_component(class_name: &str) -> String {
+    pub fn template_rhai_script(script_name: &str) -> String {
         format!(
-            "class {class_name}:\n    def __init__(self):\n        self.component_type = \"{class_name}\"\n        self.enabled = True\n\n    def start(self, entity):\n        pass\n\n    def update(self, entity, dt):\n        pass\n\n    def serialize(self):\n        return {{\"component_type\": self.component_type, \"enabled\": self.enabled}}\n"
+            r#"// MiniForge Rhai script: {script_name}
+// Attach this file to an entity with script = "{script_name}.rhai".
+
+fn on_start() {{
+    // play_sound("spawn");
+}}
+
+fn on_update(dt) {{
+    if input_pressed("A") {{
+        move(-4.0 * dt, 0.0);
+    }}
+    if input_pressed("D") {{
+        move(4.0 * dt, 0.0);
+    }}
+}}
+
+fn on_key_down(key) {{
+    if key == "Space" {{
+        play_sound("jump");
+    }}
+}}
+
+fn on_collision_enter(other) {{
+    // ui_text("Hit " + other);
+}}
+
+fn on_destroy() {{
+}}
+"#
         )
     }
 
-    pub fn template_system(class_name: &str) -> String {
-        format!(
-            "class {class_name}:\n    def __init__(self, game):\n        self.game = game\n        self.enabled = True\n        self.run_in_editor = False\n        self.run_in_play = True\n\n    def update(self, dt):\n        if not self.enabled:\n            return\n        pass\n"
-        )
+    pub fn template_component(component_name: &str) -> Value {
+        json!({
+            "version": ENGINE_VERSION,
+            "kind": "MiniForgeComponentDefinition",
+            "runtime": "rust_component_data",
+            "component_type": component_name,
+            "enabled": true,
+            "fields": {
+                "enabled": {"type": "bool", "default": true}
+            },
+            "editor": {
+                "category": "Custom",
+                "icon": "component"
+            }
+        })
+    }
+
+    pub fn template_system(system_name: &str) -> Value {
+        json!({
+            "version": ENGINE_VERSION,
+            "kind": "MiniForgeSystemDefinition",
+            "runtime": "rust_system_data",
+            "system": system_name,
+            "enabled": true,
+            "run_in_editor": false,
+            "run_in_play": true,
+            "reads": [],
+            "writes": [],
+            "schedule": {"phase": "Gameplay", "order": 100}
+        })
     }
 
     pub fn template_scene(scene_name: &str) -> Value {
@@ -405,6 +453,74 @@ impl AssetTools {
         })
     }
 
+    pub fn template_audio_event(event_name: &str) -> Value {
+        json!({
+            "version": ENGINE_VERSION,
+            "kind": "MiniForgeAudioEvent",
+            "runtime": "kira",
+            "name": event_name,
+            "bus": "SFX",
+            "volume": 1.0,
+            "fade_seconds": 0.0,
+            "actions": [
+                {"type": "play_sfx", "cue": event_name, "loop": false}
+            ],
+        })
+    }
+
+    pub fn template_enemy_prefab(enemy_name: &str) -> Value {
+        json!({
+            "version": ENGINE_VERSION,
+            "engine_version": ENGINE_VERSION,
+            "prefab_name": enemy_name,
+            "entity": {
+                "type": "Unit",
+                "name": enemy_name,
+                "enabled": true,
+                "visible": true,
+                "locked": false,
+                "x": 0,
+                "y": 0,
+                "speed": 2.8,
+                "radius": 0.45,
+                "sprite_name": null,
+                "script": "EnemyBrain.rhai",
+                "tag": "Enemy",
+                "layer": "Units",
+                "state": "IDLE",
+                "command": "IDLE",
+                "components": [
+                    {"component_type": "Transform", "x": 0.0, "y": 0.0, "rotation": 0.0, "scale_x": 1.0, "scale_y": 1.0},
+                    {"component_type": "Health", "health": 60.0, "max_health": 60.0, "alive": true},
+                    {"component_type": "Stats", "attack": 8.0, "defense": 1.0, "speed": 2.8},
+                    {"component_type": "Collider2D", "shape": "circle", "radius": 0.45, "collision_layer": "Enemy", "collision_mask": ["Default", "Player", "Projectile"]},
+                    {"component_type": "Rigidbody2D", "body_type": "dynamic", "use_gravity": false, "friction": 0.4}
+                ],
+                "scripts": [{"runtime": "rhai", "path": "EnemyBrain.rhai"}],
+            },
+        })
+    }
+
+    pub fn template_ui_asset(ui_name: &str) -> Value {
+        json!({
+            "version": ENGINE_VERSION,
+            "kind": "MiniForgeUIPrefab",
+            "name": ui_name,
+            "entity": {
+                "type": "GameObject",
+                "name": ui_name,
+                "tag": "UI",
+                "layer": "UI",
+                "visible": true,
+                "components": [
+                    {"component_type": "Transform", "x": 24.0, "y": 24.0, "rotation": 0.0, "scale_x": 1.0, "scale_y": 1.0},
+                    {"component_type": "UIElement", "element_type": "Label", "text": ui_name, "width": 180.0, "height": 42.0, "interactable": false}
+                ],
+                "scripts": [],
+            },
+        })
+    }
+
     pub fn template_material(material_name: &str) -> Value {
         json!({
             "version": ENGINE_VERSION,
@@ -418,35 +534,54 @@ impl AssetTools {
         })
     }
 
-    fn class_name_from_file_name(name: &str, fallback: &str) -> String {
-        let stem = Path::new(name)
-            .file_stem()
+    fn logical_name_from_file_name(name: &str, fallback: &str) -> String {
+        let file_name = Path::new(name)
+            .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or(name);
-        let mut class_name = String::new();
-        for part in stem.replace('-', "_").split('_') {
+        let stem = file_name
+            .strip_suffix(".component.json")
+            .or_else(|| file_name.strip_suffix(".system.json"))
+            .or_else(|| file_name.strip_suffix(".mfgraph"))
+            .or_else(|| file_name.strip_suffix(".rhai"))
+            .or_else(|| {
+                Path::new(file_name)
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+            })
+            .unwrap_or(file_name);
+        let mut asset_name = String::new();
+        for part in stem.replace(['-', '.', ' '], "_").split('_') {
             let mut chars = part.chars();
             if let Some(first) = chars.next() {
-                class_name.extend(first.to_uppercase());
-                class_name.push_str(chars.as_str());
+                asset_name.extend(first.to_uppercase());
+                asset_name.push_str(chars.as_str());
             }
         }
-        if class_name.is_empty() {
+        if asset_name.is_empty() {
             fallback.to_string()
         } else {
-            class_name
+            asset_name
         }
     }
 
     pub fn create_script(project_path: impl AsRef<Path>, name: &str) -> io::Result<PathBuf> {
         let paths = Self::get_project_paths(project_path);
         let mut filename = Self::safe_name(name, "NewScript");
-        if !filename.ends_with(".py") {
-            filename.push_str(".py");
+        if Path::new(&filename)
+            .extension()
+            .and_then(|value| value.to_str())
+            != Some("mfgraph")
+        {
+            let stem = Path::new(&filename)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("NewScript");
+            filename = format!("{stem}.mfgraph");
         }
-        let class_name = Self::class_name_from_file_name(&filename, "NewScript");
-        let path = Self::unique_path(paths.scripts, &filename);
-        Self::create_file(path, &Self::template_basic_script(&class_name), true)
+        let graph_name = Self::logical_name_from_file_name(&filename, "NewScript");
+        let path = Self::unique_path(paths.visual_graphs, &filename);
+        Self::create_json_file(path, &Self::template_visual_graph(&graph_name), true)
     }
 
     pub fn create_visual_graph(project_path: impl AsRef<Path>, name: &str) -> io::Result<PathBuf> {
@@ -463,26 +598,53 @@ impl AssetTools {
         Self::create_json_file(path, &Self::template_visual_graph(graph_name), true)
     }
 
+    pub fn create_rhai_script(project_path: impl AsRef<Path>, name: &str) -> io::Result<PathBuf> {
+        let paths = Self::get_project_paths(project_path);
+        let mut filename = Self::safe_name(name, "NewScript");
+        if !filename.ends_with(".rhai") {
+            let stem = Path::new(&filename)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("NewScript");
+            filename = format!("{stem}.rhai");
+        }
+        let script_name = Self::logical_name_from_file_name(&filename, "NewScript");
+        let path = Self::unique_path(paths.scripts, &filename);
+        Self::create_file(path, &Self::template_rhai_script(&script_name), true)
+    }
+
     pub fn create_component(project_path: impl AsRef<Path>, name: &str) -> io::Result<PathBuf> {
         let paths = Self::get_project_paths(project_path);
         let mut filename = Self::safe_name(name, "NewComponent");
-        if !filename.ends_with(".py") {
-            filename.push_str(".py");
+        if !filename.ends_with(".component.json") {
+            filename = format!(
+                "{}.component.json",
+                Path::new(&filename)
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("NewComponent")
+            );
         }
-        let class_name = Self::class_name_from_file_name(&filename, "NewComponent");
+        let component_name = Self::logical_name_from_file_name(&filename, "NewComponent");
         let path = Self::unique_path(paths.components, &filename);
-        Self::create_file(path, &Self::template_component(&class_name), true)
+        Self::create_json_file(path, &Self::template_component(&component_name), true)
     }
 
     pub fn create_system(project_path: impl AsRef<Path>, name: &str) -> io::Result<PathBuf> {
         let paths = Self::get_project_paths(project_path);
         let mut filename = Self::safe_name(name, "NewSystem");
-        if !filename.ends_with(".py") {
-            filename.push_str(".py");
+        if !filename.ends_with(".system.json") {
+            filename = format!(
+                "{}.system.json",
+                Path::new(&filename)
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("NewSystem")
+            );
         }
-        let class_name = Self::class_name_from_file_name(&filename, "NewSystem");
+        let system_name = Self::logical_name_from_file_name(&filename, "NewSystem");
         let path = Self::unique_path(paths.systems, &filename);
-        Self::create_file(path, &Self::template_system(&class_name), true)
+        Self::create_json_file(path, &Self::template_system(&system_name), true)
     }
 
     pub fn create_json(
@@ -547,6 +709,20 @@ impl AssetTools {
         Self::create_json_file(path, &Self::template_prefab(prefab_name), true)
     }
 
+    pub fn create_enemy_prefab(project_path: impl AsRef<Path>, name: &str) -> io::Result<PathBuf> {
+        let paths = Self::get_project_paths(project_path);
+        let safe = Self::safe_name(name, "Enemy");
+        let path = Self::unique_path(&paths.prefabs, &format!("{safe}.prefab"));
+        Self::create_json_file(path, &Self::template_enemy_prefab(&safe), true)
+    }
+
+    pub fn create_ui_asset(project_path: impl AsRef<Path>, name: &str) -> io::Result<PathBuf> {
+        let paths = Self::get_project_paths(project_path);
+        let safe = Self::safe_name(name, "NewUI");
+        let path = Self::unique_path(&paths.prefabs, &format!("{safe}.ui.prefab"));
+        Self::create_json_file(path, &Self::template_ui_asset(&safe), true)
+    }
+
     pub fn create_sprite_import(
         project_path: impl AsRef<Path>,
         name: &str,
@@ -571,6 +747,13 @@ impl AssetTools {
         let safe = Self::safe_name(name, "SoundCue");
         let path = Self::unique_path(paths.audio, &format!("{safe}.sound.json"));
         Self::create_json_file(path, &Self::template_sound_cue(&safe, source_path), true)
+    }
+
+    pub fn create_audio_event(project_path: impl AsRef<Path>, name: &str) -> io::Result<PathBuf> {
+        let paths = Self::get_project_paths(project_path);
+        let safe = Self::safe_name(name, "AudioEvent");
+        let path = Self::unique_path(paths.audio, &format!("{safe}.audio.json"));
+        Self::create_json_file(path, &Self::template_audio_event(&safe), true)
     }
 
     pub fn create_material(project_path: impl AsRef<Path>, name: &str) -> io::Result<PathBuf> {

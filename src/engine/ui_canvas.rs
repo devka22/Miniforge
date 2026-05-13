@@ -175,17 +175,18 @@ pub fn layout_element_pixels(
     let ay = element_rect.anchor.min_y * root.reference_height;
     let px = ax + element_rect.offset_x - element_rect.pivot_x * element_rect.width;
     let py = ay + element_rect.offset_y - element_rect.pivot_y * element_rect.height;
-    (px * sx, py * sy, element_rect.width * sx, element_rect.height * sy)
+    (
+        px * sx,
+        py * sy,
+        element_rect.width * sx,
+        element_rect.height * sy,
+    )
 }
 
 pub fn ui_canvases_from_value(value: &Value) -> Vec<UiCanvasRoot> {
     value
         .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(UiCanvasRoot::from_value)
-                .collect()
-        })
+        .map(|arr| arr.iter().filter_map(UiCanvasRoot::from_value).collect())
         .unwrap_or_default()
 }
 

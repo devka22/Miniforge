@@ -34,8 +34,7 @@ impl SceneSerializer {
         map.entry("entities".to_string()).or_insert(json!([]));
         map.entry("editor_view_settings".to_string())
             .or_insert(json!({}));
-        map.entry("ui_canvases".to_string())
-            .or_insert(json!([]));
+        map.entry("ui_canvases".to_string()).or_insert(json!([]));
         data
     }
 }

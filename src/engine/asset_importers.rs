@@ -201,10 +201,8 @@ fn compute_wav_peaks(path: &Path, buckets: usize) -> io::Result<Vec<f32>> {
         let size = u32::from_le_bytes(buf[offset + 4..offset + 8].try_into().unwrap()) as usize;
         offset += 8;
         if chunk_id == b"fmt " {
-            channels =
-                u16::from_le_bytes(buf[offset + 2..offset + 4].try_into().unwrap());
-            bits =
-                u16::from_le_bytes(buf[offset + 14..offset + 16].try_into().unwrap());
+            channels = u16::from_le_bytes(buf[offset + 2..offset + 4].try_into().unwrap());
+            bits = u16::from_le_bytes(buf[offset + 14..offset + 16].try_into().unwrap());
         } else if chunk_id == b"data" {
             data_len = size;
             data_off = offset;

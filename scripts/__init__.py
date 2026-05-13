@@ -1,1 +1,0 @@
-# Carpeta de scripts del proyecto.

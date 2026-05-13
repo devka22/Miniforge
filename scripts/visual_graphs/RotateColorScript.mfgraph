@@ -1,0 +1,16 @@
+{
+  "version": "0.7.0",
+  "kind": "MiniForgeVisualGraph",
+  "runtime": "rust_visual_graph",
+  "name": "RotateColorScript",
+  "variables": {
+    "timer": 0.0,
+    "debug_color_flip": false
+  },
+  "nodes": [
+    {"id": "start", "type": "EventStart", "next": "log"},
+    {"id": "log", "type": "Log", "message": "Color flip graph ready", "next": null},
+    {"id": "update", "type": "EventUpdate", "next": "set"},
+    {"id": "set", "type": "SetVariable", "name": "debug_color_flip", "value": true, "next": null}
+  ]
+}

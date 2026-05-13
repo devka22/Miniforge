@@ -15,20 +15,42 @@ use crate::map::grid::Grid;
 pub struct SceneManager {
     pub project_path: PathBuf,
     pub current_scene: String,
+    pub loaded_scenes: Vec<String>,
+    pub scene_stack: Vec<String>,
+    pub transition: Option<SceneTransition>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneTransition {
+    pub from_scene: String,
+    pub to_scene: String,
+    pub kind: String,
+    pub duration: f64,
+    pub elapsed: f64,
+    pub complete: bool,
 }
 
 impl SceneManager {
     pub fn new(project_path: impl AsRef<Path>) -> Self {
+        let current_scene = "main.scene".to_string();
         Self {
             project_path: project_path.as_ref().to_path_buf(),
-            current_scene: "main.scene".to_string(),
+            loaded_scenes: vec![current_scene.clone()],
+            scene_stack: vec![current_scene.clone()],
+            current_scene,
+            transition: None,
         }
     }
 
     pub fn scene_path(&self) -> PathBuf {
+        self.scene_path_for(&self.current_scene)
+    }
+
+    pub fn scene_path_for(&self, name: &str) -> PathBuf {
+        let scene_name = normalize_scene_name(name);
         AssetTools::get_project_paths(&self.project_path)
             .scenes
-            .join(&self.current_scene)
+            .join(scene_name)
     }
 
     pub fn create_new_scene(&mut self, name: &str) -> io::Result<PathBuf> {
@@ -42,17 +64,12 @@ impl SceneManager {
     }
 
     pub fn open_scene(&mut self, name: &str) -> io::Result<bool> {
-        let mut scene_name = AssetTools::safe_name(name, "main");
-        if !scene_name.ends_with(".scene") {
-            scene_name.push_str(".scene");
-        }
-        let path = AssetTools::get_project_paths(&self.project_path)
-            .scenes
-            .join(&scene_name);
+        let scene_name = normalize_scene_name(name);
+        let path = self.scene_path_for(&scene_name);
         if !path.exists() {
             return Ok(false);
         }
-        self.current_scene = scene_name;
+        self.set_single_loaded_scene(scene_name);
         Ok(true)
     }
 
@@ -83,6 +100,7 @@ impl SceneManager {
             .and_then(|value| value.to_str())
             .unwrap_or("main.scene")
             .to_string();
+        self.set_single_loaded_scene(self.current_scene.clone());
         Ok(target)
     }
 
@@ -148,7 +166,11 @@ impl SceneManager {
     }
 
     pub fn load_current_scene_data(&self) -> io::Result<Value> {
-        let path = self.scene_path();
+        self.load_scene_data(&self.current_scene)
+    }
+
+    pub fn load_scene_data(&self, name: &str) -> io::Result<Value> {
+        let path = self.scene_path_for(name);
         if !path.exists() {
             return Ok(json!({}));
         }
@@ -156,18 +178,148 @@ impl SceneManager {
     }
 
     pub fn load_current_scene(&self) -> io::Result<Vec<GameObject>> {
-        let data = self.load_current_scene_data()?;
+        self.load_scene_entities(&self.current_scene)
+    }
+
+    pub fn load_scene_entities(&self, name: &str) -> io::Result<Vec<GameObject>> {
+        let scene_name = normalize_scene_name(name);
+        let data = self.load_scene_data(&scene_name)?;
         let entities = data
             .get("entities")
             .and_then(Value::as_array)
             .map(|items| {
                 items
                     .iter()
-                    .map(|item| GameObject::from_data(item, true))
+                    .map(|item| {
+                        let mut entity = GameObject::from_data(item, true);
+                        entity.scene_name = Some(scene_name.clone());
+                        entity
+                    })
                     .collect()
             })
             .unwrap_or_default();
         Ok(entities)
+    }
+
+    pub fn load_scene(
+        &mut self,
+        name: &str,
+        current_entities: &[GameObject],
+    ) -> io::Result<Vec<GameObject>> {
+        let scene_name = normalize_scene_name(name);
+        let mut next_entities = preserve_dont_destroy_entities(current_entities);
+        next_entities.extend(self.load_scene_entities(&scene_name)?);
+        self.set_single_loaded_scene(scene_name);
+        Ok(next_entities)
+    }
+
+    pub fn load_scene_additive(
+        &mut self,
+        name: &str,
+        entities: &mut Vec<GameObject>,
+    ) -> io::Result<usize> {
+        let scene_name = normalize_scene_name(name);
+        let mut loaded = self.load_scene_entities(&scene_name)?;
+        let before = entities.len();
+        loaded.retain(|entity| !entities.iter().any(|existing| existing.id == entity.id));
+        entities.extend(loaded);
+        if !self.loaded_scenes.iter().any(|scene| scene == &scene_name) {
+            self.loaded_scenes.push(scene_name.clone());
+        }
+        self.current_scene = scene_name;
+        Ok(entities.len() - before)
+    }
+
+    pub fn unload_scene(&mut self, name: &str, entities: &mut Vec<GameObject>) -> usize {
+        let scene_name = normalize_scene_name(name);
+        let before = entities.len();
+        entities.retain(|entity| {
+            entity.scene_name.as_deref() != Some(scene_name.as_str())
+                || entity_survives_scene_load(entity)
+        });
+        self.loaded_scenes.retain(|scene| scene != &scene_name);
+        if self.current_scene == scene_name {
+            self.current_scene = self
+                .loaded_scenes
+                .last()
+                .cloned()
+                .unwrap_or_else(|| "main.scene".to_string());
+        }
+        before - entities.len()
+    }
+
+    pub fn restart_scene(
+        &mut self,
+        current_entities: &[GameObject],
+    ) -> io::Result<Vec<GameObject>> {
+        let current = self.current_scene.clone();
+        self.load_scene(&current, current_entities)
+    }
+
+    pub fn push_scene(
+        &mut self,
+        name: &str,
+        current_entities: &[GameObject],
+    ) -> io::Result<Vec<GameObject>> {
+        let previous_stack = if self.scene_stack.is_empty() {
+            vec![self.current_scene.clone()]
+        } else {
+            self.scene_stack.clone()
+        };
+        let scene_name = normalize_scene_name(name);
+        let entities = self.load_scene(&scene_name, current_entities)?;
+        self.scene_stack = previous_stack;
+        if self.scene_stack.last() != Some(&scene_name) {
+            self.scene_stack.push(scene_name);
+        }
+        Ok(entities)
+    }
+
+    pub fn pop_scene(
+        &mut self,
+        current_entities: &[GameObject],
+    ) -> io::Result<Option<Vec<GameObject>>> {
+        if self.scene_stack.len() <= 1 {
+            return Ok(None);
+        }
+        let mut next_stack = self.scene_stack.clone();
+        next_stack.pop();
+        let Some(target) = next_stack.last().cloned() else {
+            return Ok(None);
+        };
+        let entities = self.load_scene(&target, current_entities)?;
+        self.scene_stack = next_stack;
+        Ok(Some(entities))
+    }
+
+    pub fn transition_to_scene(
+        &mut self,
+        name: &str,
+        kind: &str,
+        duration: f64,
+        current_entities: &[GameObject],
+    ) -> io::Result<Vec<GameObject>> {
+        let target = normalize_scene_name(name);
+        self.transition = Some(SceneTransition {
+            from_scene: self.current_scene.clone(),
+            to_scene: target.clone(),
+            kind: kind.to_string(),
+            duration: duration.max(0.0),
+            elapsed: 0.0,
+            complete: duration <= 0.0,
+        });
+        self.load_scene(&target, current_entities)
+    }
+
+    pub fn update_transition(&mut self, dt: f64) -> Option<SceneTransition> {
+        let transition = self.transition.as_mut()?;
+        transition.elapsed = (transition.elapsed + dt.max(0.0)).min(transition.duration);
+        transition.complete =
+            transition.duration <= 0.0 || transition.elapsed >= transition.duration;
+        if transition.complete {
+            return self.transition.take();
+        }
+        Some(transition.clone())
     }
 
     pub fn list_scenes(&self) -> io::Result<Vec<String>> {
@@ -198,6 +350,35 @@ impl SceneManager {
             .position(|name| name == &self.current_scene)
             .unwrap_or(0);
         self.current_scene = scenes[(index + 1) % scenes.len()].clone();
+        self.set_single_loaded_scene(self.current_scene.clone());
         Ok(Some(self.current_scene.clone()))
     }
+
+    fn set_single_loaded_scene(&mut self, scene_name: String) {
+        self.current_scene = scene_name.clone();
+        self.loaded_scenes = vec![scene_name.clone()];
+        self.scene_stack = vec![scene_name];
+    }
+}
+
+pub fn normalize_scene_name(name: &str) -> String {
+    let mut scene_name = AssetTools::safe_name(name, "main");
+    if !scene_name.ends_with(".scene") {
+        scene_name.push_str(".scene");
+    }
+    scene_name
+}
+
+pub fn entity_survives_scene_load(entity: &GameObject) -> bool {
+    entity
+        .get_component("DontDestroyOnLoad")
+        .is_some_and(|component| component.enabled && component.get_bool("preserve", true))
+}
+
+fn preserve_dont_destroy_entities(entities: &[GameObject]) -> Vec<GameObject> {
+    entities
+        .iter()
+        .filter(|entity| entity_survives_scene_load(entity))
+        .cloned()
+        .collect()
 }

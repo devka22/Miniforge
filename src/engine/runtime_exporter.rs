@@ -123,16 +123,10 @@ fn should_skip_export(path: &Path) -> bool {
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("");
-    if matches!(
-        name,
-        "__pycache__" | ".pytest_cache" | ".mypy_cache" | "target" | "builds" | "build" | "exports"
-    ) {
+    if matches!(name, ".cache" | "target" | "builds" | "build" | "exports") {
         return true;
     }
-    matches!(
-        path.extension().and_then(|value| value.to_str()),
-        Some("pyc") | Some("pyo")
-    )
+    false
 }
 
 fn collect_used_assets(manifest: &Value) -> Vec<String> {

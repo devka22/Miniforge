@@ -277,6 +277,9 @@ fn detect_asset_type(path: &Path) -> String {
     if filename.ends_with(".sound.json") {
         return "Audio".to_string();
     }
+    if filename.ends_with(".audio.json") {
+        return "AudioEvent".to_string();
+    }
     if filename.ends_with(".material.json") {
         return "Material".to_string();
     }
@@ -291,13 +294,13 @@ fn detect_asset_type(path: &Path) -> String {
         "wav" | "mp3" | "ogg" | "flac" => "Audio",
         "prefab" => "Prefab",
         "scene" => "Scene",
+        "rhai" => "RhaiScript",
         "mfgraph" => "VisualGraph",
         "mat" | "material" => "Material",
         "glsl" | "wgsl" => "Shader",
         "ttf" | "otf" => "Font",
         "tmx" | "tsx" => "Tilemap",
         "mp4" | "mov" | "webm" => "Video",
-        "py" => "LegacyScript",
         "json" | "txt" | "csv" | "ron" | "toml" => "Data",
         _ => "Asset",
     }
@@ -320,12 +323,18 @@ fn default_import_settings(path: &Path) -> Value {
             "spatial": false,
             "preload": true,
         }),
+        "AudioEvent" => json!({
+            "runtime": "kira",
+            "include_in_build": true,
+            "bus": "SFX",
+            "preload": true,
+        }),
         "Material" => json!({"shader": "sprite_default", "include_in_build": true}),
+        "RhaiScript" => json!({"runtime": "rhai", "include_in_build": true, "hot_reload": true}),
         "VisualGraph" => json!({"runtime": "rust_visual_graph", "include_in_build": true}),
         "SpriteSheet" => json!({"include_in_build": true, "grid": {"w": 32, "h": 32}}),
         "Atlas" => json!({"include_in_build": true, "filter": "nearest"}),
         "Shader" => json!({"target": "macroquad", "include_in_build": true}),
-        "LegacyScript" => json!({"runtime": "python_legacy", "include_in_build": false}),
         _ => json!({"include_in_build": true}),
     }
 }
@@ -355,10 +364,7 @@ fn ignored_dir(path: &Path) -> bool {
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("");
-    matches!(
-        name,
-        "__pycache__" | ".git" | "target" | "builds" | ".pytest_cache" | ".mypy_cache"
-    )
+    matches!(name, ".git" | "target" | "builds" | ".cache")
 }
 
 fn file_stats(path: &Path) -> (u64, u64) {
@@ -383,6 +389,10 @@ fn labels_for(path: &Path, asset_type: &str) -> Vec<String> {
     if path_text.contains("/visual_graphs/") {
         labels.push("in-engine-code".to_string());
     }
+    if asset_type == "RhaiScript" {
+        labels.push("gameplay-code".to_string());
+        labels.push("hot-reload".to_string());
+    }
     if path_text.contains("/sprites/") {
         labels.push("rendering".to_string());
     }
@@ -396,9 +406,6 @@ fn labels_for(path: &Path, asset_type: &str) -> Vec<String> {
 
 fn compatibility_for(path: &Path, asset_type: &str, size_bytes: u64) -> Vec<String> {
     let mut notes = Vec::new();
-    if asset_type == "LegacyScript" {
-        notes.push("Legacy Python asset: migrate to .mfgraph or Rust runtime hooks".to_string());
-    }
     if asset_type == "Sprite" && size_bytes > 8 * 1024 * 1024 {
         notes.push("Large sprite: consider atlas/import compression".to_string());
     }

@@ -15,6 +15,18 @@ impl ComponentValidation {
                 changed |= min_value(component, "mass", 0.0001);
                 changed |= min_value(component, "drag", 0.0);
                 changed |= min_value(component, "angular_drag", 0.0);
+                changed |= clamp(component, "friction", 0.0, 1.0);
+                changed |= clamp(component, "bounciness", 0.0, 1.0);
+                let body_type = component.get_string("body_type", "dynamic");
+                if !matches!(body_type.as_str(), "dynamic" | "static" | "kinematic") {
+                    component.set("body_type", serde_json::json!("dynamic"));
+                    changed = true;
+                }
+            }
+            "Collider2D" => {
+                changed |= min_value(component, "width", 0.001);
+                changed |= min_value(component, "height", 0.001);
+                changed |= min_value(component, "radius", 0.001);
             }
             "RTSMovement" => {
                 changed |= min_value(component, "speed", 0.0);

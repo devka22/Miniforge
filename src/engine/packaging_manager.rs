@@ -100,9 +100,9 @@ fn copy_export_tree(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 fn should_skip_packaging_copy(path: &Path) -> bool {
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
-    matches!(name, "_pkg_work" | "exports" | "target" | "build" | "builds")
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    matches!(
+        name,
+        "_pkg_work" | "exports" | "target" | "build" | "builds"
+    )
 }

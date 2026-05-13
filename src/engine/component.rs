@@ -911,6 +911,8 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "angular_velocity": 0.0,
             "mass": 1.0,
             "gravity_scale": 1.0,
+            "gravity_x": null,
+            "gravity_y": null,
             "drag": 0.05,
             "angular_drag": 0.05,
             "bounciness": 0.0,
@@ -972,9 +974,16 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "width": 1.0,
             "height": 1.0,
             "radius": 0.5,
+            "points": [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]],
             "is_trigger": false,
             "offset_x": 0.0,
             "offset_y": 0.0,
+            "collision_layer": "Default",
+            "collision_mask": ["*"],
+            "material": {
+                "friction": 0.25,
+                "bounciness": 0.0
+            },
         }),
         "Health" => json!({
             "max_health": 100.0,
@@ -1313,6 +1322,10 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "single_use": false,
             "activated_by_tag": "Player",
         }),
+        "DontDestroyOnLoad" => json!({
+            "preserve": true,
+            "group": "global",
+        }),
         "CharacterController2D" => json!({
             "walk_speed": 5.0,
             "run_speed": 7.0,
@@ -1395,6 +1408,7 @@ pub fn advanced_component_types() -> &'static [&'static str] {
         "TilemapCollider",
         "ObjectiveMarker",
         "Checkpoint",
+        "DontDestroyOnLoad",
         "CharacterController2D",
         "EconomyWallet",
         "Timer",
@@ -1431,7 +1445,7 @@ pub fn advanced_component_category(component_type: &str) -> Option<&'static str>
         "NavAgent" => "Navigation",
         "DamageDealer" | "StatusEffects" | "CombatTarget" => "Combat",
         "CameraFollow" | "CameraShake" => "Camera",
-        "Saveable" => "Persistence",
+        "Saveable" | "DontDestroyOnLoad" => "Persistence",
         "Blackboard" | "StateMachine" | "Timer" | "Tween" => "Scripting",
         "QuestLog" | "Dialogue" => "Narrative",
         "Light2D" | "ParallaxLayer" => "Rendering",

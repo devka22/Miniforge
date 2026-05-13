@@ -6,6 +6,10 @@ pub struct PlayModeManager {
     pub enter_count: usize,
     pub frame_count: usize,
     pub last_exit_reason: String,
+    /// Frames simulados en la última sesión de Play (actualizado al salir).
+    pub last_session_frames: usize,
+    /// Entidades capturadas en el snapshot al entrar a Play.
+    pub last_session_entity_count: usize,
 }
 
 impl PlayModeManager {
@@ -13,6 +17,7 @@ impl PlayModeManager {
         self.snapshot = Some(entities.to_vec());
         self.enter_count += 1;
         self.frame_count = 0;
+        self.last_session_entity_count = entities.len();
         self.last_exit_reason.clear();
         *mode = "PLAY".to_string();
     }
@@ -23,11 +28,13 @@ impl PlayModeManager {
         mode: &mut String,
         reason: &str,
     ) {
+        self.last_session_frames = self.frame_count;
         if let Some(snapshot) = self.snapshot.take() {
             *entities = snapshot;
         }
         self.last_exit_reason = reason.to_string();
         *mode = "EDITOR".to_string();
+        self.frame_count = 0;
     }
 
     pub fn toggle(&mut self, entities: &mut Vec<GameObject>, mode: &mut String) {

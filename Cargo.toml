@@ -20,7 +20,11 @@ name = "miniforge_runtime"
 path = "src/bin/miniforge_runtime.rs"
 
 [dependencies]
+egui = "0.31"
+kira = "0.10"
 macroquad = "0.4"
+notify = "8"
 pathfinding = "4.15.0"
+rhai = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

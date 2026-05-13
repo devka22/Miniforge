@@ -51,6 +51,10 @@ impl GameAPI {
         id
     }
 
+    pub fn spawn(entities: &mut Vec<GameObject>, name: &str, x: f64, y: f64) -> u64 {
+        Self::create_game_object(entities, name, x, y)
+    }
+
     pub fn create_unit(entities: &mut Vec<GameObject>, name: &str, x: f64, y: f64) -> u64 {
         let entity = GameObject::new_unit(x, y, Some(name.to_string()));
         let id = entity.id;
@@ -95,6 +99,12 @@ impl GameAPI {
         before != entities.len()
     }
 
+    pub fn destroy_named(entities: &mut Vec<GameObject>, name: &str) -> usize {
+        let before = entities.len();
+        entities.retain(|entity| entity.name != name);
+        before.saturating_sub(entities.len())
+    }
+
     pub fn set_position(entity: &mut GameObject, x: f64, y: f64) {
         entity.x = x;
         entity.y = y;
@@ -111,6 +121,10 @@ impl GameAPI {
 
     pub fn translate(entity: &mut GameObject, dx: f64, dy: f64) {
         Self::set_position(entity, entity.x + dx, entity.y + dy);
+    }
+
+    pub fn move_entity(entity: &mut GameObject, dx: f64, dy: f64) {
+        Self::translate(entity, dx, dy);
     }
 
     pub fn move_x(entity: &mut GameObject, amount: f64) {
@@ -288,6 +302,61 @@ impl GameAPI {
         }
         let component = default_component(component_name)?;
         Some(entity.add_component(component))
+    }
+
+    pub fn play_sound(
+        entities: &mut Vec<GameObject>,
+        audio_name: &str,
+        bus: &str,
+        volume: f64,
+        looped: bool,
+    ) -> u64 {
+        let mut entity = GameObject::new(0.0, 0.0, Some(format!("Audio_{audio_name}")));
+        entity.visible = false;
+        entity.locked = true;
+        if let Some(source) = Self::add_component(&mut entity, "AudioSource", None) {
+            source.set("audio_name", json!(audio_name));
+            source.set("bus", json!(bus));
+            source.set_f64("volume", volume.clamp(0.0, 1.0));
+            source.set("loop", json!(looped));
+            source.set("play_on_start", json!(true));
+        }
+        let id = entity.id;
+        entities.push(entity);
+        id
+    }
+
+    pub fn load_scene_request(scene_name: &str) -> Value {
+        json!({"command": "load_scene", "scene": scene_name})
+    }
+
+    pub fn input_pressed(pressed_keys: &[String], key: &str) -> bool {
+        pressed_keys.iter().any(|pressed| pressed == key)
+    }
+
+    pub fn set_ui_text_by_id(entities: &mut [GameObject], entity_id: u64, text: &str) -> bool {
+        let Some(entity) = entities.iter_mut().find(|entity| entity.id == entity_id) else {
+            return false;
+        };
+        Self::set_ui_text(entity, text)
+    }
+
+    pub fn set_ui_text_by_name(entities: &mut [GameObject], name: &str, text: &str) -> bool {
+        let Some(entity) = entities.iter_mut().find(|entity| entity.name == name) else {
+            return false;
+        };
+        Self::set_ui_text(entity, text)
+    }
+
+    pub fn set_ui_text(entity: &mut GameObject, text: &str) -> bool {
+        if entity.get_component("UIElement").is_none() {
+            let _ = Self::add_component(entity, "UIElement", None);
+        }
+        let Some(component) = entity.get_component_mut("UIElement") else {
+            return false;
+        };
+        component.set("text", json!(text));
+        true
     }
 
     pub fn remove_component(entity: &mut GameObject, component_type: &str) {

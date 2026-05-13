@@ -49,4 +49,16 @@ impl Profiler {
             .map(|(name, value)| (name.clone(), format!("{value:.1} ms")))
             .collect()
     }
+
+    /// Sistema más costoso del último frame (ms).
+    pub fn slowest_system(&self) -> Option<(String, f64)> {
+        self.systems
+            .iter()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(k, v)| (k.clone(), *v))
+    }
+
+    pub fn systems_time_total_ms(&self) -> f64 {
+        self.systems.values().copied().sum()
+    }
 }

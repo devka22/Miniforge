@@ -9,7 +9,6 @@ cargo run --bin miniforge_editor -- --project projects/DefaultProject --no-launc
 cargo run --bin miniforge -- --project projects/DefaultProject --no-launcher
 cargo run --bin miniforge_runtime -- --build projects/DefaultProject/build/debug/DefaultProject
 cargo run --bin miniforge -- --headless-once
-python3 main.py
 ```
 
 - `miniforge_editor` / `miniforge`: editor completo.
@@ -27,11 +26,11 @@ python3 main.py
 
 - `GameObject`: entidad serializable con transform, tag, layer, componentes, comandos y path.
 - `Component`: datos extensibles con helpers para vida, stats, inventario, economia, cooldown, nav, tween, estado y combate.
-- `GameAPI`: API de gameplay para crear entidades, mover en X/Y, escalar, rotar, mirar hacia un punto, agregar audio, spawnear sprites, recursos, squads, cooldowns, blackboard y guardado de estado.
+- `GameAPI`: API de gameplay para crear entidades, mover, setear posicion, spawn/destroy, cargar escenas, UI text, agregar audio, spawnear sprites, recursos, squads, cooldowns, blackboard y guardado de estado.
 - `ArchetypeLibrary`: biblioteca de entidades listas como `rts_worker`, `rts_soldier`, `rts_command_center`, `topdown_hero` y `platformer_player`.
 - `AssetDatabase`: escanea sprites, sonidos, prefabs, escenas, materiales, graphs y datos con metadatos/import settings.
 - `AssetPreview`: resume GUID, path, labels, settings, dependencias, reverse dependencies y warnings para el panel de preview.
-- `FileBrowser`: backend para explorar, crear carpetas, renombrar, mover, duplicar, importar y crear sprite imports/sound cues/materiales.
+- `FileBrowser`: backend para explorar, crear carpetas, renombrar, mover, duplicar, importar y crear scripts Rhai, prefabs, enemigos, UI, audio events, sprite imports/sound cues/materiales.
 - `EditorCommand`: snapshots y Command Pattern para undo/redo de operaciones del editor.
 - `TileBrush`: pencil, eraser, fill, rectangle y collision brush sobre `TilemapLayers`.
 - `RuntimeExporter`: empaqueta proyecto en `build/debug` o `build/release` con manifest runtime.
@@ -55,9 +54,10 @@ python3 main.py
 Carpetas reconocidas:
 
 - `assets/sprites`: imagenes y `.sprite.json`.
-- `assets/audio`: sonidos y `.sound.json`.
+- `assets/audio`: sonidos, `.sound.json` y `.audio.json`.
 - `assets/data`: JSON, CSV, materiales y datos.
 - `assets/prefabs`: prefabs serializados.
+- `scripts`: scripts de entidad `.rhai` con hot reload.
 - `scripts/visual_graphs`: graphs visuales `.mfgraph`.
 - `saves/scenes`: escenas del proyecto.
 
@@ -75,7 +75,7 @@ build/
 └─ release/<ProjectName>/
 ```
 
-`runtime_manifest.json` incluye engine version, perfil, assets usados, assets faltantes y manifest fuente. El exporter omite `target/`, `build/`, `builds/`, `exports/` y caches Python para evitar builds recursivos.
+`runtime_manifest.json` incluye engine version, perfil, assets usados, assets faltantes y manifest fuente. El exporter omite `target/`, `build/`, `builds/`, `exports/` y caches locales para evitar builds recursivos.
 
 ## Play Mode
 
@@ -92,3 +92,24 @@ El flujo RTS usa:
 - `CombatTarget`, `DamageDealer`, `NavAgent`.
 
 Las rutas usan A*, flow fields, line-of-sight, influence maps y rutas threat-aware.
+
+## Mapa de capacidades (motor)
+
+| Area | Modulos / entrada principal |
+|------|-------------------------------|
+| Runtime/editor Rust | `src/editor_app.rs`, `src/core/game.rs`, binarios `miniforge`, `miniforge_editor`, `miniforge_runtime` |
+| Play mode + escena viva | `PlayModeManager`, `Game::enter_play_mode` / `exit_play_mode`, F5/F11, barra de estado `PLAY#frames` |
+| RTS (pathfinding, squads, fog, influence) | `RTSSystem`, `map::pathfinding`, `flow_field`, componentes RTS en `engine::component` |
+| Arquitectura por componentes | `GameObject`, `Component`, `ComponentRegistry`, `InspectorEditor` |
+| Prefabs + overrides | `prefab_manager`, `prefab_overrides`, `advanced_prefabs` |
+| Scripting Rhai | `rhai_scripting`, scripts `.rhai`, eventos `on_start/on_update/on_key_down/on_collision_enter/on_destroy` |
+| Visual scripting | `visual_scripting`, assets `.mfgraph`, contadores en Profiler |
+| Fisica 2D | `PhysicsSystem`, rect/circle/polygon colliders, triggers, layers, raycasts, rigidbodies, gravedad, friccion y rebote |
+| Escenas | `SceneManager`, load/unload/restart, aditivas, transiciones, DontDestroyOnLoad y scene stack |
+| Audio | `AudioSystem`, `AudioMixer`, comandos Kira para music/sfx/volume/fade |
+| Asset browser + GUID | `AssetDatabase`, `AssetPreview`, `FileBrowser`, panel Assets del editor |
+| Profiler y debug | `Profiler`, `Diagnostics`, `DeveloperConsole`, pestaña Profiler |
+| Jerarquia + inspector | `draw_hierarchy`, `draw_inspector`, `SceneViewTools` |
+| Render Macroquad | `macroquad` en `editor_app` / `main`, `render::renderer`, `draw_scene` |
+| IA / navegacion | `AIController`, `NavAgent`, `MovementSystem`, `GameplaySystem` |
+| Tilemap + herramientas | `TilemapLayers`, `TileBrush`, herramienta Paint, capas |
