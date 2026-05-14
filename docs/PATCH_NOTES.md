@@ -1,5 +1,16 @@
 # MiniForge Patch Notes
 
+# 0.8.0 Developer Stability Update
+
+- Estabilizado el flujo completo crear/abrir/editar/guardar/cargar/Play Mode/export runtime.
+- `engine_config.json` tiene defaults, migracion, backup y recuperacion desde backup/corrupt.
+- Consola con niveles y salida a `logs/miniforge.log`.
+- Panel Programming puede abrir y guardar scripts Rhai, visual graphs, escenas, prefabs y JSON sin salir del motor.
+- Content Browser reorganizado con Sources, filtros, busqueda, grid visual y detalles de asset.
+- Visual graphs editables como nodos conectables con pines de entrada/salida.
+- Validacion reforzada para escenas, prefabs, assets, Rhai y visual graphs.
+- GitHub Actions agregado para fmt, check, clippy y test.
+
 ## 0.7.0 Production Editor Update
 
 - Versionado del motor a `0.7.0 - Production Editor Update`.

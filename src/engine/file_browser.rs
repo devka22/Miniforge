@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 
 use crate::engine::asset_tools::AssetTools;
+use crate::engine::script_editor::ScriptEditor;
 
 #[derive(Debug, Clone)]
 pub struct BrowserAsset {
@@ -238,6 +239,17 @@ impl FileBrowser {
     pub fn toggle_tree_view(&mut self) -> bool {
         self.tree_view = !self.tree_view;
         self.tree_view
+    }
+
+    pub fn open_selected_asset(&self, editor: &mut ScriptEditor) -> io::Result<Option<PathBuf>> {
+        let Some(asset) = &self.selected_asset else {
+            return Ok(None);
+        };
+        if asset.path.is_dir() {
+            return Ok(None);
+        }
+        editor.open(asset.path.clone())?;
+        Ok(Some(asset.path.clone()))
     }
 
     pub fn create_script(&self, name: &str) -> io::Result<PathBuf> {

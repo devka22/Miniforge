@@ -154,17 +154,16 @@ impl WaveformCache {
         let cache_file = self
             .cache_dir
             .join(format!("wf_{:016x}.json", Self::key_for(wav_path)));
-        if cache_file.exists() {
-            if let Ok(v) = AssetTools::read_json(&cache_file) {
-                if let Some(arr) = v.get("peaks").and_then(|p| p.as_array()) {
-                    let peaks: Vec<f32> = arr
-                        .iter()
-                        .filter_map(|x| x.as_f64().map(|f| f as f32))
-                        .collect();
-                    if peaks.len() == bucket_count {
-                        return Ok(peaks);
-                    }
-                }
+        if cache_file.exists()
+            && let Ok(v) = AssetTools::read_json(&cache_file)
+            && let Some(arr) = v.get("peaks").and_then(|p| p.as_array())
+        {
+            let peaks: Vec<f32> = arr
+                .iter()
+                .filter_map(|x| x.as_f64().map(|f| f as f32))
+                .collect();
+            if peaks.len() == bucket_count {
+                return Ok(peaks);
             }
         }
         let peaks = compute_wav_peaks(wav_path, bucket_count)?;

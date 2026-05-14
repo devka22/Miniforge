@@ -2,6 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::entities::game_object::GameObject;
 
+type Vec2 = (f64, f64);
+type RayShapeHit = (f64, Vec2, Vec2);
+
 #[derive(Debug, Clone)]
 pub struct PhysicsSystem {
     pub gravity: (f64, f64),
@@ -679,11 +682,11 @@ fn apply_collision_velocity(entity: &mut GameObject, nx: f64, ny: f64) {
 }
 
 fn ray_shape_hit(
-    origin: (f64, f64),
-    direction: (f64, f64),
+    origin: Vec2,
+    direction: Vec2,
     max_distance: f64,
     shape: &ColliderShape,
-) -> Option<(f64, (f64, f64), (f64, f64))> {
+) -> Option<RayShapeHit> {
     match shape {
         ColliderShape::Circle { center, radius } => {
             ray_circle_hit(origin, direction, max_distance, *center, *radius)
@@ -695,12 +698,12 @@ fn ray_shape_hit(
 }
 
 fn ray_circle_hit(
-    origin: (f64, f64),
-    direction: (f64, f64),
+    origin: Vec2,
+    direction: Vec2,
     max_distance: f64,
-    center: (f64, f64),
+    center: Vec2,
     radius: f64,
-) -> Option<(f64, (f64, f64), (f64, f64))> {
+) -> Option<RayShapeHit> {
     let oc = (origin.0 - center.0, origin.1 - center.1);
     let c = dot(oc, oc) - radius * radius;
     if c <= 0.0 {
@@ -723,15 +726,15 @@ fn ray_circle_hit(
 }
 
 fn ray_polygon_hit(
-    origin: (f64, f64),
-    direction: (f64, f64),
+    origin: Vec2,
+    direction: Vec2,
     max_distance: f64,
-    points: &[(f64, f64)],
-) -> Option<(f64, (f64, f64), (f64, f64))> {
+    points: &[Vec2],
+) -> Option<RayShapeHit> {
     if point_in_polygon(origin, points) {
         return Some((0.0, origin, (-direction.0, -direction.1)));
     }
-    let mut best: Option<(f64, (f64, f64), (f64, f64))> = None;
+    let mut best: Option<RayShapeHit> = None;
     for index in 0..points.len() {
         let a = points[index];
         let b = points[(index + 1) % points.len()];

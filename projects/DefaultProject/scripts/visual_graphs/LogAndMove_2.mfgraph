@@ -1,0 +1,34 @@
+{
+  "kind": "MiniForgeVisualGraph",
+  "name": "LogAndMove",
+  "nodes": [
+    {
+      "id": "start",
+      "next": "log",
+      "type": "EventStart"
+    },
+    {
+      "id": "update",
+      "next": null,
+      "type": "EventUpdate"
+    },
+    {
+      "id": "log",
+      "message": "Visual graph running in Rust",
+      "next": "move",
+      "type": "Log"
+    },
+    {
+      "id": "move",
+      "next": null,
+      "type": "Move",
+      "x": 1.0,
+      "y": 0.0
+    }
+  ],
+  "runtime": "rust_visual_graph",
+  "variables": {
+    "speed": 1.0
+  },
+  "version": "0.8.0"
+}

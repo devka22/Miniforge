@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -118,21 +118,27 @@ impl AssetTools {
                 "start_scene": "main.scene",
                 "author": "",
                 "license": "GPL-3.0",
-                "description": "MiniForge 0.7.0 Production Editor project",
+                "description": "MiniForge 0.8.0 Developer Stability project",
             }),
         )?;
         Self::write_json_if_missing(
             project_path.join("engine_config.json"),
             &json!({
                 "engine_name": "MiniForge",
-                "engine_alt_name": "Mini Forte",
+                "engine_alt_name": "MiniForge",
                 "engine_version": ENGINE_VERSION,
                 "project_name": project_name,
                 "start_scene": "main.scene",
                 "autosave": true,
                 "autosave_interval_seconds": 60,
                 "safe_mode": true,
-                "logs": {"engine": "logs/engine.log", "error": "logs/error.log"},
+                "config_version": 2,
+                "logs": {
+                    "level": "info",
+                    "file": "logs/miniforge.log",
+                    "engine": "logs/engine.log",
+                    "error": "logs/error.log"
+                },
             }),
         )?;
         Self::write_json_if_missing(
@@ -198,11 +204,19 @@ impl AssetTools {
     }
 
     pub fn write_json(path: impl AsRef<Path>, data: &Value) -> io::Result<()> {
-        if let Some(folder) = path.as_ref().parent() {
+        let path = path.as_ref();
+        if let Some(folder) = path.parent() {
             fs::create_dir_all(folder)?;
         }
         let bytes = serde_json::to_vec_pretty(data).map_err(io::Error::other)?;
-        fs::write(path, bytes)
+        let filename = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("data.json");
+        let tmp = path.with_file_name(format!("{filename}.tmp"));
+        fs::write(&tmp, bytes)?;
+        fs::rename(&tmp, path)?;
+        Ok(())
     }
 
     fn write_json_if_missing(path: impl AsRef<Path>, data: &Value) -> io::Result<()> {
@@ -269,8 +283,13 @@ impl AssetTools {
                 .unwrap_or("NewFile");
             path = Self::unique_path(folder, filename);
         }
-        let mut file = fs::File::create(&path)?;
-        file.write_all(content.as_bytes())?;
+        let filename = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("NewFile");
+        let tmp = path.with_file_name(format!("{filename}.tmp"));
+        fs::write(&tmp, content.as_bytes())?;
+        fs::rename(&tmp, &path)?;
         Ok(path)
     }
 
@@ -389,9 +408,11 @@ fn on_destroy() {{
             "control_groups": {},
             "grid": null,
             "tiles": [],
+            "tilemap_layers": [],
             "settings": {},
             "entities": [],
             "editor_view_settings": {},
+            "ui_canvases": [],
         })
     }
 

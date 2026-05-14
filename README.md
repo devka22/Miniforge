@@ -1,6 +1,6 @@
-# MiniForge / Mini Forte 0.7.0 Production Editor Update
+# MiniForge 0.8.0 Developer Stability Update
 
-MiniForge es un motor 2D con runtime/editor en Rust. La version 0.7.0 Production Editor Update convierte el editor en un flujo mas serio para crear juegos 2D/RTS: inspector editable real, scripting Rhai por entidad, fisica 2D, escenas aditivas/stack, audio Kira-ready, undo/redo por comandos, drag and drop desde Content Browser, asset preview, export runtime, input visual, tile brushes y gizmos de escena.
+MiniForge es un motor 2D con runtime/editor en Rust. La version 0.8.0 Developer Stability Update estabiliza el flujo real de desarrollo: crear proyecto, abrirlo, crear scripts/graphs/assets, editarlos dentro del motor, guardar/cargar escenas, entrar a Play Mode y exportar runtime sin salir del editor.
 
 ## Ejecutar
 
@@ -65,10 +65,22 @@ cargo test
 - `F6` cambia workspace; `Ctrl+P` abre comandos; `Ctrl+G` crea un graph visual Rust; `Ctrl+I` instancia el primer prefab disponible; `Cmd/Ctrl+Z` y redo restauran operaciones del editor.
 - Herramientas `Select`, `Move`, `Rotate`, `Scale` y `Paint`, con snap, bounding boxes y gizmos.
 - Browser mejorado: indexa `assets/`, scripts `.rhai`, `scripts/visual_graphs/`, escenas y settings; marca compatibilidad, tamano, labels y visual graphs.
-- Content Browser tiene preview de sprites/audio/materiales, GUID, path, labels, import settings, dependencias, warnings y drag/drop hacia escena.
+- Content Browser tiene Sources, busqueda, filtros, grid visual, preview de sprites/audio/materiales/prefabs, GUID, path, labels, import settings, dependencias, warnings y drag/drop hacia escena.
 - Profiler mas accionable: tiempos por Movement, Animation, VisualGraph, Rhai, Gameplay, RTS, Physics, RhaiCollision y WorldSync.
 
-## Production Editor 0.7
+## Developer Stability 0.8
+
+- `engine_config.json` ahora tiene defaults versionados, migracion, backup `.bak` y recuperacion si el archivo esta corrupto.
+- La consola escribe niveles `info`, `warning`, `error` y `debug` en `logs/miniforge.log`.
+- El panel `Programming` abre y guarda `.rhai`, `.mfgraph`, `.scene`, `.prefab` y JSON sin reiniciar el motor.
+- Content Browser ahora sigue un flujo tipo editor profesional: Sources, filtros por tipo, busqueda, grid de assets, detalles y acciones de abrir/instanciar.
+- Los `.mfgraph` se editan como nodos conectables con pines de entrada/salida, manteniendo compatibilidad con el runtime de VisualScript.
+- Los assets creados desde Content Browser/Programming se abren inmediatamente para edicion cuando aplica.
+- Escenas y prefabs usan backups, validacion de referencias, guardado atomico y mensajes claros en consola.
+- Rhai scripting y Visual Scripting reportan errores recuperables sin cerrar el editor.
+- CI publica ejecuta `cargo fmt --check`, `cargo check`, `cargo clippy -D warnings` y `cargo test`.
+
+## Production Editor Base
 
 - Inspector editable por campos reales: transform, stats, inventory, AI, RTS, dialogue, quest, tweens, tilemap collider y componentes custom basados en JSON.
 - Animation Editor backend: clips con keyframes, timeline, preview, estados de Animator y transiciones por parametros.
@@ -99,7 +111,7 @@ El desarrollador puede crear logica sin tocar el codigo fuente del motor usando 
 
 - Templates incluidos: `LogAndMove`, `ButtonClick`, `HealthPickup`, `RTSOrder` y `Spawner`.
 - Los graphs se guardan en `scripts/visual_graphs/` y se ejecutan con `VisualScriptRuntime` en Rust.
-- El panel `Programming` permite crear graphs, adjuntarlos a la entidad seleccionada y ver validacion/runtime events.
+- El panel `Programming` permite crear graphs, adjuntarlos a la entidad seleccionada, abrir scripts como codigo y editar visual graphs como nodos conectables.
 - Los templates de proyecto nuevos crean scripts Rhai, `.mfgraph`, prefabs y data JSON.
 
 ## Prefabs Y Escenas

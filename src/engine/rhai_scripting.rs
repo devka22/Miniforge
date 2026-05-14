@@ -627,7 +627,7 @@ impl RhaiScriptRuntime {
         candidates
             .iter()
             .find(|path| path.exists())
-            .map(|path| normalize_path(path))
+            .map(normalize_path)
             .or_else(|| {
                 if extension == Some("rhai") {
                     candidates.last().map(normalize_path)

@@ -24,7 +24,7 @@ use crate::engine::diagnostics::Diagnostics;
 use crate::engine::editor_command::{EditorCommand, EditorCommandKind, EditorSnapshot};
 use crate::engine::editor_history::EditorHistory;
 use crate::engine::editor_workspace::{EditorWorkspace, WorkspaceMode};
-use crate::engine::engine_programming::ProgrammingEnvironment;
+use crate::engine::engine_programming::{ProgrammingEnvironment, VisualGraphView};
 use crate::engine::entity_id::generate_entity_name;
 use crate::engine::event_bus::EventBus;
 use crate::engine::game_clock::GameClock;
@@ -45,6 +45,7 @@ use crate::engine::scene_manager::SceneManager;
 use crate::engine::scene_save_manager::SceneSaveManager;
 use crate::engine::scene_validator::SceneValidator;
 use crate::engine::script_debugger::ScriptDebugger;
+use crate::engine::script_editor::ScriptEditor;
 use crate::engine::spatial_index::SpatialIndex;
 use crate::engine::tags_layers_manager::TagsLayersManager;
 use crate::engine::tile_brush::{TileBrush, TileBrushMode};
@@ -110,6 +111,7 @@ pub struct Game {
     pub visual_script_runtime: VisualScriptRuntime,
     pub rhai_script_runtime: RhaiScriptRuntime,
     pub script_debugger: ScriptDebugger,
+    pub script_editor: ScriptEditor,
     pub ui_runtime: UiRuntime,
     pub play_mode_manager: PlayModeManager,
     pub gameplay_system: GameplaySystem,
@@ -132,6 +134,7 @@ impl Game {
         let project_path = project_path.as_ref().to_path_buf();
         let project_paths = AssetTools::ensure_project_folders(&project_path)?;
         let engine_config = EngineConfig::new(&project_path)?;
+        let config_warnings = engine_config.status.warnings.clone();
         let mut resources = ResourceManager::new(&project_paths.assets);
         resources.scan_all().ok();
         let asset_database = AssetDatabase::new(&project_paths.assets, &project_path)?;
@@ -164,12 +167,15 @@ impl Game {
             entities: units.clone(),
         };
 
-        let mut console = DeveloperConsole::default();
+        let mut console = DeveloperConsole::with_log_file(project_paths.logs.join("miniforge.log"));
         console.log(
             format!("Project path: {}", project_path.display()),
             "ENGINE",
         );
         console.log(crate::engine::version::version_label(), "ENGINE");
+        for warning in config_warnings {
+            console.log(warning, "WARNING");
+        }
 
         let mut history = EditorHistory::default();
         history.take_snapshot("Initial Scene", &units);
@@ -217,6 +223,7 @@ impl Game {
             visual_script_runtime: VisualScriptRuntime::default(),
             rhai_script_runtime: RhaiScriptRuntime::new(&project_path),
             script_debugger: ScriptDebugger::default(),
+            script_editor: ScriptEditor::default(),
             ui_runtime: UiRuntime::default(),
             play_mode_manager: PlayModeManager::default(),
             gameplay_system: GameplaySystem::default(),
@@ -230,8 +237,12 @@ impl Game {
             programming: ProgrammingEnvironment::new(),
         };
 
-        if let Ok(scene_data) = game.scene_manager.load_current_scene_data() {
-            game.apply_scene_data(&scene_data);
+        match game.scene_manager.load_current_scene_data() {
+            Ok(scene_data) => game.apply_scene_data(&scene_data),
+            Err(error) => game.console.log(
+                format!("No se pudo cargar la escena inicial; usando escena vacia: {error}"),
+                "ERROR",
+            ),
         }
         game.scene_save_manager
             .bootstrap_from_scene(&mut game.units, &game.tilemap_layers);
@@ -352,6 +363,9 @@ impl Game {
         marker = Instant::now();
         self.visual_script_runtime
             .update_entities(&mut self.units, dt, &self.mode);
+        for error in self.visual_script_runtime.last_errors.iter().take(4) {
+            self.console.log(error.clone(), "SCRIPT");
+        }
         self.profiler
             .record_system("VisualGraph", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
@@ -1463,10 +1477,132 @@ impl Game {
         let path = self
             .programming
             .create_graph_asset(&self.project_path, template_name, None)?;
+        self.script_editor.open(path.clone())?;
         self.refresh_assets().ok();
         self.console
             .log(format!("Graph Rust creado: {}", path.display()), "SCRIPT");
         Ok(path)
+    }
+
+    pub fn create_rhai_script_asset(&mut self, name: &str) -> io::Result<PathBuf> {
+        let path = AssetTools::create_rhai_script(&self.project_path, name)?;
+        self.script_editor.open(path.clone())?;
+        self.refresh_assets().ok();
+        self.console.log(
+            format!("Script Rhai creado y abierto: {}", path.display()),
+            "SCRIPT",
+        );
+        Ok(path)
+    }
+
+    pub fn open_project_file(&mut self, path: impl AsRef<Path>) -> io::Result<PathBuf> {
+        let opened = self
+            .script_editor
+            .open_project_file(&self.project_path, path.as_ref())?;
+        self.console
+            .log(format!("Archivo abierto: {}", opened.display()), "EDITOR");
+        Ok(opened)
+    }
+
+    pub fn edit_open_file(&mut self, text: impl Into<String>) {
+        self.script_editor.set_text(text);
+        self.console
+            .log("Archivo abierto marcado como modificado", "EDITOR");
+    }
+
+    pub fn save_open_file(&mut self) -> io::Result<bool> {
+        let Some(path) = self.script_editor.document.path.clone() else {
+            self.console
+                .log("No hay archivo abierto para guardar", "WARNING");
+            return Ok(false);
+        };
+        self.script_editor.save()?;
+        let valid = self.script_editor.validate();
+        if let Some(error) = &self.script_editor.document.syntax_error {
+            self.console
+                .log(format!("Archivo guardado con error: {error}"), "ERROR");
+        } else {
+            self.console
+                .log(format!("Archivo guardado: {}", path.display()), "EDITOR");
+        }
+        if path.extension().and_then(|value| value.to_str()) == Some("rhai") {
+            self.rhai_script_runtime.mark_script_changed(&path);
+        }
+        self.refresh_assets().ok();
+        Ok(valid)
+    }
+
+    pub fn reload_open_file(&mut self) -> io::Result<()> {
+        let Some(path) = self.script_editor.document.path.clone() else {
+            return Ok(());
+        };
+        self.script_editor.open(path.clone())?;
+        self.console
+            .log(format!("Archivo recargado: {}", path.display()), "EDITOR");
+        Ok(())
+    }
+
+    pub fn current_visual_graph_view(&self) -> Option<VisualGraphView> {
+        let path = self.script_editor.document.path.as_ref()?;
+        if path.extension().and_then(|value| value.to_str()) != Some("mfgraph") {
+            return None;
+        }
+        let graph: Value = serde_json::from_str(&self.script_editor.text()).ok()?;
+        Some(self.programming.graph_view(&graph))
+    }
+
+    pub fn connect_open_graph_nodes(&mut self, from: &str, to: &str) -> io::Result<bool> {
+        let mut graph = self.open_graph_json()?;
+        let changed = ProgrammingEnvironment::connect_graph_nodes(&mut graph, from, to);
+        if changed {
+            self.replace_open_graph_json(&graph)?;
+            self.console
+                .log(format!("Graph conectado: {from} -> {to}"), "SCRIPT");
+        }
+        Ok(changed)
+    }
+
+    pub fn move_open_graph_node(&mut self, node_id: &str, x: f64, y: f64) -> io::Result<bool> {
+        let mut graph = self.open_graph_json()?;
+        let changed = ProgrammingEnvironment::move_graph_node(&mut graph, node_id, x, y);
+        if changed {
+            self.replace_open_graph_json(&graph)?;
+        }
+        Ok(changed)
+    }
+
+    pub fn add_node_to_open_graph(&mut self, node_type: &str) -> io::Result<Option<String>> {
+        let mut graph = self.open_graph_json()?;
+        let id = ProgrammingEnvironment::add_graph_node(&mut graph, node_type);
+        if id.is_some() {
+            self.replace_open_graph_json(&graph)?;
+            self.console
+                .log(format!("Nodo {node_type} agregado al graph"), "SCRIPT");
+        }
+        Ok(id)
+    }
+
+    fn open_graph_json(&self) -> io::Result<Value> {
+        let Some(path) = self.script_editor.document.path.as_ref() else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "No hay graph visual abierto",
+            ));
+        };
+        if path.extension().and_then(|value| value.to_str()) != Some("mfgraph") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "El archivo abierto no es .mfgraph",
+            ));
+        }
+        serde_json::from_str(&self.script_editor.text()).map_err(io::Error::other)
+    }
+
+    fn replace_open_graph_json(&mut self, graph: &Value) -> io::Result<()> {
+        let text = serde_json::to_string_pretty(graph).map_err(io::Error::other)?;
+        self.script_editor.set_text(text);
+        self.script_editor.validate();
+        Ok(())
     }
 
     pub fn create_sprite_import_asset(
@@ -1603,6 +1739,33 @@ impl Game {
             );
             self.console.log(
                 format!("Prefab instanciado: {} #{id}", prefab.name),
+                "PREFAB",
+            );
+        }
+        Ok(id)
+    }
+
+    pub fn instantiate_prefab_asset(
+        &mut self,
+        relative_path: &str,
+        x: f64,
+        y: f64,
+    ) -> io::Result<Option<u64>> {
+        let before = self.capture_editor_snapshot();
+        let manager = PrefabManager::new(&self.project_path);
+        let path = self.project_path.join(relative_path);
+        let id = manager.instantiate_prefab(&mut self.units, &path, x, y)?;
+        if let Some(id) = id {
+            self.select_entity(id);
+            self.sync_world();
+            self.mark_scene_dirty("Instantiate Prefab");
+            self.push_editor_command(
+                "Instantiate Prefab",
+                EditorCommandKind::CreateEntity { entity_id: id },
+                before,
+            );
+            self.console.log(
+                format!("Prefab instanciado desde {relative_path}: #{id}"),
                 "PREFAB",
             );
         }
@@ -2106,22 +2269,56 @@ impl Game {
     }
 
     pub fn save_scene(&mut self) -> io::Result<()> {
-        if self.scene_validator.validate_entities(&self.units) {
-            self.scene_save_manager.save_scene(
-                &self.scene_manager,
-                &mut self.units,
-                &self.tilemap_layers,
-                &self.camera,
-                &self.mode,
-                &self.active_tool,
-                self.tile_brush,
-                self.brush_size,
-                &self.grid,
-                &self.ui_canvases,
-            )?;
-            self.mark_scene_clean();
+        if !self.scene_validator.validate_entities(&self.units) {
+            for error in self.scene_validator.errors.iter().take(8) {
+                self.console.log(error.clone(), "ERROR");
+            }
+            for warning in self.scene_validator.warnings.iter().take(8) {
+                self.console.log(warning.clone(), "WARNING");
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "La escena tiene errores de validacion; revisa la consola.",
+            ));
         }
+        for warning in self.scene_validator.warnings.iter().take(8) {
+            self.console.log(warning.clone(), "WARNING");
+        }
+        self.scene_save_manager.save_scene(
+            &self.scene_manager,
+            &mut self.units,
+            &self.tilemap_layers,
+            &self.camera,
+            &self.mode,
+            &self.active_tool,
+            self.tile_brush,
+            self.brush_size,
+            &self.grid,
+            &self.ui_canvases,
+        )?;
+        self.mark_scene_clean();
         Ok(())
+    }
+
+    pub fn create_empty_scene(&mut self, name: &str) -> io::Result<PathBuf> {
+        let path = self.scene_manager.create_new_scene(name)?;
+        self.units.clear();
+        self.selected_units.clear();
+        self.tilemap_layers = TilemapLayers::new(self.grid.width, self.grid.height);
+        self.ui_canvases = json!([]);
+        self.scene_save_manager
+            .bootstrap_from_scene(&mut self.units, &self.tilemap_layers);
+        self.sync_world();
+        self.mark_scene_dirty("New Empty Scene");
+        self.save_scene()?;
+        self.console.log(
+            format!(
+                "Escena nueva abierta vacia: {}",
+                self.scene_manager.current_scene
+            ),
+            "SCENE",
+        );
+        Ok(path)
     }
 
     pub fn load_scene(&mut self, name: &str) -> io::Result<usize> {
@@ -2256,6 +2453,7 @@ impl Game {
 
     pub fn save_project(&mut self) -> io::Result<()> {
         self.save_scene()?;
+        self.engine_config.save()?;
         self.asset_database.scan()?;
         let manifest = self.build_manifest()?;
         let state = json!({

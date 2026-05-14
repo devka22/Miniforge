@@ -1,8 +1,24 @@
 {
-    "engine_version": "0.6.0",
-    "assets": {},
-    "scenes": [],
-    "scripts": [],
-    "components": [],
-    "systems": []
+  "assets": [
+    "assets/prefabs/xd.prefab",
+    "assets/sprites/NewSprite.sprite_1.json",
+    "assets/sprites/NewSprite.sprite.json",
+    "assets/sprites/NewSprite.sprite_2.json"
+  ],
+  "components": [],
+  "engine_version": "0.8.0",
+  "runtime": "rust",
+  "scenes": [
+    "saves/scenes/scene_3.scene",
+    "saves/scenes/scene_1.scene",
+    "saves/scenes/main.scene"
+  ],
+  "scripts": [
+    "scripts/visual_graphs/LogAndMove.mfgraph",
+    "scripts/visual_graphs/UserScript.mfgraph",
+    "scripts/visual_graphs/LogAndMove_1.mfgraph",
+    "scripts/visual_graphs/UserScript2.mfgraph",
+    "scripts/PlayerController.rhai"
+  ],
+  "systems": []
 }

@@ -1,15 +1,24 @@
 {
-    "engine_name": "MiniForge",
-    "engine_alt_name": "Mini Forte",
-    "engine_version": "0.6.0 Beta",
-    "start_scene": "main.scene",
-    "autosave": true,
-    "autosave_interval_seconds": 60,
-    "safe_mode": true,
-    "pause_input_in_play": false,
-    "logs": {
-        "engine": "logs/engine.log",
-        "error": "logs/error.log"
-    },
-    "project_name": "DefaultProject"
+  "autosave": true,
+  "autosave_interval_seconds": 60,
+  "config_version": 2,
+  "editor": {
+    "fallback_assets": true,
+    "open_created_assets": true,
+    "script_hot_reload": true
+  },
+  "engine_alt_name": "MiniForge",
+  "engine_name": "MiniForge",
+  "engine_version": "0.8.0",
+  "logs": {
+    "engine": "logs/engine.log",
+    "error": "logs/error.log",
+    "file": "logs/miniforge.log",
+    "level": "info"
+  },
+  "pause_input_in_play": false,
+  "project_name": "DefaultProject",
+  "recover_corrupt_config": true,
+  "safe_mode": true,
+  "start_scene": "main.scene"
 }

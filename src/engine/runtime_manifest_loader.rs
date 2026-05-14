@@ -95,7 +95,7 @@ impl RuntimeManifestLoader {
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect::<Vec<_>>()
             })
-            .unwrap_or_else(Vec::<String>::new);
+            .unwrap_or_default();
         let declared_missing = value
             .get("missing_assets")
             .and_then(|v| v.as_array())
@@ -104,7 +104,7 @@ impl RuntimeManifestLoader {
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect::<Vec<_>>()
             })
-            .unwrap_or_else(Vec::<String>::new);
+            .unwrap_or_default();
         let source_manifest = value
             .get("source_manifest")
             .cloned()

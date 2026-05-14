@@ -8,12 +8,14 @@ pub struct VisualScriptRuntime {
     pub last_frame_graphs: usize,
     pub executed_nodes: usize,
     pub logs: Vec<String>,
+    pub last_errors: Vec<String>,
 }
 
 impl VisualScriptRuntime {
     pub fn update_entities(&mut self, entities: &mut [GameObject], dt: f64, mode: &str) {
         self.last_frame_graphs = 0;
         self.executed_nodes = 0;
+        self.last_errors.clear();
         for entity in entities {
             let Some(script) = entity.get_component("VisualScript").cloned() else {
                 continue;
@@ -28,6 +30,13 @@ impl VisualScriptRuntime {
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
+            if nodes.is_empty() {
+                self.last_errors.push(format!(
+                    "{}: VisualScript sin nodes; se omite este frame.",
+                    entity.name
+                ));
+                continue;
+            }
             let start_id = if script.get_bool("_started", false) {
                 "update"
             } else {
@@ -53,10 +62,18 @@ impl VisualScriptRuntime {
         while let Some(node) = current {
             guard += 1;
             if guard > 128 {
+                self.last_errors.push(format!(
+                    "{}: VisualScript detenido por limite de 128 nodos.",
+                    entity.name
+                ));
                 break;
             }
             self.executed_nodes += 1;
             match node.get("type").and_then(Value::as_str).unwrap_or("") {
+                "" => self
+                    .last_errors
+                    .push(format!("{}: nodo sin type en VisualScript.", entity.name)),
+                "EventStart" | "EventUpdate" | "EventClick" | "EventTrigger" => {}
                 "Move" => {
                     entity.x += node.get("x").and_then(Value::as_f64).unwrap_or(0.0);
                     entity.y += node.get("y").and_then(Value::as_f64).unwrap_or(0.0);
@@ -107,13 +124,23 @@ impl VisualScriptRuntime {
                 "Wait" => {
                     let _ = dt;
                 }
-                _ => {}
+                other => self.last_errors.push(format!(
+                    "{}: nodo VisualScript desconocido: {other}",
+                    entity.name
+                )),
             }
             let next = node.get("next").and_then(Value::as_str);
             current = next.and_then(|id| {
-                nodes
+                let found = nodes
                     .iter()
-                    .find(|node| node.get("id").and_then(Value::as_str) == Some(id))
+                    .find(|node| node.get("id").and_then(Value::as_str) == Some(id));
+                if found.is_none() {
+                    self.last_errors.push(format!(
+                        "{}: next apunta a nodo inexistente: {id}",
+                        entity.name
+                    ));
+                }
+                found
             });
         }
     }

@@ -14,5 +14,5 @@
         "engine": "logs/engine.log",
         "error": "logs/error.log"
     },
-    "project_name": "NewProject"
+    "project_name": "DefaultProject"
 }

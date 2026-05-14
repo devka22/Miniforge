@@ -76,7 +76,7 @@ impl ProjectValidator {
         }
     }
 
-    fn validate_program_assets(&mut self, root: &PathBuf) {
+    fn validate_program_assets(&mut self, root: &Path) {
         for path in walk_files(root) {
             match path.extension().and_then(|value| value.to_str()) {
                 Some("mfgraph") => match AssetTools::read_json(&path) {
@@ -120,12 +120,47 @@ impl ProjectValidator {
         if !scenes.exists() {
             return;
         }
-        if !walk_files(scenes)
+        let scene_files = walk_files(scenes);
+        if !scene_files
             .iter()
             .any(|path| path.extension().and_then(|value| value.to_str()) == Some("scene"))
         {
             self.warnings
                 .push("No hay escenas .scene en el proyecto".to_string());
+        }
+        for path in scene_files {
+            if path.extension().and_then(|value| value.to_str()) != Some("scene") {
+                continue;
+            }
+            match AssetTools::read_json(&path) {
+                Ok(data) => {
+                    if data.get("entities").and_then(Value::as_array).is_none()
+                        && data.get("objects").and_then(Value::as_array).is_none()
+                    {
+                        self.warnings
+                            .push(format!("Escena sin entities: {}", path.display()));
+                    }
+                    if data.get("engine_version").is_none() && data.get("version").is_none() {
+                        self.warnings.push(format!(
+                            "Escena sin version; se migrara al abrir: {}",
+                            path.display()
+                        ));
+                    }
+                    self.validate_references_in_value(&data, &path);
+                }
+                Err(error) => {
+                    let backup = path.with_extension("scene.bak");
+                    if backup.exists() {
+                        self.warnings.push(format!(
+                            "Escena invalida pero tiene backup: {} | {error}",
+                            path.display()
+                        ));
+                    } else {
+                        self.errors
+                            .push(format!("Escena invalida: {} | {error}", path.display()));
+                    }
+                }
+            }
         }
     }
 
@@ -139,6 +174,21 @@ impl ProjectValidator {
                     if data.get("entity").is_none() {
                         self.warnings
                             .push(format!("Prefab sin entity: {}", path.display()));
+                    } else if let Some(entity) = data.get("entity") {
+                        if entity.get("components").and_then(Value::as_array).is_none() {
+                            self.warnings
+                                .push(format!("Prefab sin components: {}", path.display()));
+                        }
+                        if entity
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim()
+                            .is_empty()
+                        {
+                            self.errors
+                                .push(format!("Prefab con entity sin nombre: {}", path.display()));
+                        }
                     }
                     if data
                         .get("variant")
@@ -151,6 +201,7 @@ impl ProjectValidator {
                             path.display()
                         ));
                     }
+                    self.validate_references_in_value(&data, &path);
                 }
                 Err(error) => self
                     .errors
@@ -218,6 +269,22 @@ impl ProjectValidator {
             ));
         }
     }
+
+    fn validate_references_in_value(&mut self, data: &Value, source: &Path) {
+        let project_root = source
+            .ancestors()
+            .find(|path| path.join("engine_config.json").exists())
+            .unwrap_or_else(|| Path::new(""));
+        for reference in collect_project_references(data) {
+            if !project_root.join(&reference).exists() {
+                self.warnings.push(format!(
+                    "Referencia rota en {}: {}",
+                    source.display(),
+                    reference
+                ));
+            }
+        }
+    }
 }
 
 fn walk_files(root: &Path) -> Vec<PathBuf> {
@@ -241,4 +308,36 @@ fn walk_files(root: &Path) -> Vec<PathBuf> {
 
 fn rewrite_spawn_api(source: &str) -> String {
     source.replace("spawn(", "spawn_entity(")
+}
+
+fn collect_project_references(value: &Value) -> Vec<String> {
+    let mut references = Vec::new();
+    collect_project_references_inner(value, &mut references);
+    references.sort();
+    references.dedup();
+    references
+}
+
+fn collect_project_references_inner(value: &Value, references: &mut Vec<String>) {
+    match value {
+        Value::String(text)
+            if (text.starts_with("assets/")
+                || text.starts_with("scripts/")
+                || text.starts_with("saves/"))
+                && text.contains('.') =>
+        {
+            references.push(text.clone());
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_project_references_inner(item, references);
+            }
+        }
+        Value::Object(map) => {
+            for value in map.values() {
+                collect_project_references_inner(value, references);
+            }
+        }
+        _ => {}
+    }
 }

@@ -1,0 +1,158 @@
+{
+  "dependencies": [],
+  "entity": {
+    "active": true,
+    "attack_move_target": null,
+    "command": "IDLE",
+    "components": [
+      {
+        "component_type": "Transform",
+        "enabled": true,
+        "rotation": 0.0,
+        "scale_x": 1.0,
+        "scale_y": 1.0,
+        "x": 21.75,
+        "y": 5.0
+      },
+      {
+        "component_type": "Selectable",
+        "enabled": true,
+        "selectable": true,
+        "selection_radius": 0.5
+      },
+      {
+        "component_type": "SpriteRenderer",
+        "enabled": true,
+        "flip_x": false,
+        "flip_y": false,
+        "sorting_order": 0,
+        "sprite_guid": null,
+        "sprite_name": null,
+        "tint": [
+          255,
+          255,
+          255
+        ],
+        "visible": true
+      },
+      {
+        "collision_layer": "Default",
+        "collision_mask": [
+          "*"
+        ],
+        "component_type": "Collider2D",
+        "enabled": true,
+        "height": 1.3,
+        "is_trigger": false,
+        "material": {
+          "bounciness": 0.0,
+          "friction": 0.25
+        },
+        "offset_x": 0.0,
+        "offset_y": 0.0,
+        "points": [
+          [
+            -0.5,
+            -0.5
+          ],
+          [
+            0.5,
+            -0.5
+          ],
+          [
+            0.5,
+            0.5
+          ],
+          [
+            -0.5,
+            0.5
+          ]
+        ],
+        "radius": 0.45,
+        "shape": "rect",
+        "width": 1.3
+      },
+      {
+        "amount": 500.0,
+        "component_type": "ResourceNode",
+        "enabled": true,
+        "gather_rate": 10.0,
+        "harvest_radius": 1.25,
+        "max_amount": 500.0,
+        "resource_type": "Gold"
+      },
+      {
+        "color": [
+          255,
+          210,
+          90
+        ],
+        "component_type": "ObjectiveMarker",
+        "enabled": true,
+        "label": "Objective",
+        "max_distance": 9999.0,
+        "pulse": true,
+        "target_id": null,
+        "visible": true
+      }
+    ],
+    "enabled": true,
+    "follow_target_id": null,
+    "gather_target_id": null,
+    "guard_target_id": null,
+    "height": 1.3,
+    "id": 14,
+    "is_prefab_instance": false,
+    "layer": "Default",
+    "local_x": 0.0,
+    "local_y": 0.0,
+    "locked": false,
+    "name": "GoldNode",
+    "parent_id": null,
+    "path": [],
+    "patrol_index": 0,
+    "patrol_points": [],
+    "position": [
+      21.75,
+      5.0
+    ],
+    "prefab_guid": null,
+    "prefab_source": null,
+    "radius": 0.45,
+    "rotation": 0.0,
+    "scale": [
+      1.0,
+      1.0
+    ],
+    "scale_x": 1.0,
+    "scale_y": 1.0,
+    "scene_name": null,
+    "script": null,
+    "scripts": [],
+    "size": [
+      1.3,
+      1.3
+    ],
+    "speed": 3.5,
+    "sprite_guid": null,
+    "sprite_name": null,
+    "state": "IDLE",
+    "tag": "Resource",
+    "type": "GameObject",
+    "visible": true,
+    "width": 1.3,
+    "x": 21.75,
+    "y": 5.0
+  },
+  "guid": "5c506aaa551aade5",
+  "include_children": false,
+  "kind": "MiniForgeAdvancedPrefab",
+  "metadata": {
+    "component_count": 6,
+    "script_count": 0,
+    "source": "rust_editor"
+  },
+  "prefab_name": "GoldNode",
+  "variant": false,
+  "version": "0.8.0"
+}

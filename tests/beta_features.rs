@@ -43,7 +43,7 @@ const MIN_PNG_1X1: &[u8] = &[
 fn runtime_manifest_loader_reads_export() {
     let root = temp_dir("manifest");
     AssetTools::write_json(
-        &root.join("runtime_manifest.json"),
+        root.join("runtime_manifest.json"),
         &json!({
             "engine_version": "0.7.0",
             "profile": "debug",
@@ -55,7 +55,7 @@ fn runtime_manifest_loader_reads_export() {
     )
     .unwrap();
     AssetTools::write_json(
-        &root.join("build_info.json"),
+        root.join("build_info.json"),
         &json!({
             "engine_version": "0.7.0",
             "runtime": "rust",
@@ -76,7 +76,7 @@ fn scene_save_manager_incremental_merge() {
     let scenes = proj.join("scenes");
     fs::create_dir_all(&scenes).unwrap();
     fs::create_dir_all(proj.join("project")).unwrap();
-    AssetTools::write_json(&proj.join("project").join("project.json"), &json!({})).unwrap();
+    AssetTools::write_json(proj.join("project").join("project.json"), &json!({})).unwrap();
 
     let mut sm = SceneManager::new(&proj);
     sm.current_scene = "test.scene".to_string();
@@ -110,7 +110,7 @@ fn scene_save_manager_incremental_merge() {
     )
     .unwrap();
 
-    let data = AssetTools::read_json(&sm.scene_path()).unwrap();
+    let data = AssetTools::read_json(sm.scene_path()).unwrap();
     let ids: Vec<u64> = data
         .get("entities")
         .and_then(|v| v.as_array())

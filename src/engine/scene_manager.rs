@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 
 use crate::engine::asset_tools::AssetTools;
 use crate::engine::camera::Camera;
+use crate::engine::runtime_manifest_loader::write_json_atomic;
 use crate::engine::scene_serializer::SceneSerializer;
 use crate::engine::tilemap_layers::TilemapLayers;
 use crate::entities::game_object::GameObject;
@@ -60,6 +61,7 @@ impl SceneManager {
             .and_then(|v| v.to_str())
             .unwrap_or("main.scene")
             .to_string();
+        self.set_single_loaded_scene(self.current_scene.clone());
         Ok(path)
     }
 
@@ -162,7 +164,16 @@ impl SceneManager {
             "settings": {},
             "ui_canvases": json!([]),
         });
-        AssetTools::write_json(self.scene_path(), &data)
+        let path = self.scene_path();
+        let backup = path.with_extension("scene.bak");
+        if path.exists() {
+            let _ = fs::copy(&path, &backup);
+        }
+        let result = write_json_atomic(&path, &data);
+        if result.is_err() && backup.exists() {
+            let _ = fs::copy(&backup, &path);
+        }
+        result
     }
 
     pub fn load_current_scene_data(&self) -> io::Result<Value> {
@@ -174,7 +185,29 @@ impl SceneManager {
         if !path.exists() {
             return Ok(json!({}));
         }
-        Ok(SceneSerializer::migrate(AssetTools::read_json(path)?))
+        match AssetTools::read_json(&path) {
+            Ok(data) => Ok(SceneSerializer::migrate(data)),
+            Err(error) => {
+                let backup = path.with_extension("scene.bak");
+                if backup.exists() {
+                    let data = AssetTools::read_json(&backup).map_err(|backup_error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "Escena invalida y backup ilegible: {} | {error}; backup: {backup_error}",
+                                path.display()
+                            ),
+                        )
+                    })?;
+                    Ok(SceneSerializer::migrate(data))
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Escena invalida: {} | {error}", path.display()),
+                    ))
+                }
+            }
+        }
     }
 
     pub fn load_current_scene(&self) -> io::Result<Vec<GameObject>> {

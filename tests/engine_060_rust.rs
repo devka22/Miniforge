@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use miniforge::core::engine_config::EngineConfig;
 use miniforge::core::game::Game;
 use miniforge::engine::advanced_prefabs::AdvancedPrefabSystem;
 use miniforge::engine::animation_editor::AnimationEditor;
@@ -28,6 +29,7 @@ use miniforge::engine::game_api::GameAPI;
 use miniforge::engine::game_clock::GameClock;
 use miniforge::engine::hierarchy_manager::HierarchyManager;
 use miniforge::engine::input_map::InputMap;
+use miniforge::engine::logger::{LogLevel, Logger};
 use miniforge::engine::material_system::{Material2D, MaterialLibrary};
 use miniforge::engine::play_mode_manager::PlayModeManager;
 use miniforge::engine::plugin_manager::PluginManager;
@@ -196,6 +198,30 @@ fn programming_environment_creates_graph_assets_and_attaches_without_engine_sour
     assert_eq!(graph, "HealthPickup");
     assert!(entity.get_component("VisualScript").is_some());
     assert_eq!(programming.compile_count, 1);
+}
+
+#[test]
+fn visual_graph_view_supports_node_layout_and_pin_connections() {
+    let programming = ProgrammingEnvironment::new();
+    let mut graph = programming.template_graph("LogAndMove");
+    let view = programming.graph_view(&graph);
+    assert!(view.nodes.iter().any(|node| node.id == "start"));
+    assert!(view.connections.iter().any(|link| link.from == "start"));
+
+    assert!(ProgrammingEnvironment::move_graph_node(
+        &mut graph, "move", 320.0, 180.0
+    ));
+    assert!(ProgrammingEnvironment::connect_graph_nodes(
+        &mut graph, "update", "move"
+    ));
+    let view = programming.graph_view(&graph);
+    let move_node = view.nodes.iter().find(|node| node.id == "move").unwrap();
+    assert_eq!((move_node.x, move_node.y), (320.0, 180.0));
+    assert!(
+        view.connections
+            .iter()
+            .any(|link| link.from == "update" && link.to == "move")
+    );
 }
 
 #[test]
@@ -2150,4 +2176,165 @@ fn production_input_map_has_visual_actions_and_devices() {
     let infos = input_map.action_infos();
     assert!(infos.iter().any(|action| action.name == "CameraPan"));
     assert_eq!(input_map.bindings["Move"][0], "keyboard:custom_move");
+}
+
+#[test]
+fn stability_config_recovers_corrupt_file_and_logger_writes_levels() {
+    let tmp = temp_dir("stability-config");
+    AssetTools::ensure_project_folders(&tmp).unwrap();
+    AssetTools::write_json(
+        tmp.join("engine_config.json.bak"),
+        &json!({
+            "engine_name": "MiniForge",
+            "engine_alt_name": "LegacyForge",
+            "project_name": "Recovered",
+            "start_scene": "main.scene"
+        }),
+    )
+    .unwrap();
+    fs::write(tmp.join("engine_config.json"), "{ broken json").unwrap();
+
+    let config = EngineConfig::new(&tmp).unwrap();
+    assert!(config.status.recovered_from_backup);
+    assert_eq!(
+        config
+            .get("engine_alt_name")
+            .and_then(|value| value.as_str()),
+        Some("MiniForge")
+    );
+    assert!(tmp.join("engine_config.json.corrupt").exists());
+
+    let logger = Logger::new(tmp.join("logs").join("miniforge.log"));
+    logger
+        .log_level(LogLevel::Info, "TEST", "developer stability")
+        .unwrap();
+    logger.warning("TEST", "recoverable warning").unwrap();
+    let log_text = fs::read_to_string(tmp.join("logs").join("miniforge.log")).unwrap();
+    assert!(log_text.contains("[info][TEST] developer stability"));
+    assert!(log_text.contains("[warning][TEST] recoverable warning"));
+}
+
+#[test]
+fn stability_editor_can_create_open_edit_save_and_run_rhai_without_restart() {
+    let tmp = temp_dir("stability-live-edit");
+    AssetTools::ensure_project_folders(&tmp).unwrap();
+    let mut game = Game::from_project(&tmp, false).unwrap();
+    let script_path = game.create_rhai_script_asset("PlayerController").unwrap();
+    game.edit_open_file(
+        r#"
+fn on_start() {
+    set_position(3.0, 4.0);
+}
+
+fn on_update(dt) {
+    move(2.0 * dt, 0.0);
+}
+"#,
+    );
+    assert!(game.save_open_file().unwrap());
+    assert!(game.script_editor.document.syntax_error.is_none());
+
+    let relative = script_path
+        .strip_prefix(&tmp)
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    game.units[0].scripts = vec![json!({"runtime": "rhai", "path": relative})];
+    game.enter_play_mode();
+    game.run_headless_once(0.5);
+    assert!(game.units[0].x > 3.0);
+    assert!(game.rhai_script_runtime.last_errors.is_empty());
+}
+
+#[test]
+fn stability_create_empty_scene_opens_blank_viewport_immediately() {
+    let tmp = temp_dir("stability-empty-scene");
+    AssetTools::ensure_project_folders(&tmp).unwrap();
+    let mut game = Game::from_project(&tmp, false).unwrap();
+    game.spawn_unit("TemporaryUnit", 8.0, 8.0);
+    assert!(!game.units.is_empty());
+
+    let path = game.create_empty_scene("BlankGameplay").unwrap();
+
+    assert_eq!(game.units.len(), 0);
+    assert_eq!(game.world.entities.len(), 0);
+    assert!(game.selected_units.is_empty());
+    assert_eq!(
+        game.scene_manager.loaded_scenes,
+        vec![game.scene_manager.current_scene.clone()]
+    );
+    assert_eq!(
+        game.scene_manager.scene_stack,
+        vec![game.scene_manager.current_scene.clone()]
+    );
+    let saved = AssetTools::read_json(path).unwrap();
+    assert_eq!(
+        saved
+            .get("entities")
+            .and_then(|value| value.as_array())
+            .map(Vec::len),
+        Some(0)
+    );
+    assert_eq!(
+        saved
+            .get("ui_canvases")
+            .and_then(|value| value.as_array())
+            .map(Vec::len),
+        Some(0)
+    );
+}
+
+#[test]
+fn stability_visual_graph_errors_are_reported_without_panics() {
+    let mut entity = GameObject::new(0.0, 0.0, Some("GraphHost".to_string()));
+    let mut graph = default_component("VisualScript").unwrap();
+    graph.set(
+        "nodes",
+        json!([
+            {"id": "start", "type": "UnknownNode", "next": "missing"}
+        ]),
+    );
+    entity.add_component(graph);
+    let mut entities = vec![entity];
+    let mut runtime = VisualScriptRuntime::default();
+    runtime.update_entities(&mut entities, 1.0 / 60.0, "PLAY");
+    assert!(!runtime.last_errors.is_empty());
+    assert!(
+        runtime
+            .last_errors
+            .iter()
+            .any(|error| error.contains("UnknownNode") || error.contains("missing"))
+    );
+}
+
+#[test]
+fn stability_scenes_and_prefabs_validate_and_recover_from_backups() {
+    let tmp = temp_dir("stability-scene-prefab");
+    AssetTools::ensure_project_folders(&tmp).unwrap();
+    let scene = tmp.join("saves").join("scenes").join("broken.scene");
+    fs::write(&scene, "{ broken").unwrap();
+    AssetTools::write_json(
+        scene.with_extension("scene.bak"),
+        &AssetTools::template_scene("broken"),
+    )
+    .unwrap();
+
+    let mut validator = ProjectValidator::default();
+    validator.validate(&tmp);
+    assert!(
+        validator
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("backup"))
+    );
+
+    let manager = PrefabManager::new(&tmp);
+    let mut entity = GameObject::new(1.0, 2.0, Some("StablePrefab".to_string()));
+    let prefab = manager
+        .save_prefab(&mut entity, Some("StablePrefab"))
+        .unwrap();
+    fs::copy(&prefab, prefab.with_extension("prefab.bak")).unwrap();
+    fs::write(&prefab, "{ broken").unwrap();
+    let loaded = manager.load_prefab(&prefab).unwrap().unwrap();
+    assert_eq!(loaded.name, "StablePrefab_Instance");
 }

@@ -1,38 +1,158 @@
 {
-    "bindings": {
-        "move_up": [
-            "w",
-            "up"
-        ],
-        "move_down": [
-            "s",
-            "down"
-        ],
-        "move_left": [
-            "a",
-            "left"
-        ],
-        "move_right": [
-            "d",
-            "right"
-        ],
-        "jump": [
-            "space"
-        ],
-        "attack": [
-            "mouse1"
-        ],
-        "interact": [
-            "e"
-        ],
-        "pause": [
-            "escape"
-        ],
-        "save": [
-            "s"
-        ],
-        "duplicate": [
-            "d"
-        ]
+  "actions": {
+    "Attack": {
+      "category": "Gameplay",
+      "description": "Primary attack or RTS attack order.",
+      "devices": [
+        "mouse",
+        "gamepad"
+      ],
+      "display_name": "Attack"
+    },
+    "CameraPan": {
+      "category": "Camera",
+      "description": "Pan the editor/runtime camera.",
+      "devices": [
+        "mouse",
+        "gamepad"
+      ],
+      "display_name": "Camera Pan"
+    },
+    "Command": {
+      "category": "RTS",
+      "description": "Move, attack-move, gather and contextual commands.",
+      "devices": [
+        "mouse",
+        "gamepad"
+      ],
+      "display_name": "Command"
+    },
+    "Interact": {
+      "category": "Gameplay",
+      "description": "Talk, pickup, activate or inspect.",
+      "devices": [
+        "keyboard",
+        "gamepad"
+      ],
+      "display_name": "Interact"
+    },
+    "Jump": {
+      "category": "Gameplay",
+      "description": "Platformer jump action.",
+      "devices": [
+        "keyboard",
+        "gamepad"
+      ],
+      "display_name": "Jump"
+    },
+    "Move": {
+      "category": "Gameplay",
+      "description": "Directional movement vector.",
+      "devices": [
+        "keyboard",
+        "gamepad"
+      ],
+      "display_name": "Move"
+    },
+    "Pause": {
+      "category": "System",
+      "description": "Pause gameplay or open pause menu.",
+      "devices": [
+        "keyboard",
+        "gamepad"
+      ],
+      "display_name": "Pause"
+    },
+    "Select": {
+      "category": "RTS",
+      "description": "Select units or confirm UI.",
+      "devices": [
+        "mouse",
+        "gamepad"
+      ],
+      "display_name": "Select"
     }
+  },
+  "bindings": {
+    "Attack": [
+      "mouse_left",
+      "gamepad:right_trigger",
+      "keyboard:attack"
+    ],
+    "CameraPan": [
+      "mouse_middle",
+      "gamepad:right_stick"
+    ],
+    "Command": [
+      "mouse_right",
+      "gamepad:right_shoulder"
+    ],
+    "Interact": [
+      "e",
+      "gamepad:west"
+    ],
+    "Jump": [
+      "space",
+      "gamepad:south"
+    ],
+    "Move": [
+      "keyboard:wasd",
+      "keyboard:arrows",
+      "gamepad:left_stick"
+    ],
+    "Pause": [
+      "escape",
+      "gamepad:start"
+    ],
+    "Select": [
+      "mouse_left",
+      "gamepad:south"
+    ],
+    "attack": [
+      "mouse1"
+    ],
+    "command": [
+      "mouse_right"
+    ],
+    "duplicate": [
+      "d"
+    ],
+    "interact": [
+      "e"
+    ],
+    "jump": [
+      "space"
+    ],
+    "move_down": [
+      "s",
+      "down"
+    ],
+    "move_left": [
+      "a",
+      "left"
+    ],
+    "move_right": [
+      "d",
+      "right"
+    ],
+    "move_up": [
+      "w",
+      "up"
+    ],
+    "pan": [
+      "mouse_middle"
+    ],
+    "pause": [
+      "escape"
+    ],
+    "play": [
+      "f5"
+    ],
+    "save": [
+      "s"
+    ],
+    "select": [
+      "mouse_left"
+    ]
+  }
 }

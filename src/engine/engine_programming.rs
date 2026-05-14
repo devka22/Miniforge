@@ -8,6 +8,33 @@ use crate::engine::asset_tools::AssetTools;
 use crate::engine::component::{Component, default_component};
 use crate::entities::game_object::GameObject;
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct VisualGraphNodeView {
+    pub id: String,
+    pub node_type: String,
+    pub title: String,
+    pub x: f64,
+    pub y: f64,
+    pub input_pins: Vec<String>,
+    pub output_pins: Vec<String>,
+    pub next: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VisualGraphConnection {
+    pub from: String,
+    pub to: String,
+    pub pin: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VisualGraphView {
+    pub name: String,
+    pub nodes: Vec<VisualGraphNodeView>,
+    pub connections: Vec<VisualGraphConnection>,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProgramTemplate {
     pub name: String,
@@ -202,6 +229,130 @@ impl ProgrammingEnvironment {
         warnings
     }
 
+    pub fn graph_view(&self, graph: &Value) -> VisualGraphView {
+        let nodes = graph
+            .get("nodes")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut view_nodes = Vec::new();
+        let mut connections = Vec::new();
+        let mut warnings = self.validate_graph(graph);
+        for (index, node) in nodes.iter().enumerate() {
+            let id = node
+                .get("id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+                .unwrap_or_else(|| format!("node_{index}"));
+            let node_type = node
+                .get("type")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "Unknown".to_string());
+            let (x, y) = node_position(node, index);
+            let next = node
+                .get("next")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            if let Some(to) = &next {
+                connections.push(VisualGraphConnection {
+                    from: id.clone(),
+                    to: to.clone(),
+                    pin: "exec".to_string(),
+                });
+            }
+            if next.as_deref().is_some_and(|target| {
+                !nodes
+                    .iter()
+                    .any(|candidate| candidate.get("id").and_then(Value::as_str) == Some(target))
+            }) {
+                warnings.push(format!("{id} conecta con un nodo inexistente"));
+            }
+            view_nodes.push(VisualGraphNodeView {
+                title: node_title(&node_type),
+                id,
+                node_type,
+                x,
+                y,
+                input_pins: vec!["exec".to_string()],
+                output_pins: vec!["exec".to_string()],
+                next,
+            });
+        }
+        VisualGraphView {
+            name: graph
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("VisualGraph")
+                .to_string(),
+            nodes: view_nodes,
+            connections,
+            warnings,
+        }
+    }
+
+    pub fn connect_graph_nodes(graph: &mut Value, from: &str, to: &str) -> bool {
+        if from == to || !graph_has_node(graph, to) {
+            return false;
+        }
+        let Some(nodes) = graph.get_mut("nodes").and_then(Value::as_array_mut) else {
+            return false;
+        };
+        let Some(node) = nodes
+            .iter_mut()
+            .find(|node| node.get("id").and_then(Value::as_str) == Some(from))
+        else {
+            return false;
+        };
+        if let Some(map) = node.as_object_mut() {
+            map.insert("next".to_string(), json!(to));
+            return true;
+        }
+        false
+    }
+
+    pub fn move_graph_node(graph: &mut Value, node_id: &str, x: f64, y: f64) -> bool {
+        let Some(nodes) = graph.get_mut("nodes").and_then(Value::as_array_mut) else {
+            return false;
+        };
+        let Some(node) = nodes
+            .iter_mut()
+            .find(|node| node.get("id").and_then(Value::as_str) == Some(node_id))
+        else {
+            return false;
+        };
+        if let Some(map) = node.as_object_mut() {
+            map.insert("position".to_string(), json!({"x": x, "y": y}));
+            return true;
+        }
+        false
+    }
+
+    pub fn add_graph_node(graph: &mut Value, node_type: &str) -> Option<String> {
+        let nodes = graph.get_mut("nodes").and_then(Value::as_array_mut)?;
+        let safe_type = AssetTools::safe_name(node_type, "Log");
+        let base = safe_type.to_ascii_lowercase();
+        let mut index = nodes.len() + 1;
+        let id = loop {
+            let candidate = format!("{base}_{index}");
+            if !nodes
+                .iter()
+                .any(|node| node.get("id").and_then(Value::as_str) == Some(candidate.as_str()))
+            {
+                break candidate;
+            }
+            index += 1;
+        };
+        nodes.push(json!({
+            "id": id,
+            "type": safe_type,
+            "message": "New node",
+            "next": null,
+            "position": {"x": 120.0 + (index as f64 * 36.0), "y": 110.0 + (index as f64 * 22.0)}
+        }));
+        Some(id)
+    }
+
     pub fn summary(&self) -> String {
         format!(
             "{} templates | {} open graphs | {} compiles | {} warnings",
@@ -224,14 +375,93 @@ impl ProgramTemplate {
 }
 
 fn graph_base(name: &str, nodes: Value, variables: Value) -> Value {
+    let nodes = with_auto_node_layout(nodes);
     json!({
         "version": crate::engine::version::ENGINE_VERSION,
         "kind": "MiniForgeVisualGraph",
         "runtime": "rust_visual_graph",
         "name": name,
         "variables": variables,
+        "editor": {
+            "schema": 2,
+            "canvas": {"x": 0, "y": 0, "zoom": 1.0}
+        },
         "nodes": nodes,
     })
+}
+
+fn with_auto_node_layout(nodes: Value) -> Value {
+    let Some(items) = nodes.as_array() else {
+        return nodes;
+    };
+    Value::Array(
+        items
+            .iter()
+            .enumerate()
+            .map(|(index, node)| {
+                let mut node = node.clone();
+                if node.get("position").is_none()
+                    && let Some(map) = node.as_object_mut()
+                {
+                    map.insert(
+                        "position".to_string(),
+                        json!({
+                            "x": 48.0 + (index as f64 * 178.0),
+                            "y": 46.0 + ((index % 2) as f64 * 96.0)
+                        }),
+                    );
+                }
+                node
+            })
+            .collect(),
+    )
+}
+
+fn node_position(node: &Value, index: usize) -> (f64, f64) {
+    if let Some(position) = node.get("position") {
+        if let Some(array) = position.as_array()
+            && array.len() >= 2
+        {
+            return (
+                array[0].as_f64().unwrap_or(0.0),
+                array[1].as_f64().unwrap_or(0.0),
+            );
+        }
+        if let Some(object) = position.as_object() {
+            return (
+                object.get("x").and_then(Value::as_f64).unwrap_or(0.0),
+                object.get("y").and_then(Value::as_f64).unwrap_or(0.0),
+            );
+        }
+    }
+    (
+        48.0 + (index as f64 * 178.0),
+        46.0 + ((index % 2) as f64 * 96.0),
+    )
+}
+
+fn node_title(node_type: &str) -> String {
+    match node_type {
+        "EventStart" => "Event Start",
+        "EventUpdate" => "Event Update",
+        "EventClick" => "Event Click",
+        "EventTrigger" => "Event Trigger",
+        "SetVariable" => "Set Variable",
+        "SetEnabled" => "Set Enabled",
+        other => other,
+    }
+    .to_string()
+}
+
+fn graph_has_node(graph: &Value, id: &str) -> bool {
+    graph
+        .get("nodes")
+        .and_then(Value::as_array)
+        .is_some_and(|nodes| {
+            nodes
+                .iter()
+                .any(|node| node.get("id").and_then(Value::as_str) == Some(id))
+        })
 }
 
 fn graph_log_and_move() -> Value {

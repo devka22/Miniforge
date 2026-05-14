@@ -106,11 +106,12 @@ impl SceneSaveManager {
             if entity.scene_name.is_none() {
                 entity.scene_name = Some(scene_manager.current_scene.clone());
             }
-            if use_merge && !self.entity_changed(entity) {
-                if let Some(prev) = old_entities.get(&entity.id) {
-                    merged_entities.push(prev.clone());
-                    continue;
-                }
+            if use_merge
+                && !self.entity_changed(entity)
+                && let Some(prev) = old_entities.get(&entity.id)
+            {
+                merged_entities.push(prev.clone());
+                continue;
             }
             merged_entities.push(entity.serialize());
         }
@@ -150,10 +151,8 @@ impl SceneSaveManager {
         });
 
         let res = write_json_atomic(&path, &data);
-        if res.is_err() {
-            if backup.exists() {
-                let _ = fs::copy(&backup, &path);
-            }
+        if res.is_err() && backup.exists() {
+            let _ = fs::copy(&backup, &path);
         }
         res?;
         self.bootstrap_from_scene(entities, tilemap_layers);
