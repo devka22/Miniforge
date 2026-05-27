@@ -469,6 +469,66 @@ impl GameAPI {
             .unwrap_or(0)
     }
 
+    pub fn has_item(entity: &GameObject, item_id: &str, quantity: i64) -> bool {
+        entity
+            .get_component("Inventory")
+            .map(|inventory| inventory.inventory_has_item(item_id, quantity.max(1)))
+            .unwrap_or(false)
+    }
+
+    pub fn transfer_item(
+        from: &mut GameObject,
+        to: &mut GameObject,
+        item_id: &str,
+        quantity: i64,
+    ) -> i64 {
+        let removed = Self::remove_item(from, item_id, quantity);
+        if removed <= 0 {
+            return 0;
+        }
+        let added = Self::add_item(to, item_id, removed);
+        if added < removed {
+            let _ = Self::add_item(from, item_id, removed - added);
+        }
+        added
+    }
+
+    pub fn inventory_slots_used(entity: &GameObject) -> usize {
+        entity
+            .get_component("Inventory")
+            .and_then(|inventory| inventory.get("items"))
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0)
+    }
+
+    pub fn inventory_space_left(entity: &GameObject) -> i64 {
+        entity
+            .get_component("Inventory")
+            .map(|inventory| {
+                let capacity = inventory.get_i64("capacity", 24).max(0);
+                capacity - Self::inventory_slots_used(entity) as i64
+            })
+            .unwrap_or(0)
+            .max(0)
+    }
+
+    pub fn equip_item(entity: &mut GameObject, slot: &str, item_id: &str, bonuses: Value) -> bool {
+        if entity.get_component("Equipment").is_none() {
+            entity.add_component(default_component("Equipment").expect("Equipment"));
+        }
+        entity
+            .get_component_mut("Equipment")
+            .map(|equipment| equipment.equipment_equip(slot, Some(item_id), bonuses))
+            .unwrap_or(false)
+    }
+
+    pub fn unequip_item(entity: &mut GameObject, slot: &str) -> Option<Value> {
+        entity
+            .get_component_mut("Equipment")
+            .and_then(|equipment| equipment.equipment_unequip(slot))
+    }
+
     pub fn add_resource(entity: &mut GameObject, resource_type: &str, amount: f64) -> Option<f64> {
         if entity.get_component("EconomyWallet").is_none() {
             entity.add_component(default_component("EconomyWallet").expect("EconomyWallet"));
@@ -478,11 +538,69 @@ impl GameAPI {
             .map(|wallet| wallet.economy_add(resource_type, amount))
     }
 
+    pub fn resource_amount(entity: &GameObject, resource_type: &str) -> f64 {
+        entity
+            .get_component("EconomyWallet")
+            .and_then(|wallet| wallet.get("resources"))
+            .and_then(Value::as_object)
+            .and_then(|resources| resources.get(resource_type))
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+    }
+
     pub fn spend_resource(entity: &mut GameObject, resource_type: &str, amount: f64) -> bool {
         entity
             .get_component_mut("EconomyWallet")
             .map(|wallet| wallet.economy_spend(resource_type, amount))
             .unwrap_or(false)
+    }
+
+    pub fn can_afford(entity: &GameObject, cost: &Value) -> bool {
+        let Some(costs) = cost.as_object() else {
+            return true;
+        };
+        costs.iter().all(|(resource, amount)| {
+            Self::resource_amount(entity, resource) >= amount.as_f64().unwrap_or(0.0).max(0.0)
+        })
+    }
+
+    pub fn spend_cost(entity: &mut GameObject, cost: &Value) -> bool {
+        if !Self::can_afford(entity, cost) {
+            return false;
+        }
+        let Some(costs) = cost.as_object() else {
+            return true;
+        };
+        for (resource, amount) in costs {
+            let _ = Self::spend_resource(entity, resource, amount.as_f64().unwrap_or(0.0).max(0.0));
+        }
+        true
+    }
+
+    pub fn add_resources(entity: &mut GameObject, resources: &Value) -> usize {
+        let Some(resources) = resources.as_object() else {
+            return 0;
+        };
+        let mut changed = 0;
+        for (resource, amount) in resources {
+            if Self::add_resource(entity, resource, amount.as_f64().unwrap_or(0.0)).is_some() {
+                changed += 1;
+            }
+        }
+        changed
+    }
+
+    pub fn transfer_resource(
+        from: &mut GameObject,
+        to: &mut GameObject,
+        resource_type: &str,
+        amount: f64,
+    ) -> bool {
+        if !Self::spend_resource(from, resource_type, amount) {
+            return false;
+        }
+        let _ = Self::add_resource(to, resource_type, amount);
+        true
     }
 
     pub fn make_rts_unit(entity: &mut GameObject, team_id: i64, worker: bool) {
@@ -512,6 +630,133 @@ impl GameAPI {
         cost: Value,
     ) -> bool {
         RTSSystem::enqueue_production(producer, unit_type, display_name, build_time, cost)
+    }
+
+    pub fn add_production_recipe(
+        producer: &mut GameObject,
+        unit_type: &str,
+        display_name: &str,
+        build_time: f64,
+        cost: Value,
+    ) -> bool {
+        if producer.get_component("ProductionRecipeBook").is_none() {
+            producer.add_component(
+                default_component("ProductionRecipeBook").expect("ProductionRecipeBook"),
+            );
+        }
+        let Some(book) = producer.get_component_mut("ProductionRecipeBook") else {
+            return false;
+        };
+        let mut recipes = book
+            .get("recipes")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(existing) = recipes
+            .iter_mut()
+            .find(|recipe| recipe.get("unit_type").and_then(Value::as_str) == Some(unit_type))
+            && let Some(map) = existing.as_object_mut()
+        {
+            map.insert("display_name".to_string(), json!(display_name));
+            map.insert("build_time".to_string(), json!(build_time.max(0.1)));
+            map.insert("cost".to_string(), cost);
+            book.set("recipes", Value::Array(recipes));
+            return true;
+        }
+        recipes.push(json!({
+            "unit_type": unit_type,
+            "display_name": display_name,
+            "build_time": build_time.max(0.1),
+            "cost": cost,
+        }));
+        book.set("recipes", Value::Array(recipes));
+        true
+    }
+
+    pub fn set_preferred_recipe(producer: &mut GameObject, unit_type: &str) -> bool {
+        if producer.get_component("ProductionRecipeBook").is_none() {
+            producer.add_component(
+                default_component("ProductionRecipeBook").expect("ProductionRecipeBook"),
+            );
+        }
+        let Some(book) = producer.get_component_mut("ProductionRecipeBook") else {
+            return false;
+        };
+        book.set("preferred_recipe", json!(unit_type));
+        true
+    }
+
+    pub fn enqueue_preferred_recipe(producer: &mut GameObject) -> bool {
+        if producer.get_component("ProductionQueue").is_none() {
+            producer.add_component(default_component("ProductionQueue").expect("ProductionQueue"));
+        }
+        let Some(book) = producer.get_component("ProductionRecipeBook").cloned() else {
+            return false;
+        };
+        let preferred = book.get_string("preferred_recipe", "Worker");
+        let Some(recipe) = book
+            .get("recipes")
+            .and_then(Value::as_array)
+            .and_then(|recipes| {
+                recipes
+                    .iter()
+                    .find(|recipe| {
+                        recipe.get("unit_type").and_then(Value::as_str) == Some(preferred.as_str())
+                    })
+                    .or_else(|| recipes.first())
+            })
+        else {
+            return false;
+        };
+        Self::enqueue_production(
+            producer,
+            recipe
+                .get("unit_type")
+                .and_then(Value::as_str)
+                .unwrap_or("Worker"),
+            recipe
+                .get("display_name")
+                .and_then(Value::as_str)
+                .unwrap_or("Worker"),
+            recipe
+                .get("build_time")
+                .and_then(Value::as_f64)
+                .unwrap_or(3.0),
+            recipe.get("cost").cloned().unwrap_or_else(|| json!({})),
+        )
+    }
+
+    pub fn gather_resource(worker: &mut GameObject, node: &mut GameObject, amount: f64) -> f64 {
+        let Some(resource_node) = node.get_component_mut("ResourceNode") else {
+            return 0.0;
+        };
+        let resource_type = resource_node.get_string("resource_type", "Gold");
+        let gathered = resource_node.gather(amount.max(0.0));
+        if gathered <= 0.0 {
+            return 0.0;
+        }
+        if worker.get_component("Worker").is_none() {
+            worker.add_component(default_component("Worker").expect("Worker"));
+        }
+        worker
+            .get_component_mut("Worker")
+            .map(|worker| worker.worker_add_resource(&resource_type, gathered))
+            .unwrap_or(0.0)
+    }
+
+    pub fn deposit_worker_cargo(worker: &mut GameObject, wallet_owner: &mut GameObject) -> f64 {
+        let Some(worker_component) = worker.get_component_mut("Worker") else {
+            return 0.0;
+        };
+        let resource_type = worker_component.get_string("carrying_type", "Gold");
+        let amount = worker_component.get_f64("carrying_amount", 0.0);
+        if amount <= 0.0 {
+            return 0.0;
+        }
+        worker_component.set_f64("carrying_amount", 0.0);
+        worker_component.set("carrying_type", Value::Null);
+        let _ = Self::add_resource(wallet_owner, &resource_type, amount);
+        amount
     }
 
     pub fn set_blackboard(entity: &mut GameObject, key: &str, value: Value) -> bool {
@@ -547,6 +792,24 @@ impl GameAPI {
             .get_component("Cooldown")
             .map(|cooldown| cooldown.cooldown_ready(name))
             .unwrap_or(true)
+    }
+
+    pub fn trigger_ability(entity: &mut GameObject, now: f64) -> bool {
+        if entity.get_component("Ability").is_none() {
+            entity.add_component(default_component("Ability").expect("Ability"));
+        }
+        entity
+            .get_component_mut("Ability")
+            .map(|ability| ability.ability_trigger(now))
+            .unwrap_or(false)
+    }
+
+    pub fn recharge_ability(entity: &mut GameObject, amount: i64) -> bool {
+        let Some(ability) = entity.get_component_mut("Ability") else {
+            return false;
+        };
+        ability.ability_recharge(amount);
+        true
     }
 
     pub fn add_status_effect(
@@ -624,13 +887,34 @@ impl GameAPI {
             .unwrap_or(false)
     }
 
+    pub fn set_quest_objective_progress(
+        entity: &mut GameObject,
+        quest_id: &str,
+        objective_id: &str,
+        progress: Value,
+    ) -> bool {
+        entity
+            .get_component_mut("QuestLog")
+            .map(|quest_log| {
+                quest_log.quest_set_objective_progress(quest_id, objective_id, progress)
+            })
+            .unwrap_or(false)
+    }
+
     pub fn save_game_state(entities: &mut [GameObject], path: impl AsRef<Path>) -> io::Result<()> {
         let serializable = entities
             .iter_mut()
             .filter(|entity| entity.get_component("Saveable").is_some())
             .map(GameObject::serialize)
             .collect::<Vec<_>>();
-        AssetTools::write_json(path, &json!({"entities": serializable}))
+        AssetTools::write_json(
+            path,
+            &json!({
+                "kind": "MiniForgeSaveGame",
+                "version": 2,
+                "entities": serializable,
+            }),
+        )
     }
 
     pub fn load_game_state(
@@ -647,21 +931,7 @@ impl GameAPI {
         };
 
         for saved in saved_entities {
-            let save_key =
-                saved
-                    .get("components")
-                    .and_then(Value::as_array)
-                    .and_then(|components| {
-                        components.iter().find_map(|component| {
-                            if component.get("component_type").and_then(Value::as_str)
-                                == Some("Saveable")
-                            {
-                                component.get("save_key").and_then(Value::as_str)
-                            } else {
-                                None
-                            }
-                        })
-                    });
+            let save_key = save_key_from_data(saved);
             let Some(save_key) = save_key else {
                 continue;
             };
@@ -674,10 +944,89 @@ impl GameAPI {
             }) else {
                 continue;
             };
-            entity.x = saved.get("x").and_then(Value::as_f64).unwrap_or(entity.x);
-            entity.y = saved.get("y").and_then(Value::as_f64).unwrap_or(entity.y);
-            entity.sync_to_components();
+            let current_id = entity.id;
+            let current_scene = entity.scene_name.clone();
+            let mut restored = GameObject::from_data(saved, true);
+            restored.id = current_id;
+            restored.scene_name = restored.scene_name.or(current_scene);
+            restored.sync_to_components();
+            *entity = restored;
         }
         Ok(true)
     }
+
+    pub fn load_game_state_into(
+        entities: &mut Vec<GameObject>,
+        path: impl AsRef<Path>,
+    ) -> io::Result<usize> {
+        if !path.as_ref().exists() {
+            return Ok(0);
+        }
+        let data =
+            serde_json::from_str::<Value>(&fs::read_to_string(path)?).map_err(io::Error::other)?;
+        let Some(saved_entities) = data.get("entities").and_then(Value::as_array) else {
+            return Ok(0);
+        };
+
+        let mut restored_count = 0;
+        for saved in saved_entities {
+            let Some(save_key) = save_key_from_data(saved) else {
+                continue;
+            };
+            if let Some(index) = entities.iter().position(|entity| {
+                entity
+                    .get_component("Saveable")
+                    .and_then(|saveable| saveable.get("save_key"))
+                    .and_then(Value::as_str)
+                    == Some(save_key)
+            }) {
+                let current_id = entities[index].id;
+                let current_scene = entities[index].scene_name.clone();
+                let mut restored = GameObject::from_data(saved, true);
+                restored.id = current_id;
+                restored.scene_name = restored.scene_name.or(current_scene);
+                restored.sync_to_components();
+                entities[index] = restored;
+                restored_count += 1;
+                continue;
+            }
+
+            if saved
+                .get("components")
+                .and_then(Value::as_array)
+                .and_then(|components| {
+                    components
+                        .iter()
+                        .find(|component| {
+                            component.get("component_type").and_then(Value::as_str)
+                                == Some("Saveable")
+                        })
+                        .and_then(|component| component.get("persistent"))
+                        .and_then(Value::as_bool)
+                })
+                .unwrap_or(false)
+            {
+                let mut restored = GameObject::from_data(saved, true);
+                restored.sync_to_components();
+                entities.push(restored);
+                restored_count += 1;
+            }
+        }
+        Ok(restored_count)
+    }
+}
+
+fn save_key_from_data(saved: &Value) -> Option<&str> {
+    saved
+        .get("components")
+        .and_then(Value::as_array)
+        .and_then(|components| {
+            components.iter().find_map(|component| {
+                if component.get("component_type").and_then(Value::as_str) == Some("Saveable") {
+                    component.get("save_key").and_then(Value::as_str)
+                } else {
+                    None
+                }
+            })
+        })
 }

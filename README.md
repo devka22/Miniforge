@@ -1,6 +1,6 @@
-# MiniForge 0.8.0 Developer Stability Update
+# MiniForge 0.9.1.1 Interface Overhaul Patch
 
-MiniForge es un motor 2D con runtime/editor en Rust. La version 0.8.0 Developer Stability Update estabiliza el flujo real de desarrollo: crear proyecto, abrirlo, crear scripts/graphs/assets, editarlos dentro del motor, guardar/cargar escenas, entrar a Play Mode y exportar runtime sin salir del editor.
+MiniForge es un motor 2D con runtime/editor en Rust. La version 0.9.1.1 Interface Overhaul Patch es un mini parche enfocado solo en interfaz: redisenado visual del launcher, top bar, menus, paneles, paleta de comandos, ventanas flotantes, Hierarchy, Inspector, Browser y editores de codigo/blueprints para que el motor se sienta mas moderno, estetico y conectado.
 
 ## Ejecutar
 
@@ -61,7 +61,11 @@ cargo test
 ## Editor Avanzado
 
 - Workspaces tipo editor profesional: World, Script, Prefab, Profile y Ship.
+- Interfaz 0.9.1.1: fondo con profundidad, superficies consistentes, sombras suaves, bordes limpios, botones con gradiente y acentos modernos.
+- Launcher estilo mac oscuro con panel principal, notas del parche, recientes y campos visualmente integrados.
 - Paneles utiles: Scene, Game, Hierarchy, Inspector, Content Browser, Programming, Prefabs, Console, Profiler, Asset Graph, Build y Diagnostics.
+- Ventanas flotantes movibles: Programming desacoplado para `.rhai` y `.mfgraph`, Blueprint Library buscable y Play Window embebida o separada.
+- Jerarquia con click derecho para seleccionar, mover arriba/abajo, parentar la seleccion, limpiar parent y eliminar entidades.
 - `F6` cambia workspace; `Ctrl+P` abre comandos; `Ctrl+G` crea un graph visual Rust; `Ctrl+I` instancia el primer prefab disponible; `Cmd/Ctrl+Z` y redo restauran operaciones del editor.
 - Herramientas `Select`, `Move`, `Rotate`, `Scale` y `Paint`, con snap, bounding boxes y gizmos.
 - Browser mejorado: indexa `assets/`, scripts `.rhai`, `scripts/visual_graphs/`, escenas y settings; marca compatibilidad, tamano, labels y visual graphs.
@@ -109,16 +113,20 @@ El desarrollador puede crear logica sin tocar el codigo fuente del motor usando 
 - API de gameplay: `move`, `set_position`, `spawn`, `destroy`, `play_sound`, `load_scene`, `input_pressed`, `ui_text` y `set_ui_text`.
 - Hot reload: el runtime observa `scripts/` con `notify`, recompila cache y actualiza contadores en Profiler.
 
-- Templates incluidos: `LogAndMove`, `ButtonClick`, `HealthPickup`, `RTSOrder` y `Spawner`.
+- Templates incluidos: `LogAndMove`, `PlayerVitalMovement`, `HealthCombat`, `ButtonClick`, `HealthPickup`, `RTSOrder`, `Spawner`, `BlueprintCommunication`, `InventoryEconomyLoop`, `QuestAbilityLoop` y `RTSProductionEconomy`.
 - Los graphs se guardan en `scripts/visual_graphs/` y se ejecutan con `VisualScriptRuntime` en Rust.
 - El panel `Programming` permite crear graphs, adjuntarlos a la entidad seleccionada, abrir scripts como codigo y editar visual graphs como nodos conectables.
+- Los blueprints incluyen eventos, `ConstructionScript`, custom/broadcast events, `Sequence`, `Gate`, `DoOnce`, `FlipFlop`, ramas, variables, vida, movimiento, fisica, UI, inventario, economia, produccion RTS, habilidades, cooldowns, estados y quests.
+- La paleta `Ctrl+P` tiene busqueda difusa para encontrar comandos aunque escribas incompleto: `inventry`, `econ`, `quest`, `rts production`, etc.
 - Los templates de proyecto nuevos crean scripts Rhai, `.mfgraph`, prefabs y data JSON.
 
 ## Prefabs Y Escenas
 
 - Prefabs avanzados con GUID estable, metadata, dependencias, instanciacion y variants.
-- El inspector y el panel `Prefabs` permiten guardar la seleccion como prefab, crear variants e instanciar prefabs.
+- El inspector y el panel `Prefabs` permiten guardar la seleccion como prefab, crear variants, instanciar prefabs, aplicar cambios al source, revertir instancias y despegar instancias.
 - Escena, prefabs y visual graphs aparecen juntos en el browser para acelerar el flujo de desarrollo.
+- El panel `Scenes` lista escenas del proyecto, carga escenas normales/aditivas, empuja al stack y muestra estado runtime.
+- El panel `Sprites` permite crear canvas 16/32, pintar pixeles, elegir paleta, flip horizontal/vertical, rotar y guardar PNG en `assets/sprites`.
 
 ## RTS Toolkit Rust
 
@@ -172,6 +180,17 @@ RTSSystem::enqueue_production(
 - `Diagnostics`: FPS, frame time actual, promedio, minimo, maximo y contador de frames.
 - `EventBus`: ahora permite drenar todos los eventos, drenar por nombre y consultar contadores.
 - `BuildPlacement`: validacion de construcciones sobre grid con footprints y preview JSON.
+- `Runtime2DSystem`: controller top-down/platformer, jump buffer, coyote time, dash, colision contra grid/tilemap, checkpoints, respawn por caida, camera follow y stats de profiler.
+- Savegame v2: `GameAPI::save_game_state`, `load_game_state` y `load_game_state_into` restauran transform, componentes, inventario, vida y entidades persistentes por `save_key`.
+- GameAPI 0.9.2: `has_item`, `transfer_item`, `equip_item`, `can_afford`, `spend_cost`, `transfer_resource`, `add_production_recipe`, `enqueue_preferred_recipe`, `gather_resource`, `deposit_worker_cargo`, `set_quest_objective_progress`, `trigger_ability` y `recharge_ability`.
+
+## Aprender MiniForge
+
+- Guia completa 0.9.2: `docs/GETTING_STARTED_0.9.2.md`.
+- Mapa tecnico del motor: `docs/ENGINE_GUIDE.md`.
+- Arquitectura MiniForge2D inspirada en editores tipo UE: `docs/MINIFORGE_2D_ARCHITECTURE.md`.
+- Matriz de cobertura de la guia UE4 2D: `docs/UE4_2D_GUIDE_IMPLEMENTATION_MATRIX.md`.
+- Historial de cambios: `docs/PATCH_NOTES.md`.
 
 APIs utiles:
 

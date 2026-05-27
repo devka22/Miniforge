@@ -1,0 +1,160 @@
+{
+  "format": "miniforge_2d_examples",
+  "version": 1,
+  "systems": {
+    "editor_layout": {
+      "theme": "dark",
+      "left_panel_width": 280,
+      "right_panel_width": 340,
+      "bottom_panel_height": 260,
+      "active_bottom_tab": "Content Browser",
+      "scene_view_grid": true,
+      "show_console": true,
+      "show_problems": true
+    },
+    "toolbar": {
+      "buttons": ["SaveScene", "SaveAll", "Undo", "Redo", "Play", "Pause", "Stop", "Build", "Export", "ProjectSettings", "OpenContentBrowser", "OpenConsole", "OpenBlueprintLibrary", "ValidateProject"],
+      "status": {"state": "Editing", "fps": 60.0, "current_scene": "main.scene", "errors": 0, "warnings": 0}
+    },
+    "actor_component": {
+      "type": "Actor2D",
+      "name": "PickupActor",
+      "position": [2.0, 3.0],
+      "components": [
+        {"component_type": "Transform", "x": 2.0, "y": 3.0, "rotation": 0.0, "scale_x": 1.0, "scale_y": 1.0},
+        {"component_type": "SpriteRenderer", "sprite_name": "Coin", "sorting_order": 10},
+        {"component_type": "Collider2D", "shape": "circle", "radius": 0.35, "is_trigger": true},
+        {"component_type": "VisualScript", "graph_name": "BP_CoinPickup"}
+      ]
+    },
+    "game_framework": {
+      "game_mode": {
+        "name": "GM_Main2D",
+        "start_scene": "saves/scenes/main.scene",
+        "default_pawn": "BP_PlayerPawn2D",
+        "player_controller": "BP_PlayerController2D",
+        "hud_canvas": "assets/ui/hud.ui2d.json",
+        "spawn_policy": "spawn_at_player_start",
+        "rules": {"fixed_timestep": 0.0166667}
+      },
+      "default_pawn": {"name": "BP_PlayerPawn2D", "movement_mode": "topdown", "collision_layer": "Pawn", "input_enabled": true},
+      "player_controller": {"name": "BP_PlayerController2D", "controller_type": "player", "possessed_pawn": null, "input_context": "settings/input_map.json", "behavior_tree": null},
+      "ai_controller": {"name": "BP_AIController2D", "controller_type": "ai", "possessed_pawn": null, "input_context": null, "behavior_tree": "assets/ai/basic_enemy.bt2d.json"}
+    },
+    "blueprint_graph": {
+      "name": "BP_PlayerPawn2D",
+      "runtime": "miniforge_visual_script_2d",
+      "variables": {"MoveSpeed": {"value_type": "float", "default_value": 5.0, "editable": true}},
+      "nodes": [
+        {"id": "begin_play", "kind": "EventBeginPlay", "title": "Begin Play", "pins": [{"name": "then", "pin_type": "exec", "direction": "out"}], "data": {}},
+        {"id": "print_ready", "kind": "PrintString", "title": "Print Ready", "pins": [{"name": "exec", "pin_type": "exec", "direction": "in"}], "data": {"message": "MiniForge2D ready"}}
+      ],
+      "edges": [{"from": "begin_play", "from_pin": "then", "to": "print_ready", "to_pin": "exec"}]
+    },
+    "content_browser": {
+      "assets": {
+        "assets/sprites/player.png": {
+          "guid": "asset-player-sprite",
+          "path": "assets/sprites/player.png",
+          "name": "player",
+          "asset_type": "Sprite2D",
+          "labels": ["player", "runtime"],
+          "preview": {"preview_type": "sprite", "thumbnail_path": "assets/sprites/player.png", "summary": "32x32 player sprite"},
+          "dependencies": [],
+          "valid": true,
+          "metadata": {"pixels_per_unit": 32}
+        }
+      }
+    },
+    "details_inspector": {
+      "target_name": "PlayerPawn",
+      "sections": [
+        {"title": "Transform", "fields": [{"path": "x", "label": "X", "value_type": "number", "editable": true, "value_preview": "4.000"}]},
+        {"title": "Pawn2D", "fields": [{"path": "components.Pawn2D.auto_possess", "label": "auto_possess", "value_type": "bool", "editable": true, "value_preview": "true"}]}
+      ]
+    },
+    "world_outliner": {
+      "items": [
+        {"id": 1, "name": "WorldRoot", "entity_type": "Actor2D", "parent_id": null, "depth": 0, "enabled": true, "visible": true, "locked": false, "children": [2]},
+        {"id": 2, "name": "PlayerPawn", "entity_type": "Pawn2D", "parent_id": 1, "depth": 1, "enabled": true, "visible": true, "locked": false, "children": []}
+      ]
+    },
+    "scene_view_2d": {
+      "zoom": 1.0,
+      "grid": true,
+      "snap": false,
+      "active_tool": "Select",
+      "show_colliders": true,
+      "show_pivots": true,
+      "show_names": true,
+      "debug_draw": false,
+      "shortcuts": ["W", "E", "R", "F", "G", "Ctrl+S", "Ctrl+D", "Delete", "Ctrl+Z", "Ctrl+Y"]
+    },
+    "paper2d": {
+      "sprite": {"guid": "sprite-player-idle", "name": "PlayerIdle", "texture": "assets/sprites/player.png", "pixels_per_unit": 32.0, "pivot": [0.5, 0.5], "rect": {"x": 0, "y": 0, "width": 32, "height": 32}, "labels": ["player", "demo"]},
+      "tileset": {"guid": "tileset-demo", "name": "DemoTiles", "texture": "assets/tiles/demo_tiles.png", "tile_width": 16, "tile_height": 16, "columns": 8, "collision_tiles": [{"tile_id": 1, "shape": "rect", "layer": "WorldStatic", "is_trigger": false}]},
+      "tilemap": {"name": "DemoMap", "tileset": "assets/tiles/demo.tileset.json", "width": 4, "height": 3, "tile_width": 16, "tile_height": 16, "layers": [{"name": "Ground", "visible": true, "collision": false, "tiles": [0,0,0,0,0,1,1,0,0,0,0,0]}]},
+      "flipbook": {"name": "PlayerRun", "frames_per_second": 10.0, "looping": true, "frames": [{"sprite": "PlayerRun_0", "duration": 0.1}, {"sprite": "PlayerRun_1", "duration": 0.1}], "frame_events": [{"frame": 1, "event": "footstep", "payload": {"volume": 0.5}}]}
+    },
+    "animation_blueprint": {
+      "name": "ABP_Player2D",
+      "default_state": "Idle",
+      "parameters": {"Speed": {"value_type": "float", "default_value": 0.0}, "Attacking": {"value_type": "bool", "default_value": false}},
+      "states": {"Idle": {"clip": "Idle", "speed": 1.0, "looped": true}, "Run": {"clip": "Run", "speed": 1.0, "looped": true}},
+      "transitions": [{"from": "Idle", "to": "Run", "parameter": "Speed", "equals": 1.0, "exit_time": null}],
+      "frame_events": [{"state": "Run", "frame": 2, "event": "footstep", "payload": {"sound": "assets/audio/step.wav"}}]
+    },
+    "umg_like_ui": {
+      "name": "HUD_Main",
+      "viewport_width": 1280.0,
+      "viewport_height": 720.0,
+      "widgets": [
+        {"id": "RootCanvas", "widget_type": "Canvas", "rect": {"x": 0.0, "y": 0.0, "width": 1280.0, "height": 720.0}, "anchors": {"min_x": 0.0, "min_y": 0.0, "max_x": 1.0, "max_y": 1.0}, "children": []}
+      ]
+    },
+    "ui_designer": {
+      "document_path": "assets/ui/hud.mfui",
+      "selected_widget": null,
+      "active_tool": "Select",
+      "snap": true,
+      "guides": true,
+      "preview_resolution": [1280, 720],
+      "features": ["drag_drop_widgets", "widget_hierarchy", "property_inspector", "move_scale_gizmos", "binding_picker", "callback_creator", "broken_widget_validation"]
+    },
+    "blueprint_library": {
+      "templates": ["Player TopDown", "Player Platformer", "Enemy Patrol", "Enemy Chase", "Enemy Shooter", "Pickup Item", "Health System", "Damage Zone", "Door + Key", "Dialogue Trigger", "Quest Giver", "RTS Unit", "RTS Building", "RTS Spawner", "UI Health Bar", "Main Menu Button", "Pause Menu", "Save Point"]
+    },
+    "sequencer2d": {
+      "name": "IntroSequence2D",
+      "duration": 6.0,
+      "frame_rate": 30.0,
+      "tracks": [
+        {"id": "camera_main", "target": "CameraActor2D", "track_type": "camera", "keyframes": [{"time": 0.0, "easing": "linear", "value": {"x": 0.0, "y": 0.0, "zoom": 1.0}}]},
+        {"id": "dialogue_0", "target": null, "track_type": "dialogue", "keyframes": [{"time": 1.0, "easing": "step", "value": {"speaker": "Guide", "text": "Welcome to MiniForge2D."}}]}
+      ]
+    },
+    "physics2d": {
+      "settings": {"gravity_x": 0.0, "gravity_y": 18.0, "solver_iterations": 2, "debug_draw": true, "layers": [{"name": "Default", "index": 0}, {"name": "Pawn", "index": 1}, {"name": "WorldStatic", "index": 2}], "layer_matrix": [{"first": "Pawn", "second": "WorldStatic", "collides": true}]},
+      "raycast": {"origin": [0.0, 0.0], "direction": [1.0, 0.0], "max_distance": 8.0, "include_triggers": false, "layers": ["WorldStatic"]}
+    },
+    "ai_behavior_tree": {
+      "name": "BT_EnemyBasic2D",
+      "root": "root_selector",
+      "nodes": [
+        {"id": "root_selector", "node_type": "selector", "children": ["attack_if_close", "chase_if_seen", "patrol"], "data": {}},
+        {"id": "attack_if_close", "node_type": "task", "task": "Attack", "condition": {"key": "target_distance", "operator": "<=", "value": 1.25}, "children": [], "data": {"cooldown": 0.8}},
+        {"id": "chase_if_seen", "node_type": "task", "task": "Chase", "condition": {"key": "has_target", "operator": "==", "value": true}, "children": [], "data": {"speed": 3.5}},
+        {"id": "patrol", "node_type": "task", "task": "Patrol", "children": [], "data": {"points": [[0, 0], [4, 0], [4, 4], [0, 4]]}}
+      ]
+    },
+    "rts_tools": {
+      "features": ["Unit Selection", "Box Selection", "Command System", "Move Command", "Attack Move", "Patrol", "Hold Position", "Resource Gather", "Building Placement", "Production Queue", "Squad Movement", "Flow Fields", "Influence Map", "Threat Map", "Fog of War"],
+      "demo_scene": "RTS_Minimal_Demo"
+    },
+    "asset_registry": {"lookup_keys": ["guid", "path", "label", "type"]},
+    "plugin_system": {"plugins": [{"name": "Paper2DExtras", "enabled": true, "version": "0.1.0", "modules": ["tileset_importer", "flipbook_tools"]}]},
+    "project_settings": {"startup_scene": "saves/scenes/main.scene", "default_game_mode": "GM_Main2D", "input": "settings/input_map.json", "physics": "settings/physics2d.json"},
+    "packaging": {"game_name": "MiniForge2DDemo", "profile": "Debug", "start_scene": "saves/scenes/main.scene", "used_assets": ["assets/sprites/player.png", "assets/ui/hud.ui2d.json"], "missing_assets": [], "validation_errors": [], "settings": {"runtime": "miniforge_runtime", "validate_assets": true}},
+    "play_in_editor": {"mode": "PlayInEditor", "snapshot_scene_before_play": true, "restore_on_stop": true, "start_paused": false, "simulate_controllers": true, "runtime": "macroquad+rhai"}
+  }
+}

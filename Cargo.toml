@@ -1,7 +1,8 @@
 [package]
 name = "miniforge"
-version = "0.8.0"
+version = "0.9.2"
 edition = "2024"
+default-run = "miniforge"
 
 [lib]
 name = "miniforge"
@@ -20,11 +21,18 @@ name = "miniforge_runtime"
 path = "src/bin/miniforge_runtime.rs"
 
 [dependencies]
-egui = "0.31"
+egui = "0.34"
+egui_dock = "0.19.1"
+egui_extras = "0.34.2"
+image = "0.25.10"
 kira = "0.10"
 macroquad = "0.4"
 notify = "8"
 pathfinding = "4.15.0"
+rapier2d = "0.32"
 rhai = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+strsim = "0.11.1"
+walkdir = "2.5.0"
+zip = "8.6.0"

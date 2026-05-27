@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::entities::game_object::GameObject;
+use crate::systems::rapier_physics_bridge::{RapierPhysicsBridge, RapierSceneReport};
 
 type Vec2 = (f64, f64);
 type RayShapeHit = (f64, Vec2, Vec2);
@@ -14,6 +15,7 @@ pub struct PhysicsSystem {
     pub layer_matrix: BTreeMap<(String, String), bool>,
     pub events: Vec<PhysicsEvent>,
     pub stats: BTreeMap<String, usize>,
+    pub rapier_report: Option<RapierSceneReport>,
     active_pair_names: BTreeMap<(u64, u64), (String, String)>,
 }
 
@@ -102,6 +104,7 @@ impl PhysicsSystem {
             layer_matrix: BTreeMap::new(),
             events: Vec::new(),
             stats: default_stats(),
+            rapier_report: None,
             active_pair_names: BTreeMap::new(),
         }
     }
@@ -145,6 +148,7 @@ impl PhysicsSystem {
 
         let dt = dt.clamp(0.0, 0.05);
         self.integrate_bodies(entities, dt);
+        self.rapier_report = Some(RapierPhysicsBridge::inspect_scene(entities, self.gravity));
 
         let colliders: Vec<usize> = entities
             .iter()
@@ -212,6 +216,13 @@ impl PhysicsSystem {
             ("contacts".to_string(), current_pairs.len()),
             ("triggers".to_string(), triggers),
             ("collisions".to_string(), collisions),
+            (
+                "rapier_ready_colliders".to_string(),
+                self.rapier_report
+                    .as_ref()
+                    .map(|report| report.colliders)
+                    .unwrap_or(0),
+            ),
         ]));
     }
 

@@ -20,7 +20,9 @@ use miniforge::engine::camera::Camera;
 use miniforge::engine::component::{component_from_data, default_component};
 use miniforge::engine::component_validation::ComponentValidation;
 use miniforge::engine::content_drag::DragPayload;
+use miniforge::engine::developer_console::{ConsoleSeverity, DeveloperConsole};
 use miniforge::engine::diagnostics::Diagnostics;
+use miniforge::engine::docking_panel::{EditorDockTab, EguiDockingWorkspace};
 use miniforge::engine::editor_workspace::{EditorPanelKind, EditorWorkspace, WorkspaceMode};
 use miniforge::engine::engine_programming::ProgrammingEnvironment;
 use miniforge::engine::event_bus::EventBus;
@@ -37,6 +39,7 @@ use miniforge::engine::prefab_manager::PrefabManager;
 use miniforge::engine::prefab_overrides::PrefabOverrides;
 use miniforge::engine::profiler::Profiler;
 use miniforge::engine::project_launcher::{EguiProjectLauncher, LauncherTemplate};
+use miniforge::engine::project_package::ProjectPackageManager;
 use miniforge::engine::project_templates::ProjectTemplates;
 use miniforge::engine::project_validator::ProjectValidator;
 use miniforge::engine::resource_manager::ResourceManager;
@@ -47,6 +50,7 @@ use miniforge::engine::scene_view_tools::SceneViewTools;
 use miniforge::engine::script_debugger::ScriptDebugger;
 use miniforge::engine::script_editor::ScriptEditor;
 use miniforge::engine::spatial_index::SpatialIndex;
+use miniforge::engine::sprite_editor::{SpriteColor, SpriteEditorCanvas};
 use miniforge::engine::tile_brush::{TileBrush, TileBrushMode};
 use miniforge::engine::tilemap_layers::TilemapLayers;
 use miniforge::engine::ui_canvas::UICanvas;
@@ -66,6 +70,7 @@ use miniforge::systems::command_system::CommandSystem;
 use miniforge::systems::gameplay_system::GameplaySystem;
 use miniforge::systems::particle_system::ParticleSystem;
 use miniforge::systems::physics_system::{PairType, PhysicsEventPhase, PhysicsSystem};
+use miniforge::systems::rapier_physics_bridge::RapierPhysicsBridge;
 use miniforge::systems::render_system::RenderSystem;
 use miniforge::systems::rts_system::RTSSystem;
 use serde_json::json;
@@ -148,6 +153,26 @@ fn script_editor_validates_syntax() {
 }
 
 #[test]
+fn script_editor_tabs_can_close_and_cycle_between_files() {
+    let tmp = temp_dir("script-tabs");
+    let first = tmp.join("First.rhai");
+    let second = tmp.join("Second.rhai");
+    fs::write(&first, "fn on_start() {}").unwrap();
+    fs::write(&second, "fn on_update(dt) {}").unwrap();
+
+    let mut editor = ScriptEditor::default();
+    editor.open(first.clone()).unwrap();
+    editor.open(second.clone()).unwrap();
+    assert_eq!(editor.tabs.len(), 2);
+    editor.activate_next_tab(-1).unwrap();
+    assert_eq!(editor.document.path, Some(first.clone()));
+    let active = editor.close_current_tab().unwrap().unwrap();
+    assert_eq!(active, second);
+    assert_eq!(editor.tabs.len(), 1);
+    assert_eq!(editor.closed_tabs.len(), 1);
+}
+
+#[test]
 fn visual_input_editor_adds_binding() {
     let tmp = temp_dir("visual-input");
     let mut input = InputMap::new(tmp.join("input_map.json")).unwrap();
@@ -178,6 +203,22 @@ fn editor_workspace_modes_surface_useful_panels() {
             .any(|panel| panel.kind == EditorPanelKind::AssetGraph)
     );
     assert_eq!(workspace.performance_status(8.0), "Realtime");
+}
+
+#[test]
+fn egui_docking_workspace_tracks_professional_editor_windows() {
+    let mut docking = EguiDockingWorkspace::new();
+    docking.open_tab(EditorDockTab::ScriptEditor);
+    docking.open_tab(EditorDockTab::BlueprintEditor);
+    docking.set_floating_visibility("script_editor", true);
+    assert!(
+        docking
+            .dock_state
+            .iter_all_tabs()
+            .any(|(_, tab)| *tab == EditorDockTab::ScriptEditor)
+    );
+    assert!(docking.floating_panel("script_editor").is_some());
+    assert!(docking.dock_summary().contains("egui_dock"));
 }
 
 #[test]
@@ -221,6 +262,44 @@ fn visual_graph_view_supports_node_layout_and_pin_connections() {
         view.connections
             .iter()
             .any(|link| link.from == "update" && link.to == "move")
+    );
+}
+
+#[test]
+fn productivity_blueprint_catalog_search_and_branch_pins_work() {
+    let programming = ProgrammingEnvironment::new();
+    assert!(
+        programming
+            .search_node_catalog("health")
+            .iter()
+            .any(|node| node.node_type == "SetHealth")
+    );
+    assert!(
+        programming
+            .search_templates("player")
+            .iter()
+            .any(|template| template.name == "PlayerVitalMovement")
+    );
+
+    let mut graph = programming.template_graph("HealthCombat");
+    assert!(ProgrammingEnvironment::add_graph_node(&mut graph, "DestroySelf").is_some());
+    assert!(ProgrammingEnvironment::connect_graph_nodes_on_pin(
+        &mut graph,
+        "low_check",
+        "heal",
+        "true"
+    ));
+    let view = programming.graph_view(&graph);
+    let branch = view
+        .nodes
+        .iter()
+        .find(|node| node.id == "low_check")
+        .unwrap();
+    assert_eq!(branch.output_pins, vec!["true", "false"]);
+    assert!(
+        view.connections
+            .iter()
+            .any(|connection| connection.from == "low_check" && connection.pin == "true")
     );
 }
 
@@ -343,6 +422,71 @@ fn visual_scripting_moves_entity() {
     VisualScriptRuntime::default().update_entities(&mut entities, 0.016, "PLAY");
     assert_eq!(entities[0].x, 3.0);
     assert_eq!(entities[0].y, 4.0);
+}
+
+#[test]
+fn visual_scripting_productivity_nodes_drive_gameplay_components() {
+    let mut entity = GameObject::new(0.0, 0.0, Some("BlueprintHero".to_string()));
+    let mut script = default_component("VisualScript").unwrap();
+    script.set(
+        "nodes",
+        json!([
+            {"id": "start", "type": "EventStart", "next": "health"},
+            {"id": "health", "type": "SetHealth", "health": 40.0, "max_health": 50.0, "next": "damage"},
+            {"id": "damage", "type": "Damage", "amount": 25.0, "next": "branch"},
+            {"id": "branch", "type": "BranchHealth", "operator": "<=", "value": 20.0, "true_next": "heal", "false_next": "velocity"},
+            {"id": "heal", "type": "Heal", "amount": 20.0, "next": "velocity"},
+            {"id": "velocity", "type": "SetVelocity", "x": 3.0, "y": -1.0, "next": "blackboard"},
+            {"id": "blackboard", "type": "SetBlackboard", "key": "state", "value": "Ready", "next": null}
+        ]),
+    );
+    entity.add_component(script);
+    let mut entities = vec![entity];
+    let mut runtime = VisualScriptRuntime::default();
+    runtime.update_entities(&mut entities, 0.016, "PLAY");
+    let entity = &entities[0];
+    assert_eq!(
+        entity
+            .get_component("Health")
+            .unwrap()
+            .get_f64("health", 0.0),
+        35.0
+    );
+    assert_eq!(
+        entity
+            .get_component("Rigidbody2D")
+            .unwrap()
+            .get_f64("velocity_x", 0.0),
+        3.0
+    );
+    assert_eq!(
+        entity
+            .get_component("Blackboard")
+            .unwrap()
+            .blackboard_get("state", json!("")),
+        json!("Ready")
+    );
+}
+
+#[test]
+fn visual_scripting_wait_node_pauses_chain_until_timer_finishes() {
+    let mut entity = GameObject::new(0.0, 0.0, Some("TimerGraph".to_string()));
+    let mut script = default_component("VisualScript").unwrap();
+    script.set(
+        "nodes",
+        json!([
+            {"id": "start", "type": "EventStart", "next": "wait"},
+            {"id": "wait", "type": "Wait", "seconds": 0.1, "next": "log"},
+            {"id": "log", "type": "Log", "message": "done", "next": null}
+        ]),
+    );
+    entity.add_component(script);
+    let mut entities = vec![entity];
+    let mut runtime = VisualScriptRuntime::default();
+    runtime.update_entities(&mut entities, 0.02, "PLAY");
+    assert!(runtime.logs.is_empty());
+    runtime.update_entities(&mut entities, 0.12, "PLAY");
+    assert_eq!(runtime.logs, vec!["done".to_string()]);
 }
 
 #[test]
@@ -1052,6 +1196,29 @@ fn asset_browser_templates_launcher_and_kira_audio_cover_game_creation_flow() {
 }
 
 #[test]
+fn launcher_creates_projects_in_free_locations_and_surfaces_patch_notes() {
+    let workspace = temp_dir("launcher-free-root");
+    let free_location = temp_dir("launcher-free-location");
+    let mut launcher = EguiProjectLauncher::new(&workspace);
+    launcher.project_location = free_location.display().to_string();
+    launcher.project_name = "Free Location Game".to_string();
+    launcher.selected_template = LauncherTemplate::TopDown;
+
+    let project = launcher.create_new_project().unwrap();
+    assert!(project.starts_with(&free_location));
+    assert!(project.join("project.json").exists());
+    assert!(
+        launcher
+            .active_patch_note()
+            .unwrap()
+            .highlights
+            .iter()
+            .any(|line| line.contains("Blueprint"))
+    );
+    assert!(launcher.discover_recent_projects().unwrap() >= 1);
+}
+
+#[test]
 fn plugin_manager_emits_hooks() {
     let tmp = temp_dir("plugins");
     let plugin_dir = tmp.join("plugins").join("hello");
@@ -1639,6 +1806,28 @@ fn physics_supports_body_types_materials_events_and_raycast() {
 }
 
 #[test]
+fn rapier_bridge_validates_miniforge_2d_physics_shapes() {
+    let mut dynamic = GameObject::new(0.0, 0.0, Some("DynamicBall".to_string()));
+    dynamic.add_component(default_component("Rigidbody2D").unwrap());
+    if let Some(collider) = dynamic.get_component_mut("Collider2D") {
+        collider.set("shape", json!("circle"));
+        collider.set_f64("radius", 0.75);
+        collider.set("is_trigger", json!(true));
+    }
+    let mut polygon = GameObject::new(2.0, 0.0, Some("Polygon".to_string()));
+    if let Some(collider) = polygon.get_component_mut("Collider2D") {
+        collider.set("shape", json!("polygon"));
+        collider.set("points", json!([[-0.5, -0.5], [0.5, -0.5], [0.25, 0.75]]));
+    }
+    let report = RapierPhysicsBridge::inspect_scene(&[dynamic, polygon], (0.0, 9.8));
+    assert_eq!(report.colliders, 2);
+    assert_eq!(report.dynamic_bodies, 1);
+    assert_eq!(report.sensors, 1);
+    assert!(report.broadphase_aabb_area > 0.0);
+    assert!(report.status_line().contains("Rapier2D"));
+}
+
+#[test]
 fn physics_reports_trigger_enter_stay_and_exit() {
     let mut player = GameObject::new(0.0, 0.0, Some("Player".to_string()));
     player.add_component(default_component("Rigidbody2D").unwrap());
@@ -1824,6 +2013,158 @@ fn game_api_covers_queries_resources_blackboard_and_save_state() {
             .as_deref()
             == Some("HeroSprite")
     );
+}
+
+#[test]
+fn runtime_2d_controller_camera_checkpoint_and_tile_collision_are_live() {
+    let tmp = temp_dir("runtime-2d");
+    AssetTools::ensure_project_folders(&tmp).unwrap();
+    let mut game = Game::from_project(&tmp, false).unwrap();
+    game.create_platformer_starter();
+    let player_id = game
+        .units
+        .iter()
+        .find(|entity| entity.name == "PlatformerPlayer")
+        .unwrap()
+        .id;
+    let start_x = game.get_entity_by_id(player_id).unwrap().x;
+
+    game.enter_play_mode();
+    assert!(game.set_character_input(player_id, (1.0, 0.0), false, false, false, false));
+    game.run_headless_once(0.2);
+    assert!(game.get_entity_by_id(player_id).unwrap().x > start_x);
+    assert!(
+        game.profiler
+            .counters
+            .get("Runtime2DControllers")
+            .copied()
+            .unwrap_or(0)
+            >= 1
+    );
+
+    let checkpoint_id = game
+        .units
+        .iter()
+        .find(|entity| entity.name == "Checkpoint_A")
+        .unwrap()
+        .id;
+    GameAPI::set_position(game.get_entity_by_id_mut(player_id).unwrap(), 44.0, 10.0);
+    game.run_headless_once(1.0 / 60.0);
+    assert!(
+        game.get_entity_by_id(checkpoint_id)
+            .unwrap()
+            .get_component("Checkpoint")
+            .unwrap()
+            .get_bool("active", false)
+    );
+
+    let fall_y = game
+        .get_entity_by_id(player_id)
+        .unwrap()
+        .get_component("CharacterController2D")
+        .unwrap()
+        .get_f64("fall_death_y", 9999.0);
+    game.get_entity_by_id_mut(player_id).unwrap().y = fall_y + 1.0;
+    game.run_headless_once(1.0 / 60.0);
+    let player = game.get_entity_by_id(player_id).unwrap();
+    assert!(player.y <= 10.1);
+    assert!(
+        game.profiler
+            .counters
+            .get("Runtime2DRespawns")
+            .copied()
+            .unwrap_or(0)
+            >= 1
+    );
+}
+
+#[test]
+fn gameplay_destroyed_enemies_drop_loot_pickups() {
+    let mut attacker = GameObject::new(0.0, 0.0, Some("Attacker".to_string()));
+    attacker.tag = "Enemy".to_string();
+    let mut ai = default_component("AIController").unwrap();
+    ai.set("behavior", json!("attack"));
+    ai.set("target_tags", json!(["Victim"]));
+    ai.set_f64("attack_radius", 4.0);
+    attacker.add_component(ai);
+    let mut damage = default_component("DamageDealer").unwrap();
+    damage.set_f64("damage", 25.0);
+    damage.set_f64("cooldown", 0.0);
+    attacker.add_component(damage);
+
+    let mut victim = GameObject::new(1.0, 0.0, Some("Victim".to_string()));
+    victim.tag = "Victim".to_string();
+    let mut health = default_component("Health").unwrap();
+    health.set_f64("health", 5.0);
+    victim.add_component(health);
+    let mut loot = default_component("LootTable").unwrap();
+    loot.set(
+        "entries",
+        json!([{"id": "coin", "weight": 1.0, "min": 2, "max": 2}]),
+    );
+    victim.add_component(loot);
+
+    let mut entities = vec![attacker, victim];
+    let mut gameplay = GameplaySystem::default();
+    gameplay.update_entities(&mut entities, 1.0 / 60.0, "PLAY");
+
+    assert!(!entities.iter().any(|entity| entity.name == "Victim"));
+    let loot = entities
+        .iter()
+        .find(|entity| entity.name == "Loot_coin")
+        .unwrap();
+    assert_eq!(
+        loot.get_component("Blackboard")
+            .unwrap()
+            .blackboard_get("quantity", json!(0)),
+        json!(2)
+    );
+    assert_eq!(gameplay.stats["loot_drops"], 1);
+}
+
+#[test]
+fn save_state_restores_components_and_can_recreate_persistent_entities() {
+    let tmp = temp_dir("api-save-v2");
+    let mut hero = GameObject::new(1.0, 2.0, Some("Hero".to_string()));
+    GameAPI::add_component(
+        &mut hero,
+        "Saveable",
+        Some(json!({"save_key": "hero", "persistent": true})),
+    );
+    hero.add_component(default_component("Health").unwrap());
+    GameAPI::add_item(&mut hero, "potion", 2);
+    let save_path = tmp.join("savegame.json");
+    let mut entities = vec![hero];
+
+    GameAPI::save_game_state(&mut entities, &save_path).unwrap();
+    entities[0].x = 50.0;
+    entities[0]
+        .get_component_mut("Health")
+        .unwrap()
+        .take_damage(40.0);
+    entities[0]
+        .get_component_mut("Inventory")
+        .unwrap()
+        .inventory_remove_item("potion", 2);
+
+    assert!(GameAPI::load_game_state(&mut entities, &save_path).unwrap());
+    assert_eq!(entities[0].x, 1.0);
+    assert_eq!(
+        entities[0]
+            .get_component("Health")
+            .unwrap()
+            .get_f64("health", 0.0),
+        100.0
+    );
+    assert_eq!(GameAPI::item_count(&entities[0], "potion"), 2);
+
+    let mut recreated = Vec::new();
+    assert_eq!(
+        GameAPI::load_game_state_into(&mut recreated, &save_path).unwrap(),
+        1
+    );
+    assert_eq!(recreated[0].name, "Hero");
+    assert_eq!(GameAPI::item_count(&recreated[0], "potion"), 2);
 }
 
 #[test]
@@ -2337,4 +2678,260 @@ fn stability_scenes_and_prefabs_validate_and_recover_from_backups() {
     fs::write(&prefab, "{ broken").unwrap();
     let loaded = manager.load_prefab(&prefab).unwrap().unwrap();
     assert_eq!(loaded.name, "StablePrefab_Instance");
+}
+
+#[test]
+fn update_091_project_packages_sprite_editor_and_console_are_connected() {
+    let tmp = temp_dir("update-091-package");
+    AssetTools::ensure_project_folders(&tmp).unwrap();
+    fs::write(tmp.join("assets").join("data").join("settings.json"), "{}").unwrap();
+
+    let archive = tmp.join("builds").join("package.mfpkg.zip");
+    let report = ProjectPackageManager::export_project(&tmp, &archive).unwrap();
+    assert!(archive.exists());
+    assert!(report.files > 0);
+
+    let import_root = temp_dir("update-091-package-import");
+    let imported = ProjectPackageManager::import_project(&archive, &import_root).unwrap();
+    assert!(imported.project_path.join("project.json").exists());
+    assert!(
+        imported
+            .project_path
+            .join("assets")
+            .join("data")
+            .join("settings.json")
+            .exists()
+    );
+
+    let mut sprite = SpriteEditorCanvas::new(8, 8);
+    let red = SpriteColor {
+        r: 255,
+        g: 32,
+        b: 32,
+        a: 255,
+    };
+    sprite.fill_rect(1, 1, 3, 3, red);
+    sprite.draw_line((0, 0), (7, 7), SpriteColor::WHITE);
+    let sprite_path = tmp.join("assets").join("sprites").join("painted.png");
+    sprite.save_png(&sprite_path).unwrap();
+    let loaded = SpriteEditorCanvas::load_png(&sprite_path).unwrap();
+    assert_eq!(loaded.width, 8);
+    assert_eq!(loaded.get_pixel(1, 2), Some(red));
+
+    let mut console = DeveloperConsole::default();
+    console.log("ready", "ENGINE");
+    console.warning("careful", "WARNING");
+    console.error("broken", "ERROR");
+    let serious = console.search("", ConsoleSeverity::Warning);
+    assert_eq!(serious.len(), 2);
+    assert!(console.summary().contains("1 warnings"));
+    console.clear_channel("ERROR");
+    assert_eq!(console.error_count, 0);
+}
+
+#[test]
+fn update_091_blueprint_flow_nodes_drive_gameplay_state() {
+    let mut entity = GameObject::new(0.0, 0.0, Some("BlueprintActor".to_string()));
+    let mut graph = default_component("VisualScript").unwrap();
+    graph.set(
+        "nodes",
+        json!([
+            {"id": "construction", "type": "ConstructionScript", "next": "set_pos"},
+            {"id": "set_pos", "type": "SetPosition", "x": 7.0, "y": 9.0, "next": null},
+            {"id": "start", "type": "EventStart", "next": "broadcast"},
+            {"id": "broadcast", "type": "BroadcastEvent", "event": "OnReady", "next": "flip"},
+            {"id": "on_ready", "type": "CustomEvent", "event": "OnReady", "next": "inventory"},
+            {"id": "inventory", "type": "InventoryAdd", "item": "potion", "quantity": 2, "next": "cooldown"},
+            {"id": "cooldown", "type": "StartCooldown", "name": "dash", "duration": 3.0, "next": null},
+            {"id": "flip", "type": "FlipFlop", "key": "state", "a_next": "state_a", "b_next": "state_b"},
+            {"id": "state_a", "type": "SetState", "state": "StateA", "next": null},
+            {"id": "state_b", "type": "SetState", "state": "StateB", "next": null},
+            {"id": "update", "type": "EventUpdate", "next": "gate"},
+            {"id": "gate", "type": "Gate", "key": "ready", "open": true, "next": "move"},
+            {"id": "move", "type": "Move", "x": 1.0, "y": 0.0, "use_dt": true, "next": null}
+        ]),
+    );
+    graph.set("variables", json!({"ready": true}));
+    entity.add_component(graph);
+    let mut entities = vec![entity];
+    let mut runtime = VisualScriptRuntime::default();
+
+    runtime.update_entities(&mut entities, 0.5, "PLAY");
+    assert_eq!(entities[0].x, 7.0);
+    assert_eq!(entities[0].y, 9.0);
+    assert_eq!(entities[0].state, "StateA");
+    assert!(entities[0].get_component("Inventory").is_some());
+    assert!(entities[0].get_component("Cooldown").is_some());
+
+    runtime.update_entities(&mut entities, 0.5, "PLAY");
+    assert!(entities[0].x > 7.0);
+
+    let env = ProgrammingEnvironment::new();
+    assert!(
+        env.template_names()
+            .contains(&"BlueprintCommunication".to_string())
+    );
+    assert!(
+        env.search_node_catalog("flip")
+            .iter()
+            .any(|node| node.node_type == "FlipFlop")
+    );
+    assert!(
+        env.search_node_catalog("broadcast")
+            .iter()
+            .any(|node| node.node_type == "BroadcastEvent")
+    );
+}
+
+#[test]
+fn update_091_hierarchy_and_prefab_actions_work_from_game_api() {
+    let tmp = temp_dir("update-091-prefab-hierarchy");
+    AssetTools::ensure_project_folders(&tmp).unwrap();
+    let mut game = Game::from_project(&tmp, false).unwrap();
+    let parent = game.spawn_game_object("Parent", 1.0, 1.0);
+    let child = game.spawn_game_object("Child", 2.0, 2.0);
+
+    assert!(game.set_entity_parent(child, parent));
+    assert_eq!(
+        game.get_entity_by_id(child).unwrap().parent_id,
+        Some(parent)
+    );
+    assert!(game.move_entity_in_hierarchy(child, -1));
+    assert!(game.clear_entity_parent(child));
+    assert_eq!(game.get_entity_by_id(child).unwrap().parent_id, None);
+
+    game.select_entity(child);
+    let prefab = game.save_selected_as_prefab().unwrap().unwrap();
+    assert!(prefab.exists());
+    assert!(game.apply_selected_to_prefab_source().unwrap());
+    assert!(game.detach_selected_prefab_instance());
+    let entity = game.get_entity_by_id(child).unwrap();
+    assert!(!entity.is_prefab_instance);
+    assert!(entity.prefab_source.is_none());
+}
+
+#[test]
+fn update_092_game_api_supports_inventory_economy_rts_quests_and_abilities() {
+    let mut player = GameObject::new(0.0, 0.0, Some("Player".to_string()));
+    let mut chest = GameObject::new(1.0, 0.0, Some("Chest".to_string()));
+    assert_eq!(GameAPI::add_item(&mut player, "potion", 5), 5);
+    assert!(GameAPI::has_item(&player, "potion", 3));
+    assert_eq!(
+        GameAPI::transfer_item(&mut player, &mut chest, "potion", 2),
+        2
+    );
+    assert_eq!(GameAPI::item_count(&chest, "potion"), 2);
+    assert!(GameAPI::equip_item(
+        &mut player,
+        "weapon",
+        "iron_sword",
+        json!({"attack": 4.0})
+    ));
+    assert!(player.get_component("Equipment").is_some());
+
+    GameAPI::add_resources(&mut player, &json!({"Gold": 180.0, "Wood": 60.0}));
+    assert!(GameAPI::can_afford(
+        &player,
+        &json!({"Gold": 80.0, "Wood": 20.0})
+    ));
+    assert!(GameAPI::spend_cost(
+        &mut player,
+        &json!({"Gold": 80.0, "Wood": 20.0})
+    ));
+    assert_eq!(GameAPI::resource_amount(&player, "Gold"), 100.0);
+
+    let mut base = GameObject::new(3.0, 3.0, Some("Base".to_string()));
+    GameAPI::add_resources(&mut base, &json!({"Gold": 250.0, "Wood": 90.0}));
+    assert!(GameAPI::add_production_recipe(
+        &mut base,
+        "Soldier",
+        "Soldier",
+        5.0,
+        json!({"Gold": 85.0, "Wood": 25.0})
+    ));
+    assert!(GameAPI::set_preferred_recipe(&mut base, "Soldier"));
+    assert!(GameAPI::enqueue_preferred_recipe(&mut base));
+    assert!(
+        base.get_component("ProductionQueue")
+            .and_then(|queue| queue.get("queue"))
+            .and_then(|queue| queue.as_array())
+            .is_some_and(|queue| queue.len() == 1)
+    );
+
+    let mut worker = GameObject::new(4.0, 3.0, Some("Worker".to_string()));
+    let mut node = GameObject::new(5.0, 3.0, Some("GoldNode".to_string()));
+    node.add_component(default_component("ResourceNode").unwrap());
+    assert_eq!(GameAPI::gather_resource(&mut worker, &mut node, 20.0), 20.0);
+    assert_eq!(GameAPI::deposit_worker_cargo(&mut worker, &mut base), 20.0);
+    assert!(GameAPI::resource_amount(&base, "Gold") >= 185.0);
+
+    assert!(GameAPI::add_quest(
+        &mut player,
+        "tutorial",
+        "Tutorial",
+        json!([{"id": "collect", "progress": 0, "target": 1}])
+    ));
+    assert!(GameAPI::set_quest_objective_progress(
+        &mut player,
+        "tutorial",
+        "collect",
+        json!(1)
+    ));
+    assert!(GameAPI::complete_quest(&mut player, "tutorial"));
+
+    assert!(GameAPI::trigger_ability(&mut player, 10.0));
+    assert!(!GameAPI::trigger_ability(&mut player, 10.1));
+    assert!(GameAPI::recharge_ability(&mut player, 1));
+    assert!(GameAPI::trigger_ability(&mut player, 11.2));
+}
+
+#[test]
+fn update_092_blueprint_nodes_cover_complex_gameplay_programming() {
+    let mut entity = GameObject::new(0.0, 0.0, Some("GameplayBlueprint".to_string()));
+    let mut graph = default_component("VisualScript").unwrap();
+    graph.set(
+        "nodes",
+        json!([
+            {"id": "start", "type": "EventStart", "next": "gold"},
+            {"id": "gold", "type": "EconomyAdd", "resource": "Gold", "amount": 150.0, "next": "has_gold"},
+            {"id": "has_gold", "type": "BranchResource", "resource": "Gold", "amount": 100.0, "true_next": "item", "false_next": "failed"},
+            {"id": "item", "type": "InventoryAdd", "item": "potion", "quantity": 2, "next": "has_item"},
+            {"id": "has_item", "type": "BranchItem", "item": "potion", "quantity": 1, "true_next": "quest", "false_next": "failed"},
+            {"id": "quest", "type": "AddQuest", "quest": "first_steps", "title": "First Steps", "objectives": [{"id": "collect", "progress": 0, "target": 1}], "next": "progress"},
+            {"id": "progress", "type": "QuestProgress", "quest": "first_steps", "objective": "collect", "progress": 1, "next": "ability"},
+            {"id": "ability", "type": "TriggerAbility", "true_next": "fired", "false_next": "recharge"},
+            {"id": "fired", "type": "SetState", "state": "AbilityFired", "next": null},
+            {"id": "recharge", "type": "RechargeAbility", "amount": 1, "next": null},
+            {"id": "failed", "type": "SetState", "state": "MissingResources", "next": null}
+        ]),
+    );
+    graph.set("variables", json!({}));
+    entity.add_component(graph);
+    let mut entities = vec![entity];
+    let mut runtime = VisualScriptRuntime::default();
+
+    runtime.update_entities(&mut entities, 0.25, "PLAY");
+    assert!(runtime.last_errors.is_empty());
+    assert_eq!(entities[0].state, "AbilityFired");
+    assert_eq!(GameAPI::resource_amount(&entities[0], "Gold"), 150.0);
+    assert_eq!(GameAPI::item_count(&entities[0], "potion"), 2);
+    assert!(entities[0].get_component("QuestLog").is_some());
+    assert!(entities[0].get_component("Ability").is_some());
+
+    let env = ProgrammingEnvironment::new();
+    assert!(
+        env.search_node_catalog("inventry")
+            .iter()
+            .any(|node| node.node_type == "InventoryAdd")
+    );
+    assert!(
+        env.search_node_catalog("economy spend")
+            .iter()
+            .any(|node| node.node_type == "EconomySpend")
+    );
+    assert!(
+        env.search_templates("quest abilty")
+            .iter()
+            .any(|template| template.name == "QuestAbilityLoop")
+    );
 }

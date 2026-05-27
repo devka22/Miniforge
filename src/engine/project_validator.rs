@@ -5,6 +5,7 @@ use serde_json::Value;
 
 use crate::engine::asset_database::AssetDatabase;
 use crate::engine::asset_tools::AssetTools;
+use crate::engine::miniforge_2d::blueprint::supported_node_kinds;
 use crate::entities::game_object::GameObject;
 
 #[derive(Debug, Clone, Default)]
@@ -85,6 +86,7 @@ impl ProjectValidator {
                             self.errors
                                 .push(format!("Graph sin nodes: {}", path.display()));
                         }
+                        self.validate_graph_nodes(&data, &path);
                         if data
                             .get("runtime")
                             .and_then(Value::as_str)
@@ -285,6 +287,66 @@ impl ProjectValidator {
             }
         }
     }
+
+    fn validate_graph_nodes(&mut self, data: &Value, path: &Path) {
+        let Some(nodes) = data.get("nodes").and_then(Value::as_array) else {
+            return;
+        };
+        let mut ids = std::collections::BTreeSet::new();
+        for node in nodes {
+            if let Some(id) = node.get("id").and_then(Value::as_str) {
+                if !ids.insert(id.to_string()) {
+                    self.errors.push(format!(
+                        "Graph con node id duplicado: {} | {id}",
+                        path.display()
+                    ));
+                }
+            } else {
+                self.errors
+                    .push(format!("Graph con node sin id: {}", path.display()));
+            }
+        }
+        let visual_nodes = allowed_visual_script_nodes();
+        let blueprint_nodes = supported_node_kinds();
+        for node in nodes {
+            let id = node.get("id").and_then(Value::as_str).unwrap_or("<sin id>");
+            if let Some(kind) = node.get("kind").and_then(Value::as_str)
+                && !blueprint_nodes.contains(kind)
+            {
+                self.errors.push(format!(
+                    "Graph con node kind invalido: {} | {id}:{kind}",
+                    path.display()
+                ));
+            }
+            if let Some(node_type) = node.get("type").and_then(Value::as_str)
+                && !visual_nodes.contains(node_type)
+            {
+                self.warnings.push(format!(
+                    "Graph con node type no reconocido por runtime actual: {} | {id}:{node_type}",
+                    path.display()
+                ));
+            }
+            for key in [
+                "next",
+                "true_next",
+                "false_next",
+                "then_0",
+                "then_1",
+                "a_next",
+                "b_next",
+            ] {
+                let Some(target) = node.get(key).and_then(Value::as_str) else {
+                    continue;
+                };
+                if !ids.contains(target) {
+                    self.errors.push(format!(
+                        "Graph con referencia de exec rota: {} | {id}.{key} -> {target}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+    }
 }
 
 fn walk_files(root: &Path) -> Vec<PathBuf> {
@@ -340,4 +402,71 @@ fn collect_project_references_inner(value: &Value, references: &mut Vec<String>)
         }
         _ => {}
     }
+}
+
+fn allowed_visual_script_nodes() -> std::collections::BTreeSet<&'static str> {
+    std::collections::BTreeSet::from([
+        "EventStart",
+        "EventUpdate",
+        "EventClick",
+        "EventTrigger",
+        "ConstructionScript",
+        "CustomEvent",
+        "CallEvent",
+        "BroadcastEvent",
+        "Sequence",
+        "DoOnce",
+        "ResetDoOnce",
+        "Gate",
+        "OpenGate",
+        "CloseGate",
+        "ToggleGate",
+        "FlipFlop",
+        "Move",
+        "MoveTowards",
+        "SetVelocity",
+        "AddForce",
+        "StopMovement",
+        "SetSpeed",
+        "SetPosition",
+        "SetRotation",
+        "SetScale",
+        "Log",
+        "Damage",
+        "Heal",
+        "SetHealth",
+        "BranchHealth",
+        "BranchVariable",
+        "SetEnabled",
+        "SetTag",
+        "SetVariable",
+        "AddVariable",
+        "ToggleVariable",
+        "SetBlackboard",
+        "Wait",
+        "ConfigureSpawner",
+        "SetAnimation",
+        "SetUiText",
+        "InventoryAdd",
+        "InventoryRemove",
+        "BranchItem",
+        "EquipItem",
+        "EconomyAdd",
+        "EconomySpend",
+        "BranchResource",
+        "AddProductionRecipe",
+        "SetPreferredRecipe",
+        "QueuePreferredRecipe",
+        "AddQuest",
+        "QuestProgress",
+        "TriggerAbility",
+        "RechargeAbility",
+        "StartCooldown",
+        "SetState",
+        "AddStatusEffect",
+        "CompleteQuest",
+        "AddComponent",
+        "SetComponentNumber",
+        "DestroySelf",
+    ])
 }

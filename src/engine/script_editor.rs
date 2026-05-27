@@ -19,6 +19,7 @@ pub struct ScriptEditor {
     pub document: ScriptDocument,
     pub lines: Vec<String>,
     pub tabs: Vec<PathBuf>,
+    pub closed_tabs: Vec<PathBuf>,
 }
 
 impl ScriptEditor {
@@ -30,8 +31,9 @@ impl ScriptEditor {
         self.document.syntax_error = None;
         self.document.dirty = false;
         if !self.tabs.contains(&path) {
-            self.tabs.push(path);
+            self.tabs.push(path.clone());
         }
+        self.closed_tabs.retain(|closed| closed != &path);
         self.validate();
         Ok(())
     }
@@ -122,6 +124,68 @@ impl ScriptEditor {
             self.validate();
         }
         Ok(())
+    }
+
+    pub fn close_tab(&mut self, path: impl AsRef<Path>) -> io::Result<Option<PathBuf>> {
+        let path = path.as_ref();
+        let Some(index) = self.tabs.iter().position(|tab| tab == path) else {
+            return Ok(self.document.path.clone());
+        };
+        let closed = self.tabs.remove(index);
+        self.closed_tabs.push(closed.clone());
+        self.closed_tabs.truncate(12);
+
+        if self.document.path.as_deref() != Some(path) {
+            return Ok(self.document.path.clone());
+        }
+
+        if let Some(next) = self
+            .tabs
+            .get(
+                index
+                    .saturating_sub(1)
+                    .min(self.tabs.len().saturating_sub(1)),
+            )
+            .cloned()
+        {
+            self.open(next.clone())?;
+            return Ok(Some(next));
+        }
+
+        self.document = ScriptDocument::default();
+        self.lines = vec![String::new()];
+        Ok(None)
+    }
+
+    pub fn close_current_tab(&mut self) -> io::Result<Option<PathBuf>> {
+        let Some(path) = self.document.path.clone() else {
+            return Ok(None);
+        };
+        self.close_tab(path)
+    }
+
+    pub fn activate_next_tab(&mut self, direction: i32) -> io::Result<Option<PathBuf>> {
+        if self.tabs.is_empty() {
+            return Ok(None);
+        }
+        let current = self
+            .document
+            .path
+            .as_ref()
+            .and_then(|path| self.tabs.iter().position(|tab| tab == path))
+            .unwrap_or(0);
+        let len = self.tabs.len() as i32;
+        let next = (current as i32 + direction).rem_euclid(len) as usize;
+        let path = self.tabs[next].clone();
+        self.open(path.clone())?;
+        Ok(Some(path))
+    }
+
+    pub fn tab_label(path: &Path) -> String {
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("asset")
+            .to_string()
     }
 
     pub fn validate(&mut self) -> bool {

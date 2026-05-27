@@ -1,9 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 
 use crate::engine::component::default_component;
 use crate::entities::game_object::GameObject;
+use crate::systems::runtime_2d_system::respawn_entity;
 
 #[derive(Debug, Clone, Default)]
 pub struct GameplaySystem {
@@ -22,6 +23,8 @@ impl GameplaySystem {
                 ("interactions".to_string(), 0),
                 ("destroyed".to_string(), 0),
                 ("damage_events".to_string(), 0),
+                ("respawned".to_string(), 0),
+                ("loot_drops".to_string(), 0),
             ]);
             return;
         }
@@ -87,7 +90,9 @@ impl GameplaySystem {
             }
         }
 
+        let (respawned, loot_drops) = resolve_destruction(entities, &mut pending_destroy, self.now);
         let before = entities.len();
+        let pending_destroy = pending_destroy.into_iter().collect::<BTreeSet<_>>();
         entities.retain(|entity| !pending_destroy.contains(&entity.id));
         let destroyed = before.saturating_sub(entities.len());
         damage_events += destroyed;
@@ -115,6 +120,8 @@ impl GameplaySystem {
             ),
             ("destroyed".to_string(), destroyed),
             ("damage_events".to_string(), damage_events),
+            ("respawned".to_string(), respawned),
+            ("loot_drops".to_string(), loot_drops),
         ]);
     }
 
@@ -586,6 +593,138 @@ fn set_property_path(entity: &mut GameObject, path: &str, value: f64) -> bool {
     }
     entity.sync_to_components();
     true
+}
+
+fn resolve_destruction(
+    entities: &mut Vec<GameObject>,
+    pending_destroy: &mut Vec<u64>,
+    now: f64,
+) -> (usize, usize) {
+    let mut respawned = 0;
+    let mut retained_destroy = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut loot_spawns = Vec::new();
+
+    for entity_id in pending_destroy.drain(..) {
+        if !seen.insert(entity_id) {
+            continue;
+        }
+        let Some(index) = entities.iter().position(|entity| entity.id == entity_id) else {
+            continue;
+        };
+        if respawn_entity(&mut entities[index]) {
+            respawned += 1;
+            continue;
+        }
+        loot_spawns.extend(loot_spawns_for(&entities[index], now));
+        retained_destroy.push(entity_id);
+    }
+
+    let loot_drops = loot_spawns.len();
+    entities.extend(loot_spawns);
+    *pending_destroy = retained_destroy;
+    (respawned, loot_drops)
+}
+
+fn loot_spawns_for(source: &GameObject, now: f64) -> Vec<GameObject> {
+    let Some(loot) = source.get_component("LootTable") else {
+        return Vec::new();
+    };
+    if !loot.enabled {
+        return Vec::new();
+    }
+    let entries = loot
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    let rolls = loot.get_i64("rolls", 1).max(0) as usize;
+    let radius = loot.get_f64("drop_radius", 0.5).max(0.0);
+    let mut drops = Vec::new();
+    for roll in 0..rolls {
+        let Some(entry) = choose_loot_entry(&entries, source.id, roll, now) else {
+            continue;
+        };
+        let item_id = entry
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("loot")
+            .to_string();
+        let min = entry.get("min").and_then(Value::as_i64).unwrap_or(1);
+        let max = entry
+            .get("max")
+            .and_then(Value::as_i64)
+            .unwrap_or(min)
+            .max(min);
+        let quantity = min + ((source.id as i64 + roll as i64) % (max - min + 1));
+        let angle = ((source.id as f64 + now * 97.0 + roll as f64 * 13.0)
+            .sin()
+            .abs())
+            * std::f64::consts::TAU;
+        let distance = radius * (0.25 + 0.75 * (roll as f64 + 1.0) / rolls.max(1) as f64);
+
+        let mut drop = GameObject::new(
+            source.x + angle.cos() * distance,
+            source.y + angle.sin() * distance,
+            Some(format!("Loot_{item_id}")),
+        );
+        drop.tag = "Neutral".to_string();
+        drop.layer = "Pickups".to_string();
+        drop.radius = 0.25;
+        drop.width = 0.5;
+        drop.height = 0.5;
+        if let Some(mut interaction) = default_component("Interaction") {
+            interaction.set("prompt", json!(format!("Pick up {item_id}")));
+            interaction.set("action_name", json!("pickup"));
+            interaction.set("single_use", json!(true));
+            drop.add_component(interaction);
+        }
+        if let Some(mut blackboard) = default_component("Blackboard") {
+            blackboard.blackboard_set("item_id", json!(item_id));
+            blackboard.blackboard_set("quantity", json!(quantity));
+            drop.add_component(blackboard);
+        }
+        if let Some(mut lifetime) = default_component("Lifetime") {
+            lifetime.set_f64("duration", loot.get_f64("lifetime", 30.0));
+            drop.add_component(lifetime);
+        }
+        drop.sync_to_components();
+        drops.push(drop);
+    }
+    drops
+}
+
+fn choose_loot_entry(entries: &[Value], source_id: u64, roll: usize, now: f64) -> Option<Value> {
+    let total = entries
+        .iter()
+        .map(|entry| {
+            entry
+                .get("weight")
+                .and_then(Value::as_f64)
+                .unwrap_or(1.0)
+                .max(0.0)
+        })
+        .sum::<f64>();
+    if total <= f64::EPSILON {
+        return entries.first().cloned();
+    }
+    let mut cursor = ((source_id as f64 * 0.618_033_988_75 + roll as f64 + now).fract() * total)
+        .clamp(0.0, total);
+    for entry in entries {
+        cursor -= entry
+            .get("weight")
+            .and_then(Value::as_f64)
+            .unwrap_or(1.0)
+            .max(0.0);
+        if cursor <= 0.0 {
+            return Some(entry.clone());
+        }
+    }
+    entries.last().cloned()
 }
 
 pub fn add_default_component(entity: &mut GameObject, component_type: &str) -> bool {

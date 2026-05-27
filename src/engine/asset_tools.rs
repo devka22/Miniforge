@@ -118,7 +118,7 @@ impl AssetTools {
                 "start_scene": "main.scene",
                 "author": "",
                 "license": "GPL-3.0",
-                "description": "MiniForge 0.8.0 Developer Stability project",
+                "description": "MiniForge 0.9.1.1 Interface Overhaul project",
             }),
         )?;
         Self::write_json_if_missing(

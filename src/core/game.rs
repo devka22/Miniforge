@@ -21,6 +21,7 @@ use crate::engine::component_registry::ComponentRegistry;
 use crate::engine::content_drag::{ContentDropper, DragAssetKind, DragPayload, DropOutcome};
 use crate::engine::developer_console::DeveloperConsole;
 use crate::engine::diagnostics::Diagnostics;
+use crate::engine::docking_panel::{EditorDockTab, EguiDockingWorkspace};
 use crate::engine::editor_command::{EditorCommand, EditorCommandKind, EditorSnapshot};
 use crate::engine::editor_history::EditorHistory;
 use crate::engine::editor_workspace::{EditorWorkspace, WorkspaceMode};
@@ -28,6 +29,7 @@ use crate::engine::engine_programming::{ProgrammingEnvironment, VisualGraphView}
 use crate::engine::entity_id::generate_entity_name;
 use crate::engine::event_bus::EventBus;
 use crate::engine::game_clock::GameClock;
+use crate::engine::hierarchy_manager::HierarchyManager;
 use crate::engine::input_map::InputMap;
 use crate::engine::inspector_editor::InspectorEditor;
 use crate::engine::manifest_builder::ManifestBuilder;
@@ -35,6 +37,7 @@ use crate::engine::material_system::MaterialLibrary;
 use crate::engine::play_mode_manager::PlayModeManager;
 use crate::engine::prefab_manager::PrefabManager;
 use crate::engine::profiler::Profiler;
+use crate::engine::project_package::{ProjectPackageManager, ProjectPackageReport};
 use crate::engine::project_templates::ProjectTemplates;
 use crate::engine::project_validator::ProjectValidator;
 use crate::engine::resource_manager::ResourceManager;
@@ -47,6 +50,7 @@ use crate::engine::scene_validator::SceneValidator;
 use crate::engine::script_debugger::ScriptDebugger;
 use crate::engine::script_editor::ScriptEditor;
 use crate::engine::spatial_index::SpatialIndex;
+use crate::engine::sprite_editor::{SpriteColor, SpriteEditorCanvas};
 use crate::engine::tags_layers_manager::TagsLayersManager;
 use crate::engine::tile_brush::{TileBrush, TileBrushMode};
 use crate::engine::tilemap_layers::TilemapLayers;
@@ -66,6 +70,7 @@ use crate::systems::movement_system::MovementSystem;
 use crate::systems::particle_system::ParticleSystem;
 use crate::systems::physics_system::{PhysicsEventPhase, PhysicsSystem};
 use crate::systems::rts_system::RTSSystem;
+use crate::systems::runtime_2d_system::Runtime2DSystem;
 
 #[derive(Debug)]
 pub struct Game {
@@ -105,6 +110,7 @@ pub struct Game {
     pub history: EditorHistory,
     pub profiler: Profiler,
     pub diagnostics: Diagnostics,
+    pub docking_workspace: EguiDockingWorkspace,
     pub audio_mixer: AudioMixer,
     pub animation_graphs: AnimationGraphLibrary,
     pub material_library: MaterialLibrary,
@@ -112,10 +118,12 @@ pub struct Game {
     pub rhai_script_runtime: RhaiScriptRuntime,
     pub script_debugger: ScriptDebugger,
     pub script_editor: ScriptEditor,
+    pub sprite_editor: SpriteEditorCanvas,
     pub ui_runtime: UiRuntime,
     pub play_mode_manager: PlayModeManager,
     pub gameplay_system: GameplaySystem,
     pub rts_system: RTSSystem,
+    pub runtime_2d_system: Runtime2DSystem,
     pub physics_system: PhysicsSystem,
     pub particle_system: ParticleSystem,
     pub advanced_prefabs: AdvancedPrefabSystem,
@@ -217,6 +225,7 @@ impl Game {
             history,
             profiler: Profiler::new(),
             diagnostics: Diagnostics::default(),
+            docking_workspace: EguiDockingWorkspace::new(),
             audio_mixer: AudioMixer::new(),
             animation_graphs: AnimationGraphLibrary::new(),
             material_library: MaterialLibrary::default(),
@@ -224,10 +233,12 @@ impl Game {
             rhai_script_runtime: RhaiScriptRuntime::new(&project_path),
             script_debugger: ScriptDebugger::default(),
             script_editor: ScriptEditor::default(),
+            sprite_editor: SpriteEditorCanvas::default(),
             ui_runtime: UiRuntime::default(),
             play_mode_manager: PlayModeManager::default(),
             gameplay_system: GameplaySystem::default(),
             rts_system: RTSSystem::default(),
+            runtime_2d_system: Runtime2DSystem::default(),
             physics_system: PhysicsSystem::new(),
             particle_system: ParticleSystem::default(),
             advanced_prefabs: AdvancedPrefabSystem::default(),
@@ -349,6 +360,7 @@ impl Game {
     }
 
     pub fn run_headless_once(&mut self, dt: f64) {
+        self.console.advance_frame();
         self.profiler.begin_frame();
         let clock_advance = self.clock.advance(dt);
         let mut marker = Instant::now();
@@ -376,6 +388,11 @@ impl Game {
         self.profiler
             .record_system("Rhai", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
+        self.runtime_2d_system
+            .update_entities(&mut self.units, dt, &self.mode);
+        self.profiler
+            .record_system("Runtime2D", marker.elapsed().as_secs_f64() * 1000.0);
+        marker = Instant::now();
         self.gameplay_system
             .update_entities(&mut self.units, dt, &self.mode);
         self.profiler
@@ -394,6 +411,18 @@ impl Game {
             .update_entities_mut(&mut self.units, dt, &self.mode);
         self.profiler
             .record_system("Physics", marker.elapsed().as_secs_f64() * 1000.0);
+        marker = Instant::now();
+        self.runtime_2d_system
+            .resolve_tilemap_collisions(&mut self.units, &self.grid, &self.mode);
+        self.runtime_2d_system.update_camera(
+            &mut self.camera,
+            &self.units,
+            dt,
+            &self.mode,
+            self.grid.tile_size.max(1) as f64,
+        );
+        self.profiler
+            .record_system("Runtime2DLate", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
         let collision_events = self.physics_system.events.clone();
         let mut collision_report = RhaiRunReport::default();
@@ -447,6 +476,28 @@ impl Game {
                 .copied()
                 .unwrap_or(0),
         );
+        self.profiler.set_counter(
+            "Runtime2DControllers",
+            self.runtime_2d_system
+                .stats
+                .get("character_controllers")
+                .copied()
+                .unwrap_or(0),
+        );
+        self.profiler.set_counter(
+            "Runtime2DRespawns",
+            self.gameplay_system
+                .stats
+                .get("respawned")
+                .copied()
+                .unwrap_or(0)
+                + self
+                    .runtime_2d_system
+                    .stats
+                    .get("fall_respawns")
+                    .copied()
+                    .unwrap_or(0),
+        );
         self.script_debugger
             .refresh(&self.rhai_script_runtime, &self.project_path, &self.units);
         self.profiler
@@ -481,6 +532,58 @@ impl Game {
 
     pub fn set_script_input_pressed(&mut self, key: &str, pressed: bool) {
         self.rhai_script_runtime.set_input_pressed(key, pressed);
+    }
+
+    pub fn set_character_input(
+        &mut self,
+        entity_id: u64,
+        movement: (f64, f64),
+        jump_pressed: bool,
+        jump_held: bool,
+        run_pressed: bool,
+        dash_pressed: bool,
+    ) -> bool {
+        let Some(entity) = self.get_entity_by_id_mut(entity_id) else {
+            return false;
+        };
+        let Some(controller) = entity.get_component_mut("CharacterController2D") else {
+            return false;
+        };
+        controller.set_f64("input_x", movement.0.clamp(-1.0, 1.0));
+        controller.set_f64("input_y", movement.1.clamp(-1.0, 1.0));
+        controller.set("jump_pressed", json!(jump_pressed));
+        controller.set("jump_held", json!(jump_held));
+        controller.set("run_pressed", json!(run_pressed));
+        controller.set("dash_pressed", json!(dash_pressed));
+        true
+    }
+
+    pub fn set_character_input_for_tag(
+        &mut self,
+        tag: &str,
+        movement: (f64, f64),
+        jump_pressed: bool,
+        jump_held: bool,
+        run_pressed: bool,
+        dash_pressed: bool,
+    ) -> usize {
+        let mut updated = 0;
+        for entity in &mut self.units {
+            if entity.tag != tag {
+                continue;
+            }
+            let Some(controller) = entity.get_component_mut("CharacterController2D") else {
+                continue;
+            };
+            controller.set_f64("input_x", movement.0.clamp(-1.0, 1.0));
+            controller.set_f64("input_y", movement.1.clamp(-1.0, 1.0));
+            controller.set("jump_pressed", json!(jump_pressed));
+            controller.set("jump_held", json!(jump_held));
+            controller.set("run_pressed", json!(run_pressed));
+            controller.set("dash_pressed", json!(dash_pressed));
+            updated += 1;
+        }
+        updated
     }
 
     pub fn project_join(&self, parts: &[&str]) -> PathBuf {
@@ -623,6 +726,58 @@ impl Game {
         };
         entity.set_selected(true);
         self.selected_units.push(entity_id);
+        true
+    }
+
+    pub fn set_entity_parent(&mut self, child_id: u64, parent_id: u64) -> bool {
+        if child_id == parent_id {
+            return false;
+        }
+        let Some(parent) = self.get_entity_by_id(parent_id).cloned() else {
+            return false;
+        };
+        let Some(child) = self.get_entity_by_id_mut(child_id) else {
+            return false;
+        };
+        HierarchyManager::set_parent(child, &parent);
+        HierarchyManager::sync_child_world_transforms(&mut self.units);
+        self.sync_world();
+        self.mark_scene_dirty("Set Parent");
+        self.console.log(
+            format!("Hierarchy: #{child_id} ahora cuelga de #{parent_id}"),
+            "EDITOR",
+        );
+        true
+    }
+
+    pub fn clear_entity_parent(&mut self, child_id: u64) -> bool {
+        let Some(child) = self.get_entity_by_id_mut(child_id) else {
+            return false;
+        };
+        HierarchyManager::clear_parent(child);
+        self.sync_world();
+        self.mark_scene_dirty("Clear Parent");
+        self.console.log(
+            format!("Hierarchy: #{child_id} ya no tiene parent"),
+            "EDITOR",
+        );
+        true
+    }
+
+    pub fn move_entity_in_hierarchy(&mut self, entity_id: u64, delta: isize) -> bool {
+        let Some(index) = self.units.iter().position(|entity| entity.id == entity_id) else {
+            return false;
+        };
+        let next =
+            (index as isize + delta).clamp(0, self.units.len().saturating_sub(1) as isize) as usize;
+        if index == next {
+            return false;
+        }
+        let entity = self.units.remove(index);
+        self.units.insert(next, entity);
+        self.mark_scene_dirty("Move Hierarchy Row");
+        self.console
+            .log(format!("Hierarchy: entity #{entity_id} movida"), "EDITOR");
         true
     }
 
@@ -1346,6 +1501,45 @@ impl Game {
         Ok(self.asset_database.assets.len())
     }
 
+    pub fn export_project_package(&mut self) -> io::Result<ProjectPackageReport> {
+        let name = self
+            .project_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("MiniForgeProject");
+        let output = self
+            .project_paths
+            .builds
+            .join(format!("{name}_project.mfpkg.zip"));
+        let report = ProjectPackageManager::export_project(&self.project_path, output)?;
+        self.console.log(
+            format!(
+                "Proyecto exportado: {} ({} archivos)",
+                report.archive_path.display(),
+                report.files
+            ),
+            "PROJECT",
+        );
+        Ok(report)
+    }
+
+    pub fn import_project_package(
+        &mut self,
+        archive_path: impl AsRef<Path>,
+        destination_root: impl AsRef<Path>,
+    ) -> io::Result<ProjectPackageReport> {
+        let report = ProjectPackageManager::import_project(archive_path, destination_root)?;
+        self.console.log(
+            format!(
+                "Proyecto importado: {} ({} archivos)",
+                report.project_path.display(),
+                report.files
+            ),
+            "PROJECT",
+        );
+        Ok(report)
+    }
+
     pub fn validate_project(&mut self) -> bool {
         let mut validator = ProjectValidator::default();
         let valid = validator.validate_with_context(
@@ -1478,6 +1672,10 @@ impl Game {
             .programming
             .create_graph_asset(&self.project_path, template_name, None)?;
         self.script_editor.open(path.clone())?;
+        self.docking_workspace
+            .open_tab(EditorDockTab::BlueprintEditor);
+        self.docking_workspace
+            .set_floating_visibility("blueprint_editor", true);
         self.refresh_assets().ok();
         self.console
             .log(format!("Graph Rust creado: {}", path.display()), "SCRIPT");
@@ -1487,6 +1685,9 @@ impl Game {
     pub fn create_rhai_script_asset(&mut self, name: &str) -> io::Result<PathBuf> {
         let path = AssetTools::create_rhai_script(&self.project_path, name)?;
         self.script_editor.open(path.clone())?;
+        self.docking_workspace.open_tab(EditorDockTab::ScriptEditor);
+        self.docking_workspace
+            .set_floating_visibility("script_editor", true);
         self.refresh_assets().ok();
         self.console.log(
             format!("Script Rhai creado y abierto: {}", path.display()),
@@ -1499,6 +1700,16 @@ impl Game {
         let opened = self
             .script_editor
             .open_project_file(&self.project_path, path.as_ref())?;
+        if opened.extension().and_then(|value| value.to_str()) == Some("mfgraph") {
+            self.docking_workspace
+                .open_tab(EditorDockTab::BlueprintEditor);
+            self.docking_workspace
+                .set_floating_visibility("blueprint_editor", true);
+        } else {
+            self.docking_workspace.open_tab(EditorDockTab::ScriptEditor);
+            self.docking_workspace
+                .set_floating_visibility("script_editor", true);
+        }
         self.console
             .log(format!("Archivo abierto: {}", opened.display()), "EDITOR");
         Ok(opened)
@@ -1552,12 +1763,21 @@ impl Game {
     }
 
     pub fn connect_open_graph_nodes(&mut self, from: &str, to: &str) -> io::Result<bool> {
+        self.connect_open_graph_nodes_on_pin(from, to, "exec")
+    }
+
+    pub fn connect_open_graph_nodes_on_pin(
+        &mut self,
+        from: &str,
+        to: &str,
+        pin: &str,
+    ) -> io::Result<bool> {
         let mut graph = self.open_graph_json()?;
-        let changed = ProgrammingEnvironment::connect_graph_nodes(&mut graph, from, to);
+        let changed = ProgrammingEnvironment::connect_graph_nodes_on_pin(&mut graph, from, to, pin);
         if changed {
             self.replace_open_graph_json(&graph)?;
             self.console
-                .log(format!("Graph conectado: {from} -> {to}"), "SCRIPT");
+                .log(format!("Graph conectado: {from}.{pin} -> {to}"), "SCRIPT");
         }
         Ok(changed)
     }
@@ -1617,6 +1837,45 @@ impl Game {
             "ASSETS",
         );
         Ok(path)
+    }
+
+    pub fn new_sprite_canvas(&mut self, width: u32, height: u32) {
+        self.sprite_editor = SpriteEditorCanvas::new(width, height);
+        self.console.log(
+            format!("Sprite canvas nuevo: {}x{}", width, height),
+            "SPRITE",
+        );
+    }
+
+    pub fn load_sprite_canvas(&mut self, path: impl AsRef<Path>) -> io::Result<()> {
+        self.sprite_editor = SpriteEditorCanvas::load_png(path.as_ref())?;
+        self.console.log(
+            format!("Sprite abierto: {}", path.as_ref().display()),
+            "SPRITE",
+        );
+        Ok(())
+    }
+
+    pub fn save_sprite_canvas(&mut self, name: &str) -> io::Result<PathBuf> {
+        let mut filename = AssetTools::safe_name(name, "Sprite");
+        if !filename.ends_with(".png") {
+            filename.push_str(".png");
+        }
+        let path = AssetTools::unique_path(&self.project_paths.sprites, &filename);
+        self.sprite_editor.save_png(&path)?;
+        self.refresh_assets().ok();
+        self.console
+            .log(format!("Sprite guardado: {}", path.display()), "SPRITE");
+        Ok(path)
+    }
+
+    pub fn paint_sprite_pixel(&mut self, x: u32, y: u32, color: SpriteColor) -> bool {
+        let changed = self.sprite_editor.set_pixel(x, y, color);
+        if changed {
+            self.console
+                .debug(format!("Pixel sprite {x},{y} actualizado"), "SPRITE");
+        }
+        changed
     }
 
     pub fn create_sound_cue_asset(&mut self, name: &str, source_path: &str) -> io::Result<PathBuf> {
@@ -1712,6 +1971,89 @@ impl Game {
         self.console
             .log(format!("Variant creado: {}", path.display()), "PREFAB");
         Ok(Some(path))
+    }
+
+    pub fn apply_selected_to_prefab_source(&mut self) -> io::Result<bool> {
+        let Some(id) = self.selected_units.first().copied() else {
+            return Ok(false);
+        };
+        let Some(index) = self.units.iter().position(|entity| entity.id == id) else {
+            return Ok(false);
+        };
+        let Some(source) = self.units[index].prefab_source.clone() else {
+            return Ok(false);
+        };
+        let path = PathBuf::from(&source);
+        if !path.exists() {
+            return Ok(false);
+        }
+        let entity = &mut self.units[index];
+        entity.sync_to_components();
+        let data = json!({
+            "version": crate::engine::version::ENGINE_VERSION,
+            "kind": "MiniForgeAdvancedPrefab",
+            "prefab_name": entity.name,
+            "guid": entity.prefab_guid,
+            "variant": false,
+            "entity": entity.serialize(),
+            "metadata": {
+                "component_count": entity.components.len(),
+                "script_count": entity.scripts.len(),
+                "source": "apply_instance",
+            }
+        });
+        AssetTools::write_json(&path, &data)?;
+        self.refresh_assets().ok();
+        self.mark_scene_dirty("Apply Prefab");
+        self.console
+            .log(format!("Prefab aplicado: {}", path.display()), "PREFAB");
+        Ok(true)
+    }
+
+    pub fn revert_selected_prefab_instance(&mut self) -> io::Result<bool> {
+        let Some(id) = self.selected_units.first().copied() else {
+            return Ok(false);
+        };
+        let Some(index) = self.units.iter().position(|entity| entity.id == id) else {
+            return Ok(false);
+        };
+        let Some(source) = self.units[index].prefab_source.clone() else {
+            return Ok(false);
+        };
+        let manager = PrefabManager::new(&self.project_path);
+        let Some(mut loaded) = manager.load_prefab(&source)? else {
+            return Ok(false);
+        };
+        loaded.id = id;
+        loaded.x = self.units[index].x;
+        loaded.y = self.units[index].y;
+        loaded.prefab_source = Some(source);
+        loaded.prefab_guid = self.units[index].prefab_guid.clone();
+        loaded.is_prefab_instance = true;
+        loaded.sync_to_components();
+        self.units[index] = loaded;
+        self.select_entity(id);
+        self.sync_world();
+        self.mark_scene_dirty("Revert Prefab");
+        self.console
+            .log(format!("Prefab revertido #{id}"), "PREFAB");
+        Ok(true)
+    }
+
+    pub fn detach_selected_prefab_instance(&mut self) -> bool {
+        let Some(id) = self.selected_units.first().copied() else {
+            return false;
+        };
+        let Some(entity) = self.get_entity_by_id_mut(id) else {
+            return false;
+        };
+        entity.is_prefab_instance = false;
+        entity.prefab_source = None;
+        entity.prefab_guid = None;
+        self.mark_scene_dirty("Detach Prefab");
+        self.console
+            .log(format!("Prefab desconectado de entity #{id}"), "PREFAB");
+        true
     }
 
     pub fn instantiate_first_prefab(&mut self, x: f64, y: f64) -> io::Result<Option<u64>> {
@@ -1862,10 +2204,21 @@ impl Game {
             player.add_component(default_component("Ability").expect("Ability"));
             player.add_component(default_component("QuestLog").expect("QuestLog"));
             player.add_component(default_component("Saveable").expect("Saveable"));
+            player.add_component(default_component("Checkpoint").expect("Checkpoint"));
             player.add_component(default_component("Light2D").expect("Light2D"));
             if let Some(body) = player.get_component_mut("Rigidbody2D") {
                 body.set("use_gravity", json!(false));
                 body.set_f64("drag", 0.2);
+            }
+            if let Some(controller) = player.get_component_mut("CharacterController2D") {
+                controller.set("mode", json!("topdown"));
+                controller.set_f64("dash_speed", 14.0);
+                controller.set_f64("dash_cooldown", 0.55);
+            }
+            if let Some(checkpoint) = player.get_component_mut("Checkpoint") {
+                checkpoint.set("active", json!(true));
+                checkpoint.set_f64("respawn_x", 8.0);
+                checkpoint.set_f64("respawn_y", 8.0);
             }
             if let Some(camera) = player.get_component_mut("CameraFollow") {
                 camera.set("target_id", json!(player_id));
@@ -1981,9 +2334,17 @@ impl Game {
                 body.set("freeze_rotation", json!(true));
             }
             if let Some(controller) = player.get_component_mut("CharacterController2D") {
+                controller.set("mode", json!("platformer"));
                 controller.set_f64("walk_speed", 5.5);
                 controller.set_f64("jump_force", 10.0);
                 controller.set("max_jumps", json!(2));
+                controller.set_f64("dash_speed", 12.0);
+                controller.set_f64("fall_death_y", floor_y as f64 + 8.0);
+            }
+            if let Some(checkpoint) = player.get_component_mut("Checkpoint") {
+                checkpoint.set("active", json!(true));
+                checkpoint.set_f64("respawn_x", 5.0);
+                checkpoint.set_f64("respawn_y", floor_y as f64 - 2.0);
             }
             if let Some(camera) = player.get_component_mut("CameraFollow") {
                 camera.set("target_id", json!(player_id));
@@ -2029,6 +2390,11 @@ impl Game {
             checkpoint.add_component(default_component("Checkpoint").expect("Checkpoint"));
             checkpoint.add_component(default_component("Interaction").expect("Interaction"));
             checkpoint.add_component(default_component("Light2D").expect("Light2D"));
+            if let Some(component) = checkpoint.get_component_mut("Checkpoint") {
+                component.set("checkpoint_id", json!("checkpoint_a"));
+                component.set_f64("respawn_x", 44.0);
+                component.set_f64("respawn_y", 10.0);
+            }
         }
 
         self.create_ui_label("Platformer: reach the checkpoint", 24.0, 24.0);
@@ -2340,6 +2706,18 @@ impl Game {
             "SCENE",
         );
         Ok(self.units.len())
+    }
+
+    pub fn scene_names(&self) -> io::Result<Vec<String>> {
+        self.scene_manager.list_scenes()
+    }
+
+    pub fn load_next_scene(&mut self) -> io::Result<Option<String>> {
+        let Some(scene_name) = self.scene_manager.next_scene()? else {
+            return Ok(None);
+        };
+        self.load_scene(&scene_name)?;
+        Ok(Some(scene_name))
     }
 
     pub fn load_scene_additive(&mut self, name: &str) -> io::Result<usize> {

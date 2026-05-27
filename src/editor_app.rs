@@ -1,7 +1,9 @@
 use std::env;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 
 use macroquad::prelude::*;
+use strsim::jaro_winkler;
 
 use crate::core::game::Game;
 use crate::engine::asset_database::AssetRecord;
@@ -12,9 +14,11 @@ use crate::engine::editor_command::{EditorCommandKind, EditorSnapshot};
 use crate::engine::editor_workspace::WorkspaceMode;
 use crate::engine::engine_programming::{VisualGraphNodeView, VisualGraphView};
 use crate::engine::inspector_editor::{InspectorEditor, InspectorField};
+use crate::engine::project_launcher::{EguiProjectLauncher, LauncherTemplate};
 use crate::engine::runtime_exporter::ExportProfile;
 use crate::engine::runtime_manifest_loader::RuntimeManifestLoader;
 use crate::engine::scene_view_tools::SceneViewTools;
+use crate::engine::sprite_editor::SpriteColor;
 use crate::engine::tile_brush::TileBrushMode;
 use crate::engine::ui_canvas::{UiCanvasElement, layout_element_pixels, ui_canvases_from_value};
 use crate::entities::game_object::GameObject;
@@ -74,6 +78,8 @@ enum BottomTab {
     Assets,
     Programming,
     Prefabs,
+    Scenes,
+    Sprites,
     Profiler,
 }
 
@@ -84,6 +90,8 @@ impl BottomTab {
             Self::Assets => "Browser",
             Self::Programming => "Graph",
             Self::Prefabs => "Prefabs",
+            Self::Scenes => "Scenes",
+            Self::Sprites => "Sprites",
             Self::Profiler => "Profiler",
         }
     }
@@ -93,7 +101,9 @@ impl BottomTab {
             Self::Console => Self::Assets,
             Self::Assets => Self::Programming,
             Self::Programming => Self::Prefabs,
-            Self::Prefabs => Self::Profiler,
+            Self::Prefabs => Self::Scenes,
+            Self::Scenes => Self::Sprites,
+            Self::Sprites => Self::Profiler,
             Self::Profiler => Self::Console,
         }
     }
@@ -120,6 +130,13 @@ impl TopMenu {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FloatingWindowKind {
+    Script,
+    Play,
+    BlueprintPicker,
+}
+
 #[derive(Debug, Clone)]
 struct TextEditState {
     entity_id: u64,
@@ -128,7 +145,6 @@ struct TextEditState {
     buffer: String,
 }
 
-#[derive(Debug, Clone)]
 struct EditorState {
     paused: bool,
     show_console: bool,
@@ -136,6 +152,7 @@ struct EditorState {
     show_hierarchy: bool,
     show_inspector: bool,
     command_palette: bool,
+    command_palette_search: String,
     top_menu: Option<TopMenu>,
     tool: EditorTool,
     bottom_tab: BottomTab,
@@ -160,8 +177,26 @@ struct EditorState {
     code_scroll_line: usize,
     graph_selected_node: Option<String>,
     graph_connect_from: Option<String>,
+    graph_connect_pin: String,
+    graph_node_search: String,
+    graph_node_search_active: bool,
+    graph_template_search: String,
+    graph_template_search_active: bool,
     graph_drag_node: Option<String>,
     graph_drag_offset: (f32, f32),
+    hierarchy_scroll: f32,
+    hierarchy_context_entity: Option<u64>,
+    hierarchy_context_pos: (f32, f32),
+    drag_ui_offset: (f32, f32),
+    script_window_open: bool,
+    script_window_rect: RectSpec,
+    play_window_open: bool,
+    play_window_rect: RectSpec,
+    blueprint_picker_open: bool,
+    blueprint_picker_rect: RectSpec,
+    floating_drag: Option<(FloatingWindowKind, f32, f32)>,
+    external_play_child: Option<Child>,
+    external_play_path: Option<PathBuf>,
 }
 
 impl Default for EditorState {
@@ -173,6 +208,7 @@ impl Default for EditorState {
             show_hierarchy: true,
             show_inspector: true,
             command_palette: false,
+            command_palette_search: String::new(),
             top_menu: None,
             tool: EditorTool::Select,
             bottom_tab: BottomTab::Console,
@@ -197,10 +233,55 @@ impl Default for EditorState {
             code_scroll_line: 0,
             graph_selected_node: None,
             graph_connect_from: None,
+            graph_connect_pin: "exec".to_string(),
+            graph_node_search: String::new(),
+            graph_node_search_active: false,
+            graph_template_search: String::new(),
+            graph_template_search_active: false,
             graph_drag_node: None,
             graph_drag_offset: (0.0, 0.0),
+            hierarchy_scroll: 0.0,
+            hierarchy_context_entity: None,
+            hierarchy_context_pos: (0.0, 0.0),
+            drag_ui_offset: (0.0, 0.0),
+            script_window_open: false,
+            script_window_rect: RectSpec {
+                x: 86.0,
+                y: 96.0,
+                w: 920.0,
+                h: 560.0,
+            },
+            play_window_open: false,
+            play_window_rect: RectSpec {
+                x: 126.0,
+                y: 112.0,
+                w: 960.0,
+                h: 540.0,
+            },
+            blueprint_picker_open: false,
+            blueprint_picker_rect: RectSpec {
+                x: 180.0,
+                y: 130.0,
+                w: 760.0,
+                h: 520.0,
+            },
+            floating_drag: None,
+            external_play_child: None,
+            external_play_path: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LauncherTextField {
+    ProjectName,
+    ProjectLocation,
+    OpenPath,
+}
+
+struct LauncherUiState {
+    launcher: EguiProjectLauncher,
+    active_field: Option<LauncherTextField>,
 }
 
 fn parse_args() -> Args {
@@ -256,12 +337,421 @@ pub fn runtime_player_window_conf() -> Conf {
     }
 }
 
+async fn run_startup_launcher() -> Option<PathBuf> {
+    let workspace_root = env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("projects");
+    let mut state = LauncherUiState {
+        launcher: EguiProjectLauncher::new(&workspace_root),
+        active_field: None,
+    };
+    let _ = state.launcher.discover_recent_projects();
+
+    loop {
+        if is_key_pressed(KeyCode::Escape) {
+            return None;
+        }
+        handle_launcher_text_input(&mut state);
+
+        clear_background(ui_bg());
+        draw_launcher_background(screen_width(), screen_height());
+        if let Some(path) = draw_launcher_ui(&mut state) {
+            return Some(path);
+        }
+
+        next_frame().await;
+    }
+}
+
+fn handle_launcher_text_input(state: &mut LauncherUiState) {
+    let Some(active) = state.active_field else {
+        return;
+    };
+    let buffer = match active {
+        LauncherTextField::ProjectName => &mut state.launcher.project_name,
+        LauncherTextField::ProjectLocation => &mut state.launcher.project_location,
+        LauncherTextField::OpenPath => &mut state.launcher.open_path,
+    };
+    while let Some(character) = get_char_pressed() {
+        if !character.is_control() {
+            buffer.push(character);
+        }
+    }
+    if is_key_pressed(KeyCode::Backspace) {
+        buffer.pop();
+    }
+    if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter) {
+        state.active_field = None;
+    }
+}
+
+fn draw_launcher_background(sw: f32, sh: f32) {
+    draw_gradient_rect(
+        RectSpec {
+            x: 0.0,
+            y: 0.0,
+            w: sw,
+            h: sh,
+        },
+        Color::from_rgba(18, 24, 34, 255),
+        Color::from_rgba(7, 9, 14, 255),
+    );
+    let band_h = (sh * 0.36).max(230.0);
+    draw_gradient_rect(
+        RectSpec {
+            x: 0.0,
+            y: 0.0,
+            w: sw,
+            h: band_h,
+        },
+        Color::from_rgba(38, 49, 68, 255),
+        Color::from_rgba(17, 23, 34, 255),
+    );
+    for i in 0..18 {
+        let y = i as f32 * 42.0;
+        draw_line(
+            0.0,
+            y,
+            sw,
+            y + sw * 0.08,
+            1.0,
+            Color::from_rgba(122, 172, 220, 18),
+        );
+    }
+    draw_rectangle(
+        0.0,
+        band_h - 1.0,
+        sw,
+        1.0,
+        Color::from_rgba(111, 226, 196, 150),
+    );
+}
+
+fn draw_launcher_ui(state: &mut LauncherUiState) -> Option<PathBuf> {
+    let sw = screen_width();
+    let sh = screen_height();
+    let panel = RectSpec {
+        x: (sw * 0.5 - 520.0).max(18.0),
+        y: (sh * 0.5 - 325.0).max(18.0),
+        w: sw.min(1040.0) - 36.0,
+        h: sh.min(650.0) - 36.0,
+    };
+    draw_surface(panel, true);
+    draw_gradient_rect(
+        RectSpec {
+            x: panel.x,
+            y: panel.y,
+            w: panel.w,
+            h: 58.0,
+        },
+        Color::from_rgba(35, 46, 65, 255),
+        Color::from_rgba(25, 31, 43, 255),
+    );
+    draw_rectangle_lines(
+        panel.x,
+        panel.y,
+        panel.w,
+        panel.h,
+        1.0,
+        Color::from_rgba(87, 107, 138, 255),
+    );
+    draw_macos_chrome(RectSpec {
+        x: panel.x + 8.0,
+        y: panel.y + 8.0,
+        w: panel.w,
+        h: 44.0,
+    });
+    draw_text("MiniForge", panel.x + 82.0, panel.y + 34.0, 25.0, ui_text());
+    draw_text(
+        &crate::version_label(),
+        panel.x + panel.w - 310.0,
+        panel.y + 32.0,
+        15.0,
+        ui_text_muted(),
+    );
+
+    let left = RectSpec {
+        x: panel.x + 22.0,
+        y: panel.y + 76.0,
+        w: panel.w * 0.48,
+        h: panel.h - 98.0,
+    };
+    let right = RectSpec {
+        x: left.x + left.w + 24.0,
+        y: left.y,
+        w: panel.w - left.w - 68.0,
+        h: left.h,
+    };
+
+    draw_text("Crear proyecto", left.x, left.y, 22.0, ui_text());
+    draw_launcher_text_field(
+        &mut state.active_field,
+        LauncherTextField::ProjectName,
+        RectSpec {
+            x: left.x,
+            y: left.y + 22.0,
+            w: left.w,
+            h: 34.0,
+        },
+        "Nombre",
+        &state.launcher.project_name,
+    );
+    draw_launcher_text_field(
+        &mut state.active_field,
+        LauncherTextField::ProjectLocation,
+        RectSpec {
+            x: left.x,
+            y: left.y + 68.0,
+            w: left.w,
+            h: 34.0,
+        },
+        "Ubicacion",
+        &state.launcher.project_location,
+    );
+    let mut tx = left.x;
+    for template in LauncherTemplate::all() {
+        let width = match template {
+            LauncherTemplate::Platformer => 92.0,
+            LauncherTemplate::TopDown => 84.0,
+            _ => 68.0,
+        };
+        if button(
+            tx,
+            left.y + 118.0,
+            width,
+            26.0,
+            template.label(),
+            state.launcher.selected_template == template,
+        ) {
+            state.launcher.selected_template = template;
+        }
+        tx += width + 8.0;
+    }
+
+    if button(left.x, left.y + 162.0, 132.0, 30.0, "Crear", false) {
+        match state.launcher.create_new_project() {
+            Ok(path) => return Some(path),
+            Err(error) => state.launcher.status = error.to_string(),
+        }
+    }
+    if button(
+        left.x + 142.0,
+        left.y + 162.0,
+        148.0,
+        30.0,
+        "Buscar locales",
+        false,
+    ) {
+        match state.launcher.discover_recent_projects() {
+            Ok(count) => state.launcher.status = format!("{count} proyectos encontrados"),
+            Err(error) => state.launcher.status = error.to_string(),
+        }
+    }
+
+    draw_text("Abrir proyecto", left.x, left.y + 228.0, 20.0, ui_text());
+    draw_launcher_text_field(
+        &mut state.active_field,
+        LauncherTextField::OpenPath,
+        RectSpec {
+            x: left.x,
+            y: left.y + 250.0,
+            w: left.w,
+            h: 34.0,
+        },
+        "Ruta",
+        &state.launcher.open_path,
+    );
+    if button(left.x, left.y + 298.0, 132.0, 30.0, "Abrir", false) {
+        match state.launcher.open_typed_project() {
+            Ok(path) => return Some(path),
+            Err(error) => state.launcher.status = error.to_string(),
+        }
+    }
+    if button(
+        left.x + 142.0,
+        left.y + 298.0,
+        150.0,
+        30.0,
+        "Default",
+        false,
+    ) {
+        match state
+            .launcher
+            .open_project(AssetTools::default_project_path())
+        {
+            Ok(path) => return Some(path),
+            Err(error) => state.launcher.status = error.to_string(),
+        }
+    }
+    if button(left.x + 302.0, left.y + 298.0, 86.0, 30.0, "Repair", false) {
+        let path = state.launcher.typed_or_default_path();
+        match state.launcher.repair_project(&path) {
+            Ok(notes) => state.launcher.status = format!("Repair listo: {} notas", notes.len()),
+            Err(error) => state.launcher.status = error.to_string(),
+        }
+    }
+    if button(left.x, left.y + 336.0, 132.0, 28.0, "Export Debug", false) {
+        let path = state.launcher.typed_or_default_path();
+        match state.launcher.export_game(&path) {
+            Ok(report) => {
+                state.launcher.status = format!("Export listo: {}", report.output_path.display())
+            }
+            Err(error) => state.launcher.status = error.to_string(),
+        }
+    }
+
+    draw_text("Recientes", left.x, left.y + 370.0, 18.0, ui_text());
+    let mut y = left.y + 396.0;
+    for path in state.launcher.recent_projects.clone().iter().take(5) {
+        let row = RectSpec {
+            x: left.x,
+            y: y - 18.0,
+            w: left.w,
+            h: 28.0,
+        };
+        let hovered = contains_mouse(row);
+        draw_rect(
+            row,
+            if hovered {
+                Color::from_rgba(45, 60, 82, 255)
+            } else {
+                Color::from_rgba(28, 35, 49, 255)
+            },
+        );
+        draw_text(
+            &ellipsize(&path.display().to_string(), 58),
+            row.x + 8.0,
+            y,
+            13.0,
+            ui_text(),
+        );
+        if hovered && is_mouse_button_pressed(MouseButton::Left) {
+            match state.launcher.open_project(path) {
+                Ok(path) => return Some(path),
+                Err(error) => state.launcher.status = error.to_string(),
+            }
+        }
+        y += 32.0;
+    }
+
+    draw_text("Notas del parche", right.x, right.y, 22.0, ui_text());
+    let notes = state.launcher.patch_notes.clone();
+    let mut y = right.y + 34.0;
+    for (index, note) in notes.iter().enumerate() {
+        let active = state.launcher.selected_patch_note == index;
+        if button(
+            right.x,
+            y - 18.0,
+            176.0,
+            25.0,
+            &format!("{} {}", note.version, note.title),
+            active,
+        ) {
+            state.launcher.selected_patch_note = index;
+        }
+        y += 30.0;
+    }
+    if let Some(note) = state.launcher.active_patch_note() {
+        let card = RectSpec {
+            x: right.x,
+            y: right.y + 112.0,
+            w: right.w,
+            h: right.h - 158.0,
+        };
+        draw_surface(card, false);
+        draw_rectangle_lines(card.x, card.y, card.w, card.h, 1.0, ui_line_soft());
+        draw_text(
+            &ellipsize(&format!("{} - {}", note.date, note.title), 46),
+            card.x + 14.0,
+            card.y + 28.0,
+            17.0,
+            ui_text(),
+        );
+        let mut ny = card.y + 62.0;
+        for highlight in note.highlights.iter().take(7) {
+            draw_text(
+                &ellipsize(highlight, 58),
+                card.x + 18.0,
+                ny,
+                14.0,
+                ui_text_muted(),
+            );
+            ny += 26.0;
+        }
+    }
+
+    if !state.launcher.status.is_empty() {
+        draw_text(
+            &ellipsize(&state.launcher.status, 96),
+            right.x,
+            panel.y + panel.h - 24.0,
+            13.0,
+            ui_warning(),
+        );
+    }
+    if button(
+        panel.x + panel.w - 86.0,
+        panel.y + panel.h - 42.0,
+        64.0,
+        26.0,
+        "Salir",
+        false,
+    ) {
+        return None;
+    }
+    None
+}
+
+fn draw_launcher_text_field(
+    active_field: &mut Option<LauncherTextField>,
+    field: LauncherTextField,
+    rect: RectSpec,
+    label: &str,
+    value: &str,
+) {
+    let active = *active_field == Some(field);
+    draw_rect(
+        rect,
+        if active {
+            Color::from_rgba(26, 36, 54, 255)
+        } else {
+            Color::from_rgba(18, 24, 35, 255)
+        },
+    );
+    draw_rectangle_lines(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        1.0,
+        if active { ui_accent() } else { ui_line_soft() },
+    );
+    draw_text(label, rect.x + 10.0, rect.y + 22.0, 13.0, ui_text_muted());
+    let text = if value.is_empty() { "..." } else { value };
+    draw_text(
+        &ellipsize(text, 60),
+        rect.x + 94.0,
+        rect.y + 22.0,
+        14.0,
+        ui_text(),
+    );
+    if contains_mouse(rect) && is_mouse_button_pressed(MouseButton::Left) {
+        *active_field = Some(field);
+    }
+}
+
 pub async fn run_editor_async() {
     let args = parse_args();
-    let project_path = args
-        .project
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("projects").join("DefaultProject"));
+    let project_path = if let Some(path) = args.project.clone() {
+        path
+    } else if args.no_launcher || args.runtime || args.headless_once {
+        PathBuf::from("projects").join("DefaultProject")
+    } else {
+        match run_startup_launcher().await {
+            Some(path) => path,
+            None => return,
+        }
+    };
 
     if let Err(error) = AssetTools::ensure_project_folders(&project_path) {
         eprintln!("No se pudo preparar el proyecto: {error}");
@@ -304,8 +794,10 @@ pub async fn run_editor_async() {
         if handle_shortcuts(&mut game, &mut state) {
             break;
         }
+        poll_external_play_window(&mut game, &mut state);
 
         handle_camera_input(&mut game, dt, &state);
+        handle_character_input(&mut game);
 
         let layout = layout(
             sw,
@@ -330,10 +822,11 @@ pub async fn run_editor_async() {
             game.diagnostics.update(dt);
         }
 
-        clear_background(Color::from_rgba(18, 20, 26, 255));
+        clear_background(ui_bg());
+        draw_editor_backdrop(sw, sh);
         draw_scene(&game, &state, viewport);
         if state.show_hierarchy {
-            draw_hierarchy(&mut game, layout.left);
+            draw_hierarchy(&mut game, &mut state, layout.left);
         }
         if state.show_inspector {
             draw_inspector(&mut game, &mut state, layout.right);
@@ -343,6 +836,9 @@ pub async fn run_editor_async() {
         if state.show_console {
             draw_bottom_panel(&mut game, &mut state, layout.console);
         }
+        draw_floating_play_window(&mut game, &mut state, sw, sh);
+        draw_floating_script_window(&mut game, &mut state, sw, sh);
+        draw_blueprint_picker_window(&mut game, &mut state, sw, sh);
         if state.command_palette {
             draw_command_palette(&mut game, &mut state, sw, sh);
         }
@@ -420,8 +916,26 @@ fn layout(sw: f32, sh: f32, show_left: bool, show_right: bool, show_console: boo
 }
 
 fn handle_text_edit_input(game: &mut Game, state: &mut EditorState) {
+    if state.command_palette {
+        handle_command_palette_input(game, state);
+        return;
+    }
     if state.content_search_active {
         handle_content_search_input(state);
+        return;
+    }
+    if state.graph_node_search_active {
+        handle_text_buffer_input(
+            &mut state.graph_node_search,
+            &mut state.graph_node_search_active,
+        );
+        return;
+    }
+    if state.graph_template_search_active {
+        handle_text_buffer_input(
+            &mut state.graph_template_search,
+            &mut state.graph_template_search_active,
+        );
         return;
     }
     if state.code_editor_active {
@@ -460,6 +974,43 @@ fn handle_text_edit_input(game: &mut Game, state: &mut EditorState) {
                 Err(error) => game.console.log(format!("Inspector: {error}"), "WARNING"),
             }
         }
+    }
+}
+
+fn handle_command_palette_input(game: &mut Game, state: &mut EditorState) {
+    while let Some(character) = get_char_pressed() {
+        if !character.is_control() {
+            state.command_palette_search.push(character);
+        }
+    }
+    if is_key_pressed(KeyCode::Backspace) {
+        state.command_palette_search.pop();
+    }
+    if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter) {
+        if let Some((_, command)) = filtered_palette_commands(&state.command_palette_search)
+            .into_iter()
+            .next()
+        {
+            run_palette_command(game, state, command);
+            state.command_palette = false;
+        }
+    }
+}
+
+fn handle_text_buffer_input(buffer: &mut String, active: &mut bool) {
+    while let Some(character) = get_char_pressed() {
+        if !character.is_control() {
+            buffer.push(character);
+        }
+    }
+    if is_key_pressed(KeyCode::Backspace) {
+        buffer.pop();
+    }
+    if is_key_pressed(KeyCode::Escape)
+        || is_key_pressed(KeyCode::Enter)
+        || is_key_pressed(KeyCode::KpEnter)
+    {
+        *active = false;
     }
 }
 
@@ -598,7 +1149,11 @@ fn keep_code_cursor_visible(state: &mut EditorState, margin: usize) {
 fn handle_shortcuts(game: &mut Game, state: &mut EditorState) -> bool {
     let command = command_modifier_down();
 
-    if state.active_text_field.is_some() || state.code_editor_active || state.content_search_active
+    if state.active_text_field.is_some()
+        || state.code_editor_active
+        || state.content_search_active
+        || state.graph_node_search_active
+        || state.graph_template_search_active
     {
         return false;
     }
@@ -612,6 +1167,9 @@ fn handle_shortcuts(game: &mut Game, state: &mut EditorState) -> bool {
     }
     if command && is_key_pressed(KeyCode::P) {
         state.command_palette = !state.command_palette;
+        if state.command_palette {
+            state.command_palette_search.clear();
+        }
         return false;
     }
     if state.command_palette {
@@ -631,7 +1189,7 @@ fn handle_shortcuts(game: &mut Game, state: &mut EditorState) -> bool {
         state.show_grid = !state.show_grid;
     }
     if is_key_pressed(KeyCode::F5) {
-        toggle_play_mode(game);
+        toggle_play_mode(game, state);
     }
     if is_key_pressed(KeyCode::F6) {
         game.cycle_workspace_mode();
@@ -768,8 +1326,53 @@ fn handle_camera_input(game: &mut Game, dt: f64, state: &EditorState) {
     }
 }
 
+fn handle_character_input(game: &mut Game) {
+    if game.mode != "PLAY" {
+        return;
+    }
+    let left = is_key_down(KeyCode::A) || is_key_down(KeyCode::Left);
+    let right = is_key_down(KeyCode::D) || is_key_down(KeyCode::Right);
+    let up = is_key_down(KeyCode::W) || is_key_down(KeyCode::Up);
+    let down = is_key_down(KeyCode::S) || is_key_down(KeyCode::Down);
+    let input_x = right as i32 as f64 - left as i32 as f64;
+    let input_y = down as i32 as f64 - up as i32 as f64;
+    let jump_pressed = is_key_pressed(KeyCode::Space) || is_key_pressed(KeyCode::Up);
+    let jump_held = is_key_down(KeyCode::Space) || is_key_down(KeyCode::Up);
+    let run_pressed = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+    let dash_pressed = is_key_pressed(KeyCode::X)
+        || is_key_pressed(KeyCode::LeftControl)
+        || is_key_pressed(KeyCode::RightControl);
+
+    game.set_character_input_for_tag(
+        "Player",
+        (input_x, input_y),
+        jump_pressed,
+        jump_held,
+        run_pressed,
+        dash_pressed,
+    );
+    for (key, pressed) in [
+        ("A", left),
+        ("D", right),
+        ("W", up),
+        ("S", down),
+        ("Space", jump_held),
+        ("Shift", run_pressed),
+        ("X", dash_pressed),
+    ] {
+        game.set_script_input_pressed(key, pressed);
+    }
+}
+
 fn handle_scene_mouse(game: &mut Game, state: &mut EditorState, viewport: Viewport) {
     let (mx, my) = mouse_position();
+    if pointer_over_floating_windows(state, mx, my) {
+        if is_mouse_button_released(MouseButton::Left) {
+            finish_gizmo_drag(game, state);
+            state.drag_payload = None;
+        }
+        return;
+    }
     if let Some(payload) = state.drag_payload.clone() {
         if is_mouse_button_released(MouseButton::Left) {
             if contains(viewport.rect, mx, my) {
@@ -817,9 +1420,14 @@ fn handle_scene_mouse(game: &mut Game, state: &mut EditorState, viewport: Viewpo
         }
         EditorTool::Move | EditorTool::Rotate | EditorTool::Scale => {
             if is_mouse_button_pressed(MouseButton::Left) {
-                state.drag_entity = find_entity_at(game, world);
+                state.drag_entity = if state.tool == EditorTool::Move {
+                    find_ui_entity_at(game, mx, my).or_else(|| find_entity_at(game, world))
+                } else {
+                    find_entity_at(game, world)
+                };
                 if let Some(id) = state.drag_entity {
                     game.select_entity(id);
+                    state.drag_ui_offset = ui_drag_offset(game, id, mx, my);
                     state.drag_entity_before = Some(game.capture_editor_snapshot());
                     game.console.log(format!("Moviendo entity #{id}"), "EDITOR");
                 }
@@ -832,7 +1440,7 @@ fn handle_scene_mouse(game: &mut Game, state: &mut EditorState, viewport: Viewpo
         }
         EditorTool::Select => {
             if is_mouse_button_pressed(MouseButton::Left) {
-                select_at(game, world);
+                select_at(game, world, (mx, my));
             }
             if is_mouse_button_pressed(MouseButton::Right) {
                 command_selected_move(game, world);
@@ -904,16 +1512,28 @@ fn apply_gizmo_drag(game: &mut Game, state: &EditorState, world: (f32, f32)) {
     let snap = state.snap_to_grid;
     let tile_size = game.grid.tile_size as f64;
     let camera_zoom = game.camera.zoom;
+    let (mx, my) = mouse_position();
     if let Some(entity) = game.get_entity_by_id_mut(id) {
         match state.tool {
             EditorTool::Move => {
-                let tools = SceneViewTools {
-                    grid_snapping: snap,
-                    snap_size: if snap { 0.25 } else { 0.0001 },
-                    tile_size,
-                    camera_zoom,
-                };
-                tools.set_world_position(entity, world.0 as f64, world.1 as f64);
+                if let Some(ui) = entity.get_component_mut("UIElement") {
+                    let mut next_x = mx - state.drag_ui_offset.0;
+                    let mut next_y = my - state.drag_ui_offset.1;
+                    if snap {
+                        next_x = (next_x / 4.0).round() * 4.0;
+                        next_y = (next_y / 4.0).round() * 4.0;
+                    }
+                    ui.set_f64("x", next_x as f64);
+                    ui.set_f64("y", next_y as f64);
+                } else {
+                    let tools = SceneViewTools {
+                        grid_snapping: snap,
+                        snap_size: if snap { 0.25 } else { 0.0001 },
+                        tile_size,
+                        camera_zoom,
+                    };
+                    tools.set_world_position(entity, world.0 as f64, world.1 as f64);
+                }
             }
             EditorTool::Rotate => {
                 let dx = world.0 as f64 - entity.x;
@@ -964,13 +1584,49 @@ fn log_drop_outcome(game: &mut Game, asset_name: &str, outcome: DropOutcome) {
     }
 }
 
-fn select_at(game: &mut Game, world: (f32, f32)) {
+fn select_at(game: &mut Game, world: (f32, f32), screen: (f32, f32)) {
     game.clear_selection();
-    if let Some(id) = find_entity_at(game, world) {
+    if let Some(id) =
+        find_ui_entity_at(game, screen.0, screen.1).or_else(|| find_entity_at(game, world))
+    {
         game.select_entity(id);
         game.console
             .log(format!("Seleccionado entity #{id}"), "EDITOR");
     }
+}
+
+fn find_ui_entity_at(game: &Game, mx: f32, my: f32) -> Option<u64> {
+    game.units
+        .iter()
+        .rev()
+        .find(|entity| {
+            if !entity.enabled || !entity.visible {
+                return false;
+            }
+            let Some(ui) = entity.get_component("UIElement") else {
+                return false;
+            };
+            let rect = RectSpec {
+                x: ui.get_f64("x", 0.0) as f32,
+                y: ui.get_f64("y", 0.0) as f32,
+                w: ui.get_f64("width", 160.0) as f32,
+                h: ui.get_f64("height", 36.0) as f32,
+            };
+            contains(rect, mx, my)
+        })
+        .map(|entity| entity.id)
+}
+
+fn ui_drag_offset(game: &Game, entity_id: u64, mx: f32, my: f32) -> (f32, f32) {
+    game.get_entity_by_id(entity_id)
+        .and_then(|entity| entity.get_component("UIElement"))
+        .map(|ui| {
+            (
+                mx - ui.get_f64("x", 0.0) as f32,
+                my - ui.get_f64("y", 0.0) as f32,
+            )
+        })
+        .unwrap_or((0.0, 0.0))
 }
 
 fn find_entity_at(game: &Game, world: (f32, f32)) -> Option<u64> {
@@ -1026,8 +1682,116 @@ fn command_selected_move(game: &mut Game, world: (f32, f32)) {
     game.sync_world();
 }
 
-fn toggle_play_mode(game: &mut Game) {
-    game.toggle_play_mode();
+fn toggle_play_mode(game: &mut Game, state: &mut EditorState) {
+    if state.external_play_child.is_some() {
+        stop_external_play_window(game, state);
+    } else if game.mode == "PLAY" {
+        game.exit_play_mode("floating play stop");
+        state.play_window_open = false;
+    } else {
+        launch_play_window(game, state);
+    }
+}
+
+fn launch_play_window(game: &mut Game, state: &mut EditorState) {
+    match game.export_runtime(ExportProfile::Debug) {
+        Ok(report) => {
+            state.external_play_path = Some(report.output_path.clone());
+            if let Some(runtime_exe) = sibling_runtime_binary() {
+                match Command::new(runtime_exe)
+                    .arg("--build")
+                    .arg(&report.output_path)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                {
+                    Ok(child) => {
+                        state.external_play_child = Some(child);
+                        state.play_window_open = true;
+                        game.docking_workspace
+                            .set_floating_visibility("play_window", true);
+                        game.console.log(
+                            format!("Play Window externo abierto: {}", report.output_path.display()),
+                            "ENGINE",
+                        );
+                        return;
+                    }
+                    Err(error) => game.console.log(
+                        format!(
+                            "No se pudo lanzar runtime externo ({error}); usando Play flotante interno."
+                        ),
+                        "WARNING",
+                    ),
+                }
+            } else {
+                game.console.log(
+                    "Runtime externo no encontrado junto al editor; usando Play flotante interno.",
+                    "WARNING",
+                );
+            }
+        }
+        Err(error) => game.console.log(
+            format!("No se pudo preparar build de Play externo: {error}"),
+            "ERROR",
+        ),
+    }
+
+    game.enter_play_mode();
+    state.play_window_open = true;
+    game.docking_workspace
+        .set_floating_visibility("play_window", true);
+}
+
+fn stop_external_play_window(game: &mut Game, state: &mut EditorState) {
+    if let Some(mut child) = state.external_play_child.take() {
+        if let Err(error) = child.kill() {
+            game.console.log(
+                format!("No se pudo detener runtime externo: {error}"),
+                "WARNING",
+            );
+        }
+        let _ = child.wait();
+        game.console.log("Play Window externo detenido", "ENGINE");
+    }
+    state.external_play_path = None;
+    state.play_window_open = false;
+}
+
+fn poll_external_play_window(game: &mut Game, state: &mut EditorState) {
+    let Some(child) = state.external_play_child.as_mut() else {
+        return;
+    };
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            state.external_play_child = None;
+            state.external_play_path = None;
+            state.play_window_open = false;
+            game.console
+                .log(format!("Play Window externo cerró: {status}"), "ENGINE");
+        }
+        Ok(None) => {}
+        Err(error) => {
+            state.external_play_child = None;
+            state.external_play_path = None;
+            state.play_window_open = false;
+            game.console.log(
+                format!("Play Window externo no responde: {error}"),
+                "WARNING",
+            );
+        }
+    }
+}
+
+fn sibling_runtime_binary() -> Option<PathBuf> {
+    let current = env::current_exe().ok()?;
+    let runtime_name = if cfg!(windows) {
+        "miniforge_runtime.exe"
+    } else {
+        "miniforge_runtime"
+    };
+    let candidate = current.with_file_name(runtime_name);
+    candidate.exists().then_some(candidate)
 }
 
 fn set_tool(game: &mut Game, state: &mut EditorState, tool: EditorTool) {
@@ -1038,16 +1802,21 @@ fn set_tool(game: &mut Game, state: &mut EditorState, tool: EditorTool) {
 }
 
 fn draw_top_bar(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
-    draw_rect(rect, Color::from_rgba(24, 27, 34, 255));
+    draw_gradient_rect(
+        rect,
+        Color::from_rgba(31, 39, 54, 255),
+        Color::from_rgba(14, 18, 27, 255),
+    );
     draw_macos_chrome(rect);
     draw_rectangle(
         rect.x,
-        rect.y + rect.h - 1.0,
+        rect.y + 44.0,
         rect.w,
         1.0,
-        Color::from_rgba(70, 78, 96, 255),
+        Color::from_rgba(82, 102, 132, 160),
     );
-    draw_text("MiniForge", rect.x + 82.0, rect.y + 25.0, 24.0, WHITE);
+    draw_rectangle(rect.x, rect.y + rect.h - 1.0, rect.w, 1.0, ui_accent_2());
+    draw_text("MiniForge", rect.x + 82.0, rect.y + 25.0, 24.0, ui_text());
     draw_top_menus(game, state, rect);
     draw_text(
         &ellipsize(
@@ -1062,14 +1831,15 @@ fn draw_top_bar(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
         rect.x + 472.0,
         rect.y + 23.0,
         15.0,
-        Color::from_rgba(200, 206, 220, 255),
+        ui_text_muted(),
     );
 
     let mut x = rect.x + 16.0;
     let y = rect.y + 56.0;
-    let play_label = if game.mode == "PLAY" { "Stop" } else { "Play" };
-    if button(x, y, 58.0, 24.0, play_label, game.mode == "PLAY") {
-        toggle_play_mode(game);
+    let play_active = game.mode == "PLAY" || state.external_play_child.is_some();
+    let play_label = if play_active { "Stop" } else { "Play" };
+    if button(x, y, 58.0, 24.0, play_label, play_active) {
+        toggle_play_mode(game, state);
     }
     x += 64.0;
     if button(x, y, 58.0, 24.0, "Save", false) {
@@ -1251,7 +2021,7 @@ fn draw_top_bar(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
         rect.x + rect.w - 430.0,
         rect.y + 35.0,
         14.0,
-        Color::from_rgba(150, 162, 184, 255),
+        ui_text_muted(),
     );
 }
 
@@ -1299,6 +2069,8 @@ fn draw_menu_popover(game: &mut Game, state: &mut EditorState, menu: TopMenu, x:
             ("Recover Autosave", "recover_autosave"),
             ("Export Debug", "export_debug"),
             ("Export Release", "export_release"),
+            ("Export Project Zip", "export_project_zip"),
+            ("Import Project Zip", "import_project_zip"),
             ("Package Debug", "package_debug"),
             ("Package Release", "package_release"),
             ("Refresh Assets", "refresh"),
@@ -1314,7 +2086,12 @@ fn draw_menu_popover(game: &mut Game, state: &mut EditorState, menu: TopMenu, x:
         ],
         TopMenu::View => &[
             ("Command Palette", "command_palette"),
+            ("Script Window", "script_window"),
+            ("Blueprint Picker", "blueprint_picker"),
+            ("Play Window", "play_window"),
             ("Toggle Browser", "toggle_browser"),
+            ("Scene Browser", "scene_browser"),
+            ("Sprite Editor", "sprite_editor"),
             ("Toggle Hierarchy", "toggle_hierarchy"),
             ("Toggle Inspector", "toggle_inspector"),
         ],
@@ -1323,26 +2100,28 @@ fn draw_menu_popover(game: &mut Game, state: &mut EditorState, menu: TopMenu, x:
             ("Build Manifest", "manifest"),
             ("TopDown Starter", "starter_topdown"),
             ("Platformer Starter", "starter_platformer"),
+            ("Inventory/Economy Graph", "create_graph_inventory"),
+            ("Quest/Ability Graph", "create_graph_quest"),
         ],
         TopMenu::Rts => &[
             ("RTS Skirmish", "rts_skirmish"),
             ("Command Center", "spawn_rts_base"),
             ("Queue Worker", "queue_worker"),
             ("Place Barracks", "place_barracks"),
+            ("RTS Production Graph", "create_graph_rts_economy"),
         ],
     };
     let width = 184.0;
     let height = items.len() as f32 * 24.0 + 12.0;
-    draw_rect(
+    draw_surface(
         RectSpec {
             x,
             y,
             w: width,
             h: height,
         },
-        Color::from_rgba(28, 32, 42, 248),
+        true,
     );
-    draw_rectangle_lines(x, y, width, height, 1.0, Color::from_rgba(88, 98, 120, 255));
     let mut row_y = y + 26.0;
     for (label, command) in items {
         let row = RectSpec {
@@ -1355,18 +2134,19 @@ fn draw_menu_popover(game: &mut Game, state: &mut EditorState, menu: TopMenu, x:
         draw_rect(
             row,
             if hovered {
-                Color::from_rgba(58, 67, 86, 255)
+                Color::from_rgba(47, 63, 86, 255)
             } else {
-                Color::from_rgba(35, 40, 52, 255)
+                Color::from_rgba(24, 31, 44, 255)
             },
         );
-        draw_text(
-            label,
-            row.x + 8.0,
-            row_y,
-            14.0,
-            Color::from_rgba(232, 236, 245, 255),
+        draw_rectangle(
+            row.x,
+            row.y,
+            2.0,
+            row.h,
+            if hovered { ui_accent() } else { ui_line_soft() },
         );
+        draw_text(label, row.x + 8.0, row_y, 14.0, ui_text());
         if hovered && is_mouse_button_pressed(MouseButton::Left) {
             run_palette_command(game, state, command);
             state.top_menu = None;
@@ -1375,12 +2155,12 @@ fn draw_menu_popover(game: &mut Game, state: &mut EditorState, menu: TopMenu, x:
     }
 }
 
-fn draw_hierarchy(game: &mut Game, rect: RectSpec) {
+fn draw_hierarchy(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
     if rect.w <= 0.0 {
         return;
     }
-    draw_rect(rect, Color::from_rgba(22, 25, 33, 255));
-    draw_text("Hierarchy", rect.x + 14.0, rect.y + 25.0, 21.0, WHITE);
+    draw_surface(rect, false);
+    draw_panel_header(rect, "Hierarchy", "scene graph");
     draw_text(
         &ellipsize(
             &format!(
@@ -1393,14 +2173,14 @@ fn draw_hierarchy(game: &mut Game, rect: RectSpec) {
         rect.x + 14.0,
         rect.y + 49.0,
         14.0,
-        Color::from_rgba(150, 158, 174, 255),
+        ui_text_muted(),
     );
     draw_text(
         "F5 Play snapshot | F11 pausa sim | F2/F3 Hierarchy/Inspector",
         rect.x + 14.0,
         rect.y + 66.0,
         12.0,
-        Color::from_rgba(120, 132, 158, 255),
+        ui_text_muted(),
     );
     if button(
         rect.x + rect.w - 72.0,
@@ -1413,12 +2193,30 @@ fn draw_hierarchy(game: &mut Game, rect: RectSpec) {
         create_new_scene(game);
     }
 
-    let mut y = rect.y + 86.0;
-    let max_rows = ((rect.h - 102.0) / 25.0).max(0.0) as usize;
+    let list_rect = RectSpec {
+        x: rect.x + 8.0,
+        y: rect.y + 82.0,
+        w: rect.w - 16.0,
+        h: (rect.h - 94.0).max(0.0),
+    };
+    let row_h = 27.0;
+    let content_h = game.units.len() as f32 * row_h;
+    let max_scroll = (content_h - list_rect.h).max(0.0);
+    if contains_mouse(list_rect) {
+        let (_, wheel_y) = mouse_wheel();
+        if wheel_y.abs() > f32::EPSILON {
+            state.hierarchy_scroll =
+                (state.hierarchy_scroll - wheel_y * row_h * 1.2).clamp(0.0, max_scroll);
+        }
+    }
+    state.hierarchy_scroll = state.hierarchy_scroll.clamp(0.0, max_scroll);
+    let first_row = (state.hierarchy_scroll / row_h).floor().max(0.0) as usize;
+    let visible_rows = (list_rect.h / row_h).ceil().max(1.0) as usize + 2;
     let rows: Vec<(u64, String, String, bool)> = game
         .units
         .iter()
-        .take(max_rows)
+        .skip(first_row)
+        .take(visible_rows)
         .map(|entity| {
             (
                 entity.id,
@@ -1429,43 +2227,65 @@ fn draw_hierarchy(game: &mut Game, rect: RectSpec) {
         })
         .collect();
 
+    let mut y = list_rect.y + 19.0 - (state.hierarchy_scroll % row_h);
     for (id, name, tag, selected) in rows {
         let row = RectSpec {
-            x: rect.x + 8.0,
+            x: list_rect.x,
             y: y - 17.0,
-            w: rect.w - 16.0,
-            h: 22.0,
+            w: list_rect.w,
+            h: 24.0,
         };
+        if row.y + row.h < list_rect.y || row.y > list_rect.y + list_rect.h {
+            y += row_h;
+            continue;
+        }
         let hovered = contains_mouse(row);
         let color = if selected {
-            Color::from_rgba(65, 116, 184, 255)
+            Color::from_rgba(42, 86, 128, 255)
         } else if hovered {
-            Color::from_rgba(45, 52, 66, 255)
+            Color::from_rgba(36, 48, 66, 255)
         } else {
-            Color::from_rgba(34, 39, 50, 255)
+            Color::from_rgba(22, 28, 40, 255)
         };
         draw_rect(row, color);
+        draw_rectangle(row.x, row.y, 3.0, row.h, entity_type_accent(&tag));
         draw_text(
             &ellipsize(&format!("{name}  #{id}"), 25),
             rect.x + 16.0,
             y,
             16.0,
-            Color::from_rgba(232, 236, 245, 255),
+            ui_text(),
         );
         draw_text(
             &ellipsize(&tag, 11),
             rect.x + rect.w - 80.0,
             y,
             13.0,
-            Color::from_rgba(165, 176, 198, 255),
+            ui_text_muted(),
         );
         if hovered && is_mouse_button_pressed(MouseButton::Left) {
             game.select_entity(id);
             game.console
                 .log(format!("Seleccionado desde Hierarchy #{id}"), "EDITOR");
         }
-        y += 25.0;
+        if hovered && is_mouse_button_pressed(MouseButton::Right) {
+            state.hierarchy_context_entity = Some(id);
+            state.hierarchy_context_pos = mouse_position();
+        }
+        y += row_h;
     }
+    draw_scrollbar(
+        RectSpec {
+            x: list_rect.x + list_rect.w - 7.0,
+            y: list_rect.y,
+            w: 6.0,
+            h: list_rect.h,
+        },
+        state.hierarchy_scroll,
+        max_scroll,
+        content_h.max(list_rect.h),
+    );
+    draw_hierarchy_context_menu(game, state);
 
     draw_rectangle_lines(
         rect.x + rect.w - 1.0,
@@ -1473,8 +2293,92 @@ fn draw_hierarchy(game: &mut Game, rect: RectSpec) {
         1.0,
         rect.h,
         1.0,
-        Color::from_rgba(62, 68, 84, 255),
+        ui_line_soft(),
     );
+}
+
+fn draw_hierarchy_context_menu(game: &mut Game, state: &mut EditorState) {
+    let Some(entity_id) = state.hierarchy_context_entity else {
+        return;
+    };
+    if game.get_entity_by_id(entity_id).is_none() {
+        state.hierarchy_context_entity = None;
+        return;
+    }
+    let panel = RectSpec {
+        x: state
+            .hierarchy_context_pos
+            .0
+            .clamp(8.0, (screen_width() - 154.0).max(8.0)),
+        y: state
+            .hierarchy_context_pos
+            .1
+            .clamp(8.0, (screen_height() - 172.0).max(8.0)),
+        w: 146.0,
+        h: 164.0,
+    };
+    draw_rect(panel, Color::from_rgba(26, 31, 42, 252));
+    draw_rectangle_lines(
+        panel.x,
+        panel.y,
+        panel.w,
+        panel.h,
+        1.0,
+        Color::from_rgba(92, 112, 145, 255),
+    );
+    draw_text(
+        &format!("Entity #{entity_id}"),
+        panel.x + 10.0,
+        panel.y + 21.0,
+        13.0,
+        Color::from_rgba(220, 230, 244, 255),
+    );
+    let mut y = panel.y + 32.0;
+    for (label, action) in [
+        ("Select", "select"),
+        ("Move Up", "move_up"),
+        ("Move Down", "move_down"),
+        ("Parent Sel", "parent_selected"),
+        ("Clear Parent", "clear_parent"),
+        ("Delete", "delete"),
+    ] {
+        if button(panel.x + 8.0, y, panel.w - 16.0, 20.0, label, false) {
+            match action {
+                "select" => {
+                    game.select_entity(entity_id);
+                }
+                "move_up" => {
+                    game.move_entity_in_hierarchy(entity_id, -1);
+                }
+                "move_down" => {
+                    game.move_entity_in_hierarchy(entity_id, 1);
+                }
+                "parent_selected" => {
+                    if let Some(child_id) = selected_id(game)
+                        && child_id != entity_id
+                    {
+                        game.set_entity_parent(child_id, entity_id);
+                    }
+                }
+                "clear_parent" => {
+                    game.clear_entity_parent(entity_id);
+                }
+                "delete" => {
+                    game.select_entity(entity_id);
+                    delete_selected(game);
+                }
+                _ => {}
+            }
+            state.hierarchy_context_entity = None;
+            return;
+        }
+        y += 22.0;
+    }
+    if (is_mouse_button_pressed(MouseButton::Left) || is_mouse_button_pressed(MouseButton::Right))
+        && !contains_mouse(panel)
+    {
+        state.hierarchy_context_entity = None;
+    }
 }
 
 fn draw_inspector_scene_ui_canvas(game: &mut Game, rect: RectSpec) {
@@ -1572,8 +2476,8 @@ fn draw_inspector(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
     if rect.w <= 0.0 {
         return;
     }
-    draw_rect(rect, Color::from_rgba(25, 29, 38, 255));
-    draw_text("Inspector", rect.x + 14.0, rect.y + 26.0, 22.0, WHITE);
+    draw_surface(rect, false);
+    draw_panel_header(rect, "Inspector", "selection details");
     let Some(id) = selected_id(game) else {
         draw_inspector_scene_ui_canvas(game, rect);
         return;
@@ -1591,9 +2495,11 @@ fn draw_inspector(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
         rect.x + 14.0,
         y,
         16.0,
-        Color::from_rgba(220, 225, 238, 255),
+        ui_text(),
     );
-    y += 24.0;
+    y += 22.0;
+    draw_inspector_identity_summary(&entity, rect, y);
+    y += 32.0;
     if button(rect.x + 14.0, y, 84.0, 24.0, "Duplicate", false) {
         duplicate_selected(game);
     }
@@ -1606,9 +2512,18 @@ fn draw_inspector(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
         game.camera.y = entity.y * game.grid.tile_size as f64 - 180.0;
         game.camera.clamp_to_bounds();
     }
+    if button(rect.x + 270.0, y, 68.0, 24.0, "Script", false) {
+        if let Some(path) = first_entity_script_path(&entity) {
+            open_project_file_in_editor(game, state, path);
+        } else if let Ok(path) =
+            game.create_rhai_script_asset(&format!("{}_Controller", entity.name))
+        {
+            set_open_file_editor_state(state, &path);
+        }
+    }
     y += 34.0;
 
-    draw_text("Transform", rect.x + 14.0, y, 18.0, WHITE);
+    draw_text("Transform", rect.x + 14.0, y, 18.0, ui_text());
     y += 22.0;
     let fields = InspectorEditor::editable_fields(&entity);
     for key in [
@@ -1639,14 +2554,14 @@ fn draw_inspector(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
         rect.x + 102.0,
         y + 17.0,
         14.0,
-        Color::from_rgba(205, 216, 236, 255),
+        ui_text(),
     );
     if button(rect.x + 190.0, y, 80.0, 23.0, "Layer", false) {
         cycle_identity(game, id, "layer");
     }
     y += 34.0;
 
-    draw_text("Prefab / Graph", rect.x + 14.0, y, 18.0, WHITE);
+    draw_text("Prefab / Graph", rect.x + 14.0, y, 18.0, ui_text());
     y += 24.0;
     if button(rect.x + 14.0, y, 92.0, 24.0, "Save Prefab", false)
         && let Err(error) = game.save_selected_as_prefab()
@@ -1663,6 +2578,13 @@ fn draw_inspector(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
     if button(rect.x + 194.0, y, 82.0, 24.0, "Attach VS", false) {
         game.attach_program_template_to_selected("LogAndMove");
     }
+    if button(rect.x + 282.0, y, 72.0, 24.0, "Open VS", false) {
+        if let Some(path) = entity_visual_graph_path(&entity) {
+            open_project_file_in_editor(game, state, path);
+        } else {
+            game.attach_program_template_to_selected("LogAndMove");
+        }
+    }
     y += 34.0;
     if let Some(report) = game.analyze_selected_prefab() {
         draw_text(
@@ -1677,12 +2599,12 @@ fn draw_inspector(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
             rect.x + 14.0,
             y,
             14.0,
-            Color::from_rgba(178, 205, 240, 255),
+            ui_accent(),
         );
         y += 22.0;
     }
 
-    draw_text("Add / Remove Component", rect.x + 14.0, y, 18.0, WHITE);
+    draw_text("Add / Remove Component", rect.x + 14.0, y, 18.0, ui_text());
     y += 24.0;
     let buttons = [
         ("Health", "Health"),
@@ -1733,9 +2655,24 @@ fn draw_inspector(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
         game.console
             .log(format!("VisualScript {name} agregado"), "EDITOR");
     }
+    if button(rect.x + 284.0, y, 72.0, 24.0, "Physics", false) {
+        add_component(game, id, "Rigidbody2D");
+        add_component(game, id, "Collider2D");
+    }
     y += 38.0;
 
-    draw_text("Components", rect.x + 14.0, y, 18.0, WHITE);
+    if let Some(report) = &game.physics_system.rapier_report {
+        draw_text(
+            &ellipsize(&report.status_line(), 44),
+            rect.x + 14.0,
+            y,
+            13.0,
+            Color::from_rgba(130, 210, 235, 255),
+        );
+        y += 20.0;
+    }
+
+    draw_text("Components", rect.x + 14.0, y, 18.0, ui_text());
     y += 24.0;
     for component in entity.components.iter().take(10) {
         if y > rect.y + rect.h - 38.0 {
@@ -1748,13 +2685,14 @@ fn draw_inspector(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
             w: rect.w - 24.0,
             h: 23.0,
         };
-        draw_rect(header, Color::from_rgba(35, 41, 54, 255));
+        draw_rect(header, Color::from_rgba(26, 35, 50, 255));
+        draw_rectangle(header.x, header.y, 3.0, header.h, ui_accent_2());
         draw_text(
             &ellipsize(&format!("{} [{}]", component.component_type, category), 28),
             rect.x + 18.0,
             y,
             15.0,
-            Color::from_rgba(170, 210, 255, 255),
+            ui_accent(),
         );
         if button(rect.x + rect.w - 52.0, y - 16.0, 38.0, 20.0, "-", false)
             && let Err(error) = game.remove_component_from_entity(id, &component.component_type)
@@ -1962,8 +2900,89 @@ fn inspector_value_type(value: &Value) -> String {
     .to_string()
 }
 
+fn draw_inspector_identity_summary(entity: &GameObject, rect: RectSpec, y: f32) {
+    let card = RectSpec {
+        x: rect.x + 12.0,
+        y: y - 18.0,
+        w: rect.w - 24.0,
+        h: 26.0,
+    };
+    draw_rect(card, Color::from_rgba(18, 23, 32, 255));
+    draw_rectangle_lines(
+        card.x,
+        card.y,
+        card.w,
+        card.h,
+        1.0,
+        Color::from_rgba(58, 72, 96, 255),
+    );
+    let scripts = entity.scripts.len() + usize::from(entity.script.is_some());
+    draw_text(
+        &ellipsize(
+            &format!(
+                "{} comps | {} scripts | layer {} | {}",
+                entity.components.len(),
+                scripts,
+                entity.layer,
+                if entity.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            ),
+            48,
+        ),
+        card.x + 8.0,
+        y,
+        13.0,
+        Color::from_rgba(174, 194, 224, 255),
+    );
+}
+
+fn first_entity_script_path(entity: &GameObject) -> Option<String> {
+    entity
+        .scripts
+        .iter()
+        .filter_map(|script| script.get("path").and_then(Value::as_str))
+        .next()
+        .or(entity.script.as_deref())
+        .map(normalize_script_path)
+}
+
+fn entity_visual_graph_path(entity: &GameObject) -> Option<String> {
+    entity
+        .get_component("VisualScript")
+        .and_then(|component| {
+            component
+                .get("graph_path")
+                .and_then(Value::as_str)
+                .or_else(|| component.get("graph_name").and_then(Value::as_str))
+        })
+        .map(|raw| {
+            if raw.starts_with("scripts/") {
+                raw.to_string()
+            } else if raw.ends_with(".mfgraph") {
+                format!("scripts/visual_graphs/{raw}")
+            } else {
+                format!("scripts/visual_graphs/{raw}.mfgraph")
+            }
+        })
+}
+
+fn normalize_script_path(raw: &str) -> String {
+    if raw.starts_with("scripts/") {
+        raw.to_string()
+    } else {
+        format!("scripts/{raw}")
+    }
+}
+
 fn draw_scene(game: &Game, state: &EditorState, viewport: Viewport) {
-    draw_rect(viewport.rect, Color::from_rgba(20, 23, 30, 255));
+    draw_gradient_rect(
+        viewport.rect,
+        Color::from_rgba(19, 25, 36, 255),
+        Color::from_rgba(11, 15, 23, 255),
+    );
     draw_tiles(game, viewport);
     if state.show_grid {
         draw_grid(game, viewport);
@@ -1980,6 +2999,7 @@ fn draw_scene(game: &Game, state: &EditorState, viewport: Viewport) {
     draw_paint_cursor(game, state, viewport);
     draw_drag_preview(state);
     draw_ui_elements(game);
+    draw_ui_selection_gizmos(game);
     draw_scene_hud(game, state, viewport);
     draw_rectangle_lines(
         viewport.rect.x,
@@ -1987,12 +3007,16 @@ fn draw_scene(game: &Game, state: &EditorState, viewport: Viewport) {
         viewport.rect.w,
         viewport.rect.h,
         1.0,
-        Color::from_rgba(73, 78, 94, 255),
+        ui_line_soft(),
     );
 }
 
 fn draw_world_player(game: &Game, viewport: Viewport) {
-    draw_rect(viewport.rect, Color::from_rgba(20, 23, 30, 255));
+    draw_gradient_rect(
+        viewport.rect,
+        Color::from_rgba(19, 25, 36, 255),
+        Color::from_rgba(11, 15, 23, 255),
+    );
     draw_tiles(game, viewport);
     for entity in &game.units {
         if !entity.enabled || !entity.visible {
@@ -2305,6 +3329,30 @@ fn draw_ui_elements(game: &Game) {
     }
 }
 
+fn draw_ui_selection_gizmos(game: &Game) {
+    for id in &game.selected_units {
+        let Some(entity) = game.get_entity_by_id(*id) else {
+            continue;
+        };
+        let Some(ui) = entity.get_component("UIElement") else {
+            continue;
+        };
+        let x = ui.get_f64("x", 0.0) as f32;
+        let y = ui.get_f64("y", 0.0) as f32;
+        let w = ui.get_f64("width", 160.0) as f32;
+        let h = ui.get_f64("height", 36.0) as f32;
+        draw_rectangle_lines(
+            x - 2.0,
+            y - 2.0,
+            w + 4.0,
+            h + 4.0,
+            2.0,
+            Color::from_rgba(88, 196, 255, 255),
+        );
+        draw_circle(x, y, 4.0, Color::from_rgba(255, 212, 120, 255));
+    }
+}
+
 fn draw_scene_hud(game: &Game, state: &EditorState, viewport: Viewport) {
     let layer = &game.tilemap_layers.layers[game.tilemap_layers.active_layer].name;
     let play_bit = if game.mode == "PLAY" {
@@ -2345,13 +3393,16 @@ fn draw_bottom_panel(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
     if rect.h <= 0.0 {
         return;
     }
-    draw_rect(rect, Color::from_rgba(18, 20, 26, 248));
+    draw_surface(rect, false);
+    draw_rectangle(rect.x, rect.y, rect.w, 2.0, ui_accent());
     let mut x = rect.x + 12.0;
     for tab in [
         BottomTab::Console,
         BottomTab::Assets,
         BottomTab::Programming,
         BottomTab::Prefabs,
+        BottomTab::Scenes,
+        BottomTab::Sprites,
         BottomTab::Profiler,
     ] {
         let width = match tab {
@@ -2359,6 +3410,8 @@ fn draw_bottom_panel(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
             BottomTab::Assets => 70.0,
             BottomTab::Programming => 70.0,
             BottomTab::Prefabs => 78.0,
+            BottomTab::Scenes => 74.0,
+            BottomTab::Sprites => 76.0,
             BottomTab::Profiler => 78.0,
         };
         if button(
@@ -2395,36 +3448,66 @@ fn draw_bottom_panel(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
         BottomTab::Assets => draw_assets_panel(game, state, content),
         BottomTab::Programming => draw_programming_panel(game, state, content),
         BottomTab::Prefabs => draw_prefab_panel(game, state, content),
+        BottomTab::Scenes => draw_scenes_panel(game, state, content),
+        BottomTab::Sprites => draw_sprite_editor_panel(game, state, content),
         BottomTab::Profiler => draw_profiler_panel(game, content),
     }
 }
 
 fn draw_console(game: &mut Game, rect: RectSpec) {
-    draw_text("Console", rect.x + 14.0, rect.y + 20.0, 18.0, WHITE);
+    draw_text("Console", rect.x + 14.0, rect.y + 20.0, 18.0, ui_text());
     if button(rect.x + 92.0, rect.y + 4.0, 54.0, 22.0, "Clear", false) {
         game.console.clear();
     }
+    if button(rect.x + 154.0, rect.y + 4.0, 84.0, 22.0, "Clear Err", false) {
+        game.console.clear_channel("ERROR");
+    }
+    draw_text(
+        &game.console.summary(),
+        rect.x + 250.0,
+        rect.y + 20.0,
+        14.0,
+        Color::from_rgba(164, 178, 202, 255),
+    );
     let lines = ((rect.h - 34.0) / 19.0).max(0.0) as usize;
-    let start = game.console.entries.len().saturating_sub(lines);
+    let start = game.console.structured_entries.len().saturating_sub(lines);
     let mut y = rect.y + 42.0;
-    for (channel, message) in game.console.entries.iter().skip(start) {
-        let color = match channel.as_str() {
-            "ERROR" => Color::from_rgba(255, 110, 110, 255),
-            "WARNING" => Color::from_rgba(255, 210, 100, 255),
-            "SCRIPT" => Color::from_rgba(130, 220, 255, 255),
-            "SCENE" => Color::from_rgba(150, 255, 180, 255),
-            "VALIDATOR" => Color::from_rgba(180, 230, 255, 255),
-            "TILEMAP" => Color::from_rgba(255, 225, 120, 255),
-            _ => Color::from_rgba(210, 216, 230, 255),
-        };
+    for entry in game.console.structured_entries.iter().skip(start) {
+        let color = console_color(&entry.channel, entry.severity);
         draw_text(
-            &ellipsize(&format!("[{channel}] {message}"), 155),
+            &ellipsize(
+                &format!(
+                    "#{} [{:?}][{}] {}",
+                    entry.frame, entry.severity, entry.channel, entry.message
+                ),
+                155,
+            ),
             rect.x + 14.0,
             y,
             16.0,
             color,
         );
         y += 19.0;
+    }
+}
+
+fn console_color(
+    channel: &str,
+    severity: crate::engine::developer_console::ConsoleSeverity,
+) -> Color {
+    use crate::engine::developer_console::ConsoleSeverity;
+    match severity {
+        ConsoleSeverity::Error => Color::from_rgba(255, 110, 110, 255),
+        ConsoleSeverity::Warning => Color::from_rgba(255, 210, 100, 255),
+        ConsoleSeverity::Debug => Color::from_rgba(145, 152, 172, 255),
+        ConsoleSeverity::Info => match channel {
+            "SCRIPT" => Color::from_rgba(130, 220, 255, 255),
+            "SCENE" => Color::from_rgba(150, 255, 180, 255),
+            "VALIDATOR" => Color::from_rgba(180, 230, 255, 255),
+            "TILEMAP" => Color::from_rgba(255, 225, 120, 255),
+            "SPRITE" => Color::from_rgba(210, 180, 255, 255),
+            _ => Color::from_rgba(210, 216, 230, 255),
+        },
     }
 }
 
@@ -2536,14 +3619,14 @@ fn draw_assets_panel(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
         h: browser_panel.h,
     };
     draw_sources_panel(game, state, sources_panel);
-    draw_rect(browser_panel, Color::from_rgba(18, 22, 30, 238));
+    draw_surface(browser_panel, false);
     draw_rectangle_lines(
         browser_panel.x,
         browser_panel.y,
         browser_panel.w,
         browser_panel.h,
         1.0,
-        Color::from_rgba(62, 74, 96, 255),
+        ui_line_soft(),
     );
 
     let search = RectSpec {
@@ -2624,14 +3707,14 @@ fn draw_assets_panel(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
         h: browser_panel.h - 86.0,
     };
     draw_asset_grid(game, state, asset_view, &assets);
-    draw_rect(preview_panel, Color::from_rgba(21, 25, 34, 238));
+    draw_surface(preview_panel, false);
     draw_rectangle_lines(
         preview_panel.x,
         preview_panel.y,
         preview_panel.w,
         preview_panel.h,
         1.0,
-        Color::from_rgba(62, 74, 96, 255),
+        ui_line_soft(),
     );
     if assets.is_empty() {
         draw_text(
@@ -2646,41 +3729,14 @@ fn draw_assets_panel(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
 }
 
 fn draw_panel_chrome(rect: RectSpec, title: &str, subtitle: &str) {
-    draw_rect(rect, Color::from_rgba(14, 17, 23, 248));
-    draw_rectangle(
-        rect.x,
-        rect.y,
-        rect.w,
-        4.0,
-        Color::from_rgba(76, 151, 255, 255),
-    );
-    draw_text(title, rect.x + 14.0, rect.y + 22.0, 18.0, WHITE);
-    draw_text(
-        subtitle,
-        rect.x + 156.0,
-        rect.y + 22.0,
-        13.0,
-        Color::from_rgba(156, 176, 205, 255),
-    );
+    draw_surface(rect, false);
+    draw_panel_header(rect, title, subtitle);
 }
 
 fn draw_sources_panel(game: &Game, state: &mut EditorState, rect: RectSpec) {
-    draw_rect(rect, Color::from_rgba(18, 22, 30, 238));
-    draw_rectangle_lines(
-        rect.x,
-        rect.y,
-        rect.w,
-        rect.h,
-        1.0,
-        Color::from_rgba(62, 74, 96, 255),
-    );
-    draw_text(
-        "Sources",
-        rect.x + 12.0,
-        rect.y + 23.0,
-        16.0,
-        Color::from_rgba(220, 230, 242, 255),
-    );
+    draw_surface(rect, false);
+    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, ui_line_soft());
+    draw_text("Sources", rect.x + 12.0, rect.y + 23.0, 16.0, ui_text());
     let sources = [
         ("Content", "", "project"),
         ("Assets", "assets/", "assets"),
@@ -2714,33 +3770,21 @@ fn draw_sources_panel(game: &Game, state: &mut EditorState, rect: RectSpec) {
         draw_rect(
             row,
             if selected {
-                Color::from_rgba(45, 73, 112, 255)
+                Color::from_rgba(42, 78, 116, 255)
             } else if hovered {
-                Color::from_rgba(36, 44, 58, 255)
+                Color::from_rgba(33, 45, 64, 255)
             } else {
-                Color::from_rgba(24, 29, 38, 255)
+                Color::from_rgba(18, 24, 35, 255)
             },
         );
-        draw_text(
-            source_icon(icon),
-            row.x + 8.0,
-            y,
-            14.0,
-            Color::from_rgba(126, 205, 255, 255),
-        );
-        draw_text(
-            label,
-            row.x + 30.0,
-            y,
-            14.0,
-            Color::from_rgba(226, 235, 244, 255),
-        );
+        draw_text(source_icon(icon), row.x + 8.0, y, 14.0, ui_accent_2());
+        draw_text(label, row.x + 30.0, y, 14.0, ui_text());
         draw_text(
             &count.to_string(),
             row.x + row.w - 28.0,
             y,
             12.0,
-            Color::from_rgba(150, 166, 192, 255),
+            ui_text_muted(),
         );
         if hovered && is_mouse_button_pressed(MouseButton::Left) {
             state.content_source = label.to_string();
@@ -2765,13 +3809,14 @@ fn draw_sources_panel(game: &Game, state: &mut EditorState, rect: RectSpec) {
 }
 
 fn draw_search_box(state: &mut EditorState, rect: RectSpec) {
-    draw_rect(
+    draw_gradient_rect(
         rect,
         if state.content_search_active {
-            Color::from_rgba(30, 39, 55, 255)
+            Color::from_rgba(30, 43, 63, 255)
         } else {
-            Color::from_rgba(12, 15, 21, 255)
+            Color::from_rgba(16, 21, 31, 255)
         },
+        Color::from_rgba(10, 14, 22, 255),
     );
     draw_rectangle_lines(
         rect.x,
@@ -2780,9 +3825,9 @@ fn draw_search_box(state: &mut EditorState, rect: RectSpec) {
         rect.h,
         1.0,
         if state.content_search_active {
-            Color::from_rgba(76, 151, 255, 255)
+            ui_accent()
         } else {
-            Color::from_rgba(66, 76, 94, 255)
+            ui_line_soft()
         },
     );
     draw_text(
@@ -2790,7 +3835,7 @@ fn draw_search_box(state: &mut EditorState, rect: RectSpec) {
         rect.x + 10.0,
         rect.y + 18.0,
         13.0,
-        Color::from_rgba(122, 142, 172, 255),
+        ui_text_muted(),
     );
     let text = if state.content_search.is_empty() {
         "name, type, path"
@@ -2803,14 +3848,83 @@ fn draw_search_box(state: &mut EditorState, rect: RectSpec) {
         rect.y + 18.0,
         13.0,
         if state.content_search.is_empty() {
-            Color::from_rgba(88, 104, 132, 255)
+            Color::from_rgba(93, 110, 138, 255)
         } else {
-            Color::from_rgba(226, 235, 244, 255)
+            ui_text()
         },
     );
     if contains_mouse(rect) && is_mouse_button_pressed(MouseButton::Left) {
         state.content_search_active = true;
     }
+}
+
+fn draw_graph_node_search_box(state: &mut EditorState, rect: RectSpec) {
+    draw_inline_search_box(
+        rect,
+        "Node",
+        "health, move, ui",
+        &state.graph_node_search,
+        state.graph_node_search_active,
+    );
+    if contains_mouse(rect) && is_mouse_button_pressed(MouseButton::Left) {
+        state.graph_node_search_active = true;
+        state.graph_template_search_active = false;
+        state.code_editor_active = false;
+    }
+}
+
+fn draw_graph_template_search_box(state: &mut EditorState, rect: RectSpec) {
+    draw_inline_search_box(
+        rect,
+        "Search",
+        "blueprint template",
+        &state.graph_template_search,
+        state.graph_template_search_active,
+    );
+    if contains_mouse(rect) && is_mouse_button_pressed(MouseButton::Left) {
+        state.graph_template_search_active = true;
+        state.graph_node_search_active = false;
+        state.code_editor_active = false;
+    }
+}
+
+fn draw_inline_search_box(
+    rect: RectSpec,
+    label: &str,
+    placeholder: &str,
+    value: &str,
+    active: bool,
+) {
+    draw_gradient_rect(
+        rect,
+        if active {
+            Color::from_rgba(30, 43, 63, 255)
+        } else {
+            Color::from_rgba(16, 21, 31, 255)
+        },
+        Color::from_rgba(10, 14, 22, 255),
+    );
+    draw_rectangle_lines(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        1.0,
+        if active { ui_accent() } else { ui_line_soft() },
+    );
+    draw_text(label, rect.x + 8.0, rect.y + 17.0, 12.0, ui_text_muted());
+    let text = if value.is_empty() { placeholder } else { value };
+    draw_text(
+        &ellipsize(text, 34),
+        rect.x + 64.0,
+        rect.y + 17.0,
+        12.0,
+        if value.is_empty() {
+            Color::from_rgba(93, 110, 138, 255)
+        } else {
+            ui_text()
+        },
+    );
 }
 
 fn draw_asset_grid(
@@ -3043,6 +4157,7 @@ fn open_project_file_in_editor(
 fn set_open_file_editor_state(state: &mut EditorState, path: &Path) {
     let extension = path.extension().and_then(|value| value.to_str());
     state.code_editor_active = extension != Some("mfgraph");
+    state.script_window_open = true;
     state.code_cursor_line = 0;
     state.code_cursor_column = 0;
     state.code_scroll_line = 0;
@@ -3338,6 +4453,16 @@ fn draw_programming_panel(game: &mut Game, state: &mut EditorState, rect: RectSp
     if button(rect.x + 712.0, rect.y + 4.0, 88.0, 22.0, "RTS Order", false) {
         game.attach_program_template_to_selected("RTSOrder");
     }
+    if button(
+        rect.x + 808.0,
+        rect.y + 4.0,
+        104.0,
+        22.0,
+        "Blueprints",
+        false,
+    ) {
+        state.blueprint_picker_open = true;
+    }
 
     let mut y = rect.y + 48.0;
     draw_text(
@@ -3348,8 +4473,18 @@ fn draw_programming_panel(game: &mut Game, state: &mut EditorState, rect: RectSp
         Color::from_rgba(125, 216, 205, 255),
     );
     y += 22.0;
-    let templates = game.programming.templates.clone();
-    for template in templates.iter().take(5) {
+    let search_rect = RectSpec {
+        x: rect.x + 14.0,
+        y: y - 16.0,
+        w: 360.0,
+        h: 24.0,
+    };
+    draw_graph_template_search_box(state, search_rect);
+    y += 32.0;
+    let templates = game
+        .programming
+        .search_templates(&state.graph_template_search);
+    for template in templates.iter().take(4) {
         let row = RectSpec {
             x: rect.x + 14.0,
             y: y - 16.0,
@@ -3489,6 +4624,35 @@ fn draw_programming_panel(game: &mut Game, state: &mut EditorState, rect: RectSp
         w: rect.w - 405.0,
         h: rect.h - 140.0,
     };
+    if state.script_window_open {
+        draw_rect(editor, Color::from_rgba(15, 18, 25, 245));
+        draw_rectangle_lines(
+            editor.x,
+            editor.y,
+            editor.w,
+            editor.h,
+            1.0,
+            Color::from_rgba(62, 74, 96, 255),
+        );
+        draw_text(
+            "Editor separado activo. Mueve la ventana flotante para programar scripts o blueprints.",
+            editor.x + 16.0,
+            editor.y + 32.0,
+            14.0,
+            Color::from_rgba(170, 185, 210, 255),
+        );
+        if button(
+            editor.x + 16.0,
+            editor.y + 52.0,
+            112.0,
+            24.0,
+            "Focus Window",
+            false,
+        ) {
+            state.script_window_open = true;
+        }
+        return;
+    }
     if open_file_extension(game).as_deref() == Some("mfgraph") && !state.code_editor_active {
         draw_visual_graph_editor(game, state, editor);
     } else {
@@ -3522,23 +4686,438 @@ fn draw_editor_tab_strip(game: &mut Game, state: &mut EditorState, rect: RectSpe
     let mut x = rect.x + 4.0;
     let max_x = rect.x + rect.w - 6.0;
     for path in tabs.iter().rev().take(8).rev() {
-        let label = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("asset");
+        let label = crate::engine::script_editor::ScriptEditor::tab_label(path);
         let active = current.as_ref() == Some(path);
-        let width = (measure_text(label, None, 12, 1.0).width + 28.0).clamp(82.0, 154.0);
+        let width = (measure_text(&label, None, 12, 1.0).width + 42.0).clamp(92.0, 168.0);
         if x + width > max_x {
             break;
         }
-        if button(x, rect.y + 3.0, width, 20.0, &ellipsize(label, 18), active)
-            && open_project_file_in_editor(game, state, path)
+        if button(
+            x,
+            rect.y + 3.0,
+            width - 24.0,
+            20.0,
+            &ellipsize(&label, 18),
+            active,
+        ) && open_project_file_in_editor(game, state, path)
         {
             game.console
                 .log(format!("Pestana activa: {label}"), "EDITOR");
         }
+        if button(x + width - 23.0, rect.y + 3.0, 20.0, 20.0, "X", false) {
+            match game.script_editor.close_tab(path) {
+                Ok(Some(opened)) => set_open_file_editor_state(state, &opened),
+                Ok(None) => {
+                    state.code_editor_active = false;
+                    state.code_cursor_line = 0;
+                    state.code_cursor_column = 0;
+                }
+                Err(error) => game.console.log(format!("Pestana: {error}"), "ERROR"),
+            }
+            return;
+        }
         x += width + 4.0;
     }
+}
+
+fn draw_floating_script_window(game: &mut Game, state: &mut EditorState, sw: f32, sh: f32) {
+    if !state.script_window_open {
+        return;
+    }
+    state.script_window_rect = update_floating_drag(
+        state,
+        FloatingWindowKind::Script,
+        state.script_window_rect,
+        sw,
+        sh,
+    );
+    let rect = clamp_window_rect(state.script_window_rect, sw, sh);
+    state.script_window_rect = rect;
+    draw_floating_shell(rect, "Detached Programming");
+    if button(
+        rect.x + rect.w - 212.0,
+        rect.y + 5.0,
+        58.0,
+        22.0,
+        "Dock",
+        false,
+    ) {
+        state.script_window_open = false;
+        state.show_console = true;
+        state.bottom_tab = BottomTab::Programming;
+    }
+    if open_file_extension(game).as_deref() == Some("mfgraph")
+        && button(
+            rect.x + rect.w - 148.0,
+            rect.y + 5.0,
+            86.0,
+            22.0,
+            if state.code_editor_active {
+                "Nodes"
+            } else {
+                "JSON"
+            },
+            false,
+        )
+    {
+        state.code_editor_active = !state.code_editor_active;
+    }
+    if button(rect.x + rect.w - 56.0, rect.y + 5.0, 42.0, 22.0, "X", false) {
+        state.script_window_open = false;
+    }
+    draw_text(
+        &ellipsize(
+            game.script_editor
+                .document
+                .path
+                .as_ref()
+                .and_then(|path| path.file_name())
+                .and_then(|value| value.to_str())
+                .unwrap_or("No file open"),
+            56,
+        ),
+        rect.x + 18.0,
+        rect.y + 24.0,
+        15.0,
+        Color::from_rgba(220, 230, 244, 255),
+    );
+    let content = RectSpec {
+        x: rect.x + 10.0,
+        y: rect.y + 38.0,
+        w: rect.w - 20.0,
+        h: rect.h - 48.0,
+    };
+    if open_file_extension(game).as_deref() == Some("mfgraph") && !state.code_editor_active {
+        draw_visual_graph_editor(game, state, content);
+    } else {
+        draw_code_editor(game, state, content);
+    }
+}
+
+fn draw_floating_play_window(game: &mut Game, state: &mut EditorState, sw: f32, sh: f32) {
+    if !state.play_window_open {
+        return;
+    }
+    state.play_window_rect = update_floating_drag(
+        state,
+        FloatingWindowKind::Play,
+        state.play_window_rect,
+        sw,
+        sh,
+    );
+    let rect = clamp_window_rect(state.play_window_rect, sw, sh);
+    state.play_window_rect = rect;
+    draw_floating_shell(rect, "Play Window");
+    let active_external = state.external_play_child.is_some();
+    if button(
+        rect.x + rect.w - 156.0,
+        rect.y + 5.0,
+        86.0,
+        22.0,
+        "Stop Play",
+        false,
+    ) {
+        toggle_play_mode(game, state);
+        return;
+    }
+    if button(
+        rect.x + rect.w - 62.0,
+        rect.y + 5.0,
+        46.0,
+        22.0,
+        "Hide",
+        false,
+    ) {
+        state.play_window_open = false;
+    }
+    let content = RectSpec {
+        x: rect.x + 10.0,
+        y: rect.y + 38.0,
+        w: rect.w - 20.0,
+        h: rect.h - 48.0,
+    };
+    if active_external {
+        draw_rect(content, Color::from_rgba(12, 15, 21, 255));
+        draw_text(
+            "Runtime separado activo",
+            content.x + 18.0,
+            content.y + 34.0,
+            18.0,
+            Color::from_rgba(150, 220, 255, 255),
+        );
+        let path = state
+            .external_play_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "build debug".to_string());
+        draw_text(
+            &ellipsize(&path, 92),
+            content.x + 18.0,
+            content.y + 62.0,
+            13.0,
+            Color::from_rgba(170, 185, 210, 255),
+        );
+        draw_text(
+            "Cierra esta sesión con Stop Play o cierra la ventana runtime.",
+            content.x + 18.0,
+            content.y + 88.0,
+            13.0,
+            Color::from_rgba(132, 150, 176, 255),
+        );
+        return;
+    }
+    if game.mode == "PLAY" {
+        let viewport = Viewport {
+            rect: content,
+            tile: game.grid.tile_size as f32,
+            zoom: game.camera.zoom as f32,
+            camera_x: game.camera.x as f32,
+            camera_y: game.camera.y as f32,
+        };
+        draw_world_player(game, viewport);
+        draw_rectangle_lines(
+            content.x,
+            content.y,
+            content.w,
+            content.h,
+            1.0,
+            Color::from_rgba(88, 140, 210, 255),
+        );
+    } else {
+        draw_rect(content, Color::from_rgba(12, 15, 21, 255));
+        draw_text(
+            "Play no está activo. Pulsa Play para abrir runtime.",
+            content.x + 18.0,
+            content.y + 34.0,
+            14.0,
+            Color::from_rgba(170, 185, 210, 255),
+        );
+    }
+}
+
+fn draw_blueprint_picker_window(game: &mut Game, state: &mut EditorState, sw: f32, sh: f32) {
+    if !state.blueprint_picker_open {
+        return;
+    }
+    state.blueprint_picker_rect = update_floating_drag(
+        state,
+        FloatingWindowKind::BlueprintPicker,
+        state.blueprint_picker_rect,
+        sw,
+        sh,
+    );
+    let rect = clamp_window_rect(state.blueprint_picker_rect, sw, sh);
+    state.blueprint_picker_rect = rect;
+    draw_floating_shell(rect, "Blueprint Library");
+    if button(rect.x + rect.w - 58.0, rect.y + 5.0, 42.0, 22.0, "X", false) {
+        state.blueprint_picker_open = false;
+    }
+
+    let content = RectSpec {
+        x: rect.x + 12.0,
+        y: rect.y + 42.0,
+        w: rect.w - 24.0,
+        h: rect.h - 54.0,
+    };
+    draw_rect(content, Color::from_rgba(13, 16, 23, 245));
+    let search = RectSpec {
+        x: content.x + 12.0,
+        y: content.y + 12.0,
+        w: content.w - 24.0,
+        h: 28.0,
+    };
+    draw_graph_template_search_box(state, search);
+
+    let templates = game
+        .programming
+        .search_templates(&state.graph_template_search);
+    let graph_query = state.graph_template_search.to_lowercase();
+    let graph_assets = game
+        .asset_database
+        .assets
+        .values()
+        .filter(|asset| {
+            asset.asset_type == "VisualGraph"
+                && (graph_query.is_empty()
+                    || asset.name.to_lowercase().contains(&graph_query)
+                    || asset.relative_path.to_lowercase().contains(&graph_query))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let left = RectSpec {
+        x: content.x + 12.0,
+        y: content.y + 58.0,
+        w: content.w * 0.48,
+        h: content.h - 70.0,
+    };
+    let right = RectSpec {
+        x: left.x + left.w + 16.0,
+        y: left.y,
+        w: content.w - left.w - 40.0,
+        h: left.h,
+    };
+    draw_text(
+        "Templates",
+        left.x,
+        left.y,
+        16.0,
+        Color::from_rgba(126, 205, 255, 255),
+    );
+    let mut y = left.y + 26.0;
+    for template in templates.iter().take(9) {
+        let row = RectSpec {
+            x: left.x,
+            y: y - 16.0,
+            w: left.w,
+            h: 42.0,
+        };
+        let hovered = contains_mouse(row);
+        draw_rect(
+            row,
+            if hovered {
+                Color::from_rgba(45, 55, 72, 255)
+            } else {
+                Color::from_rgba(24, 30, 42, 255)
+            },
+        );
+        draw_text(
+            &ellipsize(&template.name, 28),
+            row.x + 9.0,
+            y,
+            14.0,
+            Color::from_rgba(232, 238, 248, 255),
+        );
+        draw_text(
+            &ellipsize(&template.description, 52),
+            row.x + 9.0,
+            y + 18.0,
+            11.0,
+            Color::from_rgba(150, 166, 192, 255),
+        );
+        if button(row.x + row.w - 112.0, row.y + 8.0, 48.0, 22.0, "New", false)
+            && let Ok(path) = game.create_program_asset(&template.name)
+        {
+            set_open_file_editor_state(state, &path);
+            state.script_window_open = true;
+            state.blueprint_picker_open = false;
+        }
+        if button(row.x + row.w - 58.0, row.y + 8.0, 52.0, 22.0, "Use", false) {
+            game.attach_program_template_to_selected(&template.name);
+        }
+        y += 48.0;
+    }
+
+    draw_text(
+        "Project Graphs",
+        right.x,
+        right.y,
+        16.0,
+        Color::from_rgba(126, 205, 255, 255),
+    );
+    let mut y = right.y + 26.0;
+    for asset in graph_assets.iter().take(10) {
+        let row = RectSpec {
+            x: right.x,
+            y: y - 16.0,
+            w: right.w,
+            h: 36.0,
+        };
+        let hovered = contains_mouse(row);
+        draw_rect(
+            row,
+            if hovered {
+                Color::from_rgba(45, 55, 72, 255)
+            } else {
+                Color::from_rgba(24, 30, 42, 255)
+            },
+        );
+        draw_text(
+            &ellipsize(&asset.name, 28),
+            row.x + 9.0,
+            y,
+            14.0,
+            Color::from_rgba(232, 238, 248, 255),
+        );
+        draw_text(
+            &ellipsize(&asset.relative_path, 54),
+            row.x + 9.0,
+            y + 16.0,
+            11.0,
+            Color::from_rgba(150, 166, 192, 255),
+        );
+        if button(row.x + row.w - 64.0, row.y + 7.0, 54.0, 22.0, "Open", false) {
+            open_project_file_in_editor(game, state, asset.relative_path.clone());
+            state.script_window_open = true;
+            state.blueprint_picker_open = false;
+        }
+        y += 40.0;
+    }
+}
+
+fn draw_floating_shell(rect: RectSpec, title: &str) {
+    draw_surface(rect, true);
+    draw_gradient_rect(
+        RectSpec {
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: 33.0,
+        },
+        Color::from_rgba(39, 51, 70, 255),
+        Color::from_rgba(24, 31, 44, 255),
+    );
+    draw_rectangle(rect.x, rect.y + 31.0, rect.w, 2.0, ui_accent_2());
+    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, ui_line());
+    draw_text(title, rect.x + 16.0, rect.y + 18.0, 13.0, ui_text());
+}
+
+fn update_floating_drag(
+    state: &mut EditorState,
+    kind: FloatingWindowKind,
+    mut rect: RectSpec,
+    sw: f32,
+    sh: f32,
+) -> RectSpec {
+    let (mx, my) = mouse_position();
+    let title_bar = RectSpec {
+        x: rect.x,
+        y: rect.y,
+        w: (rect.w - 220.0).max(80.0),
+        h: 32.0,
+    };
+    if contains(title_bar, mx, my) && is_mouse_button_pressed(MouseButton::Left) {
+        state.floating_drag = Some((kind, mx - rect.x, my - rect.y));
+    }
+    if is_mouse_button_down(MouseButton::Left)
+        && let Some((drag_kind, ox, oy)) = state.floating_drag
+        && drag_kind == kind
+    {
+        rect.x = mx - ox;
+        rect.y = my - oy;
+    }
+    if is_mouse_button_released(MouseButton::Left)
+        && state
+            .floating_drag
+            .is_some_and(|(drag_kind, _, _)| drag_kind == kind)
+    {
+        state.floating_drag = None;
+    }
+    clamp_window_rect(rect, sw, sh)
+}
+
+fn clamp_window_rect(mut rect: RectSpec, sw: f32, sh: f32) -> RectSpec {
+    rect.w = rect.w.clamp(420.0, (sw - 24.0).max(420.0));
+    rect.h = rect.h.clamp(260.0, (sh - 24.0).max(260.0));
+    rect.x = rect.x.clamp(8.0, (sw - rect.w - 8.0).max(8.0));
+    rect.y = rect.y.clamp(8.0, (sh - rect.h - 8.0).max(8.0));
+    rect
+}
+
+fn pointer_over_floating_windows(state: &EditorState, mx: f32, my: f32) -> bool {
+    (state.script_window_open && contains(state.script_window_rect, mx, my))
+        || (state.play_window_open && contains(state.play_window_rect, mx, my))
+        || (state.blueprint_picker_open && contains(state.blueprint_picker_rect, mx, my))
 }
 
 fn open_file_extension(game: &Game) -> Option<String> {
@@ -3552,15 +5131,8 @@ fn open_file_extension(game: &Game) -> Option<String> {
 }
 
 fn draw_visual_graph_editor(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
-    draw_rect(rect, Color::from_rgba(15, 18, 25, 245));
-    draw_rectangle_lines(
-        rect.x,
-        rect.y,
-        rect.w,
-        rect.h,
-        1.0,
-        Color::from_rgba(62, 74, 96, 255),
-    );
+    draw_surface(rect, false);
+    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, ui_line_soft());
     let title = game
         .script_editor
         .document
@@ -3574,13 +5146,13 @@ fn draw_visual_graph_editor(game: &mut Game, state: &mut EditorState, rect: Rect
         rect.x + 10.0,
         rect.y + 20.0,
         16.0,
-        Color::from_rgba(232, 238, 248, 255),
+        ui_text(),
     );
     let button_y = rect.y + 5.0;
     if button(
-        rect.x + rect.w - 330.0,
+        rect.x + rect.w - 462.0,
         button_y,
-        72.0,
+        62.0,
         21.0,
         "+ Log",
         false,
@@ -3588,14 +5160,34 @@ fn draw_visual_graph_editor(game: &mut Game, state: &mut EditorState, rect: Rect
         game.add_node_to_open_graph("Log").ok();
     }
     if button(
-        rect.x + rect.w - 252.0,
+        rect.x + rect.w - 394.0,
         button_y,
-        76.0,
+        70.0,
         21.0,
         "+ Move",
         false,
     ) {
         game.add_node_to_open_graph("Move").ok();
+    }
+    if button(
+        rect.x + rect.w - 318.0,
+        button_y,
+        78.0,
+        21.0,
+        "+ Health",
+        false,
+    ) {
+        game.add_node_to_open_graph("SetHealth").ok();
+    }
+    if button(
+        rect.x + rect.w - 234.0,
+        button_y,
+        58.0,
+        21.0,
+        "+ Vel",
+        false,
+    ) {
+        game.add_node_to_open_graph("SetVelocity").ok();
     }
     if button(rect.x + rect.w - 170.0, button_y, 72.0, 21.0, "Save", false)
         && let Err(error) = game.save_open_file()
@@ -3649,7 +5241,7 @@ fn draw_visual_graph_editor(game: &mut Game, state: &mut EditorState, rect: Rect
         let Some(to) = view.nodes.iter().find(|node| node.id == connection.to) else {
             continue;
         };
-        let start = graph_output_pin_pos(canvas, from);
+        let start = graph_output_pin_pos_for(canvas, from, &connection.pin);
         let end = graph_input_pin_pos(canvas, to);
         draw_graph_wire(start, end, Color::from_rgba(112, 184, 255, 255));
     }
@@ -3657,7 +5249,7 @@ fn draw_visual_graph_editor(game: &mut Game, state: &mut EditorState, rect: Rect
         && let Some(from) = view.nodes.iter().find(|node| &node.id == from_id)
     {
         draw_graph_wire(
-            graph_output_pin_pos(canvas, from),
+            graph_output_pin_pos_for(canvas, from, &state.graph_connect_pin),
             mouse_position(),
             Color::from_rgba(255, 210, 115, 255),
         );
@@ -3669,20 +5261,38 @@ fn draw_visual_graph_editor(game: &mut Game, state: &mut EditorState, rect: Rect
     for node in &view.nodes {
         let node_rect = graph_node_rect(canvas, node);
         let input_pin = pin_rect(graph_input_pin_pos(canvas, node));
-        let output_pin = pin_rect(graph_output_pin_pos(canvas, node));
         let hovered = contains_mouse(node_rect);
         let selected = state.graph_selected_node.as_deref() == Some(node.id.as_str());
         draw_graph_node(node_rect, node, selected, hovered);
         draw_pin(input_pin, Color::from_rgba(92, 182, 255, 255));
-        draw_pin(output_pin, Color::from_rgba(255, 186, 92, 255));
+        for pin in &node.output_pins {
+            let output_pin = pin_rect(graph_output_pin_pos_for(canvas, node, pin));
+            draw_pin(output_pin, graph_pin_color(pin));
+            draw_text(
+                pin,
+                output_pin.x - 12.0,
+                output_pin.y - 3.0,
+                9.0,
+                Color::from_rgba(186, 198, 218, 255),
+            );
+        }
 
-        if contains_mouse(output_pin) && is_mouse_button_pressed(MouseButton::Left) {
-            state.graph_connect_from = Some(node.id.clone());
-            state.graph_selected_node = Some(node.id.clone());
+        let mut output_clicked = false;
+        for pin in &node.output_pins {
+            let output_pin = pin_rect(graph_output_pin_pos_for(canvas, node, pin));
+            if contains_mouse(output_pin) && is_mouse_button_pressed(MouseButton::Left) {
+                state.graph_connect_from = Some(node.id.clone());
+                state.graph_connect_pin = pin.clone();
+                state.graph_selected_node = Some(node.id.clone());
+                output_clicked = true;
+            }
+        }
+
+        if output_clicked {
         } else if contains_mouse(input_pin) && is_mouse_button_pressed(MouseButton::Left) {
             if let Some(from) = state.graph_connect_from.clone()
                 && game
-                    .connect_open_graph_nodes(&from, &node.id)
+                    .connect_open_graph_nodes_on_pin(&from, &node.id, &state.graph_connect_pin)
                     .unwrap_or(false)
             {
                 state.graph_connect_from = None;
@@ -3709,7 +5319,11 @@ fn draw_visual_graph_editor(game: &mut Game, state: &mut EditorState, rect: Rect
 }
 
 fn draw_graph_canvas_background(rect: RectSpec) {
-    draw_rect(rect, Color::from_rgba(10, 13, 19, 255));
+    draw_gradient_rect(
+        rect,
+        Color::from_rgba(11, 17, 28, 255),
+        Color::from_rgba(6, 9, 15, 255),
+    );
     let grid = 24.0;
     let mut x = rect.x;
     while x < rect.x + rect.w {
@@ -3719,7 +5333,7 @@ fn draw_graph_canvas_background(rect: RectSpec) {
             x,
             rect.y + rect.h,
             1.0,
-            Color::from_rgba(27, 33, 44, 255),
+            Color::from_rgba(31, 42, 58, 155),
         );
         x += grid;
     }
@@ -3731,7 +5345,7 @@ fn draw_graph_canvas_background(rect: RectSpec) {
             rect.x + rect.w,
             y,
             1.0,
-            Color::from_rgba(27, 33, 44, 255),
+            Color::from_rgba(31, 42, 58, 155),
         );
         y += grid;
     }
@@ -3751,9 +5365,19 @@ fn graph_input_pin_pos(canvas: RectSpec, node: &VisualGraphNodeView) -> (f32, f3
     (rect.x - 1.0, rect.y + 42.0)
 }
 
-fn graph_output_pin_pos(canvas: RectSpec, node: &VisualGraphNodeView) -> (f32, f32) {
+fn graph_output_pin_pos_for(canvas: RectSpec, node: &VisualGraphNodeView, pin: &str) -> (f32, f32) {
     let rect = graph_node_rect(canvas, node);
-    (rect.x + rect.w + 1.0, rect.y + 42.0)
+    let index = node
+        .output_pins
+        .iter()
+        .position(|candidate| candidate == pin)
+        .unwrap_or(0);
+    let total = node.output_pins.len().max(1);
+    let spacing = rect.h / (total as f32 + 1.0);
+    (
+        rect.x + rect.w + 1.0,
+        rect.y + spacing * (index as f32 + 1.0),
+    )
 }
 
 fn pin_rect(pos: (f32, f32)) -> RectSpec {
@@ -3776,6 +5400,16 @@ fn draw_pin(rect: RectSpec, color: Color) {
     );
 }
 
+fn graph_pin_color(pin: &str) -> Color {
+    match pin {
+        "true" => Color::from_rgba(128, 224, 142, 255),
+        "false" => Color::from_rgba(255, 136, 112, 255),
+        "a" => Color::from_rgba(120, 210, 255, 255),
+        "b" => Color::from_rgba(210, 160, 255, 255),
+        _ => Color::from_rgba(255, 186, 92, 255),
+    }
+}
+
 fn draw_graph_wire(start: (f32, f32), end: (f32, f32), color: Color) {
     let mid_x = (start.0 + end.0) * 0.5;
     let points = [start, (mid_x, start.1), (mid_x, end.1), end];
@@ -3786,7 +5420,7 @@ fn draw_graph_wire(start: (f32, f32), end: (f32, f32), color: Color) {
 
 fn draw_graph_node(rect: RectSpec, node: &VisualGraphNodeView, selected: bool, hovered: bool) {
     let color = graph_node_color(&node.node_type);
-    draw_rect(
+    draw_gradient_rect(
         rect,
         if selected {
             Color::from_rgba(38, 52, 72, 255)
@@ -3795,6 +5429,7 @@ fn draw_graph_node(rect: RectSpec, node: &VisualGraphNodeView, selected: bool, h
         } else {
             Color::from_rgba(24, 30, 42, 255)
         },
+        Color::from_rgba(13, 18, 27, 255),
     );
     draw_rectangle(rect.x, rect.y, rect.w, 22.0, color);
     draw_rectangle_lines(
@@ -3814,14 +5449,14 @@ fn draw_graph_node(rect: RectSpec, node: &VisualGraphNodeView, selected: bool, h
         rect.x + 8.0,
         rect.y + 16.0,
         13.0,
-        Color::from_rgba(246, 250, 255, 255),
+        ui_text(),
     );
     draw_text(
         &ellipsize(&node.id, 18),
         rect.x + 10.0,
         rect.y + 42.0,
         12.0,
-        Color::from_rgba(178, 193, 216, 255),
+        ui_text_muted(),
     );
     draw_text(
         &format!(
@@ -3838,13 +5473,22 @@ fn draw_graph_node(rect: RectSpec, node: &VisualGraphNodeView, selected: bool, h
 
 fn graph_node_color(node_type: &str) -> Color {
     match node_type {
-        "EventStart" | "EventUpdate" | "EventClick" | "EventTrigger" => {
-            Color::from_rgba(155, 66, 72, 255)
+        "EventStart" | "EventUpdate" | "EventClick" | "EventTrigger" | "ConstructionScript"
+        | "CustomEvent" | "BroadcastEvent" | "CallEvent" => Color::from_rgba(155, 66, 72, 255),
+        "Move" | "MoveTowards" | "SetVelocity" | "AddForce" | "StopMovement" | "SetSpeed" => {
+            Color::from_rgba(55, 128, 190, 255)
         }
-        "Move" => Color::from_rgba(55, 128, 190, 255),
         "Log" => Color::from_rgba(70, 138, 104, 255),
-        "SetVariable" | "SetEnabled" => Color::from_rgba(132, 102, 182, 255),
-        "Heal" | "Damage" => Color::from_rgba(178, 118, 52, 255),
+        "SetVariable" | "AddVariable" | "SetEnabled" | "SetBlackboard" => {
+            Color::from_rgba(132, 102, 182, 255)
+        }
+        "Heal" | "Damage" | "SetHealth" | "BranchHealth" => Color::from_rgba(178, 118, 52, 255),
+        "BranchVariable" | "Wait" | "Gate" | "OpenGate" | "CloseGate" | "ToggleGate"
+        | "FlipFlop" | "Sequence" | "DoOnce" | "ResetDoOnce" => Color::from_rgba(164, 126, 52, 255),
+        "SetUiText" => Color::from_rgba(63, 142, 160, 255),
+        "ConfigureSpawner" | "AddComponent" | "SetComponentNumber" | "DestroySelf" => {
+            Color::from_rgba(97, 118, 92, 255)
+        }
         _ => Color::from_rgba(82, 96, 118, 255),
     }
 }
@@ -3904,6 +5548,13 @@ fn draw_graph_details(
             12.0,
             Color::from_rgba(190, 202, 222, 255),
         );
+        draw_text(
+            &format!("pins {}", node.output_pins.join(", ")),
+            rect.x + 10.0,
+            rect.y + 134.0,
+            12.0,
+            Color::from_rgba(190, 202, 222, 255),
+        );
     } else {
         draw_text(
             "Select a node or drag from output pin.",
@@ -3942,6 +5593,61 @@ fn draw_graph_details(
             y += 17.0;
         }
     }
+    y += 22.0;
+    draw_text(
+        "Node Library",
+        rect.x + 10.0,
+        y,
+        13.0,
+        Color::from_rgba(126, 205, 255, 255),
+    );
+    y += 8.0;
+    let search = RectSpec {
+        x: rect.x + 10.0,
+        y,
+        w: rect.w - 20.0,
+        h: 24.0,
+    };
+    draw_graph_node_search_box(state, search);
+    y += 34.0;
+    let definitions = game
+        .programming
+        .search_node_catalog(&state.graph_node_search);
+    for definition in definitions.iter().take(5) {
+        let row = RectSpec {
+            x: rect.x + 10.0,
+            y: y - 14.0,
+            w: rect.w - 20.0,
+            h: 22.0,
+        };
+        let hovered = contains_mouse(row);
+        draw_rect(
+            row,
+            if hovered {
+                Color::from_rgba(45, 55, 72, 255)
+            } else {
+                Color::from_rgba(27, 33, 44, 255)
+            },
+        );
+        draw_text(
+            &ellipsize(&definition.label, 18),
+            row.x + 7.0,
+            y,
+            12.0,
+            Color::from_rgba(232, 238, 248, 255),
+        );
+        draw_text(
+            &ellipsize(&definition.category, 9),
+            row.x + row.w - 64.0,
+            y,
+            11.0,
+            Color::from_rgba(150, 166, 192, 255),
+        );
+        if hovered && is_mouse_button_pressed(MouseButton::Left) {
+            game.add_node_to_open_graph(&definition.node_type).ok();
+        }
+        y += 24.0;
+    }
     if button(
         rect.x + 10.0,
         rect.y + rect.h - 34.0,
@@ -3956,22 +5662,16 @@ fn draw_graph_details(
 }
 
 fn draw_code_editor(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
-    draw_rect(
+    draw_gradient_rect(
         rect,
         if state.code_editor_active {
             Color::from_rgba(25, 32, 42, 245)
         } else {
             Color::from_rgba(21, 25, 34, 235)
         },
+        Color::from_rgba(12, 16, 24, 245),
     );
-    draw_rectangle_lines(
-        rect.x,
-        rect.y,
-        rect.w,
-        rect.h,
-        1.0,
-        Color::from_rgba(62, 74, 96, 255),
-    );
+    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, ui_line_soft());
     let title = game
         .script_editor
         .document
@@ -3990,7 +5690,7 @@ fn draw_code_editor(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
         rect.x + 10.0,
         rect.y + 20.0,
         16.0,
-        Color::from_rgba(232, 238, 248, 255),
+        ui_text(),
     );
     let button_y = rect.y + 5.0;
     if button(
@@ -4173,6 +5873,15 @@ fn draw_prefab_panel(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
         } else {
             game.instantiate_first_prefab(x, y).ok();
         }
+    }
+    if button(rect.x + 302.0, rect.y + 31.0, 68.0, 22.0, "Apply", false) {
+        game.apply_selected_to_prefab_source().ok();
+    }
+    if button(rect.x + 378.0, rect.y + 31.0, 70.0, 22.0, "Revert", false) {
+        game.revert_selected_prefab_instance().ok();
+    }
+    if button(rect.x + 456.0, rect.y + 31.0, 70.0, 22.0, "Detach", false) {
+        game.detach_selected_prefab_instance();
     }
 
     let list = RectSpec {
@@ -4364,6 +6073,376 @@ fn selected_prefab_path(game: &Game, state: &EditorState) -> Option<String> {
         .map(|asset| asset.relative_path.clone())
 }
 
+fn draw_scenes_panel(game: &mut Game, _state: &mut EditorState, rect: RectSpec) {
+    let scenes = game.scene_names().unwrap_or_default();
+    draw_panel_chrome(
+        rect,
+        "Scenes",
+        &format!(
+            "{} loaded | current {} | stack {}",
+            game.scene_manager.loaded_scenes.len(),
+            game.scene_manager.current_scene,
+            game.scene_manager.scene_stack.len()
+        ),
+    );
+    if button(rect.x + 14.0, rect.y + 31.0, 86.0, 22.0, "Save", false) {
+        save_project(game);
+    }
+    if button(rect.x + 108.0, rect.y + 31.0, 92.0, 22.0, "New", false) {
+        game.create_empty_scene("NewScene").ok();
+    }
+    if button(
+        rect.x + 208.0,
+        rect.y + 31.0,
+        104.0,
+        22.0,
+        "Duplicate",
+        false,
+    ) {
+        game.scene_manager.duplicate_current_scene("SceneCopy").ok();
+    }
+    if button(rect.x + 320.0, rect.y + 31.0, 104.0, 22.0, "Restart", false) {
+        game.restart_scene().ok();
+    }
+
+    let list = RectSpec {
+        x: rect.x + 10.0,
+        y: rect.y + 64.0,
+        w: (rect.w * 0.52).max(420.0),
+        h: rect.h - 74.0,
+    };
+    let details = RectSpec {
+        x: list.x + list.w + 10.0,
+        y: list.y,
+        w: rect.w - list.w - 30.0,
+        h: list.h,
+    };
+    draw_rect(list, Color::from_rgba(18, 22, 30, 238));
+    draw_rectangle_lines(
+        list.x,
+        list.y,
+        list.w,
+        list.h,
+        1.0,
+        Color::from_rgba(62, 74, 96, 255),
+    );
+    draw_text(
+        "Project Scenes",
+        list.x + 12.0,
+        list.y + 24.0,
+        16.0,
+        Color::from_rgba(232, 238, 248, 255),
+    );
+
+    let mut y = list.y + 54.0;
+    for scene in scenes
+        .iter()
+        .take(((list.h - 58.0) / 36.0).max(0.0) as usize)
+    {
+        let row = RectSpec {
+            x: list.x + 10.0,
+            y: y - 19.0,
+            w: list.w - 20.0,
+            h: 31.0,
+        };
+        let active = game.scene_manager.current_scene == *scene;
+        let hovered = contains_mouse(row);
+        draw_rect(
+            row,
+            if active {
+                Color::from_rgba(52, 73, 108, 255)
+            } else if hovered {
+                Color::from_rgba(36, 45, 58, 255)
+            } else {
+                Color::from_rgba(25, 30, 40, 255)
+            },
+        );
+        draw_text(
+            &ellipsize(scene, 42),
+            row.x + 12.0,
+            y,
+            15.0,
+            Color::from_rgba(232, 238, 248, 255),
+        );
+        if button(
+            row.x + row.w - 224.0,
+            row.y + 5.0,
+            62.0,
+            20.0,
+            "Load",
+            active,
+        ) {
+            game.load_scene(scene).ok();
+        }
+        if button(row.x + row.w - 154.0, row.y + 5.0, 72.0, 20.0, "Add", false) {
+            game.load_scene_additive(scene).ok();
+        }
+        if button(row.x + row.w - 74.0, row.y + 5.0, 62.0, 20.0, "Push", false) {
+            game.push_scene(scene).ok();
+        }
+        y += 36.0;
+    }
+
+    draw_rect(details, Color::from_rgba(21, 25, 34, 238));
+    draw_rectangle_lines(
+        details.x,
+        details.y,
+        details.w,
+        details.h,
+        1.0,
+        Color::from_rgba(62, 74, 96, 255),
+    );
+    draw_text(
+        "Runtime Scene State",
+        details.x + 12.0,
+        details.y + 24.0,
+        16.0,
+        Color::from_rgba(232, 238, 248, 255),
+    );
+    let rows = [
+        format!("Current: {}", game.scene_manager.current_scene),
+        format!("Loaded: {}", game.scene_manager.loaded_scenes.join(", ")),
+        format!("Stack: {}", game.scene_manager.scene_stack.join(" > ")),
+        format!(
+            "Transition: {}",
+            game.scene_manager
+                .transition
+                .as_ref()
+                .map(|transition| format!(
+                    "{} -> {} {:.0}%",
+                    transition.from_scene,
+                    transition.to_scene,
+                    if transition.duration <= 0.0 {
+                        100.0
+                    } else {
+                        transition.elapsed / transition.duration * 100.0
+                    }
+                ))
+                .unwrap_or_else(|| "none".to_string())
+        ),
+    ];
+    let mut y = details.y + 58.0;
+    for row in rows {
+        draw_text(
+            &ellipsize(&row, 72),
+            details.x + 12.0,
+            y,
+            14.0,
+            Color::from_rgba(190, 204, 226, 255),
+        );
+        y += 22.0;
+    }
+}
+
+fn draw_sprite_editor_panel(game: &mut Game, _state: &mut EditorState, rect: RectSpec) {
+    let canvas = game.sprite_editor.clone();
+    draw_panel_chrome(
+        rect,
+        "Sprite Editor",
+        &format!(
+            "{}x{} | zoom {} | {}",
+            canvas.width,
+            canvas.height,
+            canvas.zoom,
+            canvas
+                .last_path
+                .as_ref()
+                .and_then(|path| path.file_name())
+                .and_then(|value| value.to_str())
+                .unwrap_or("unsaved")
+        ),
+    );
+    if button(rect.x + 14.0, rect.y + 31.0, 76.0, 22.0, "New 16", false) {
+        game.new_sprite_canvas(16, 16);
+    }
+    if button(rect.x + 98.0, rect.y + 31.0, 76.0, 22.0, "New 32", false) {
+        game.new_sprite_canvas(32, 32);
+    }
+    if button(rect.x + 182.0, rect.y + 31.0, 68.0, 22.0, "Clear", false) {
+        game.sprite_editor.clear(SpriteColor::TRANSPARENT);
+    }
+    if button(rect.x + 258.0, rect.y + 31.0, 66.0, 22.0, "Flip H", false) {
+        game.sprite_editor.flip_horizontal();
+    }
+    if button(rect.x + 332.0, rect.y + 31.0, 66.0, 22.0, "Flip V", false) {
+        game.sprite_editor.flip_vertical();
+    }
+    if button(rect.x + 406.0, rect.y + 31.0, 62.0, 22.0, "Rotate", false) {
+        game.sprite_editor.rotate_right();
+    }
+    if button(rect.x + 476.0, rect.y + 31.0, 72.0, 22.0, "Save", false) {
+        game.save_sprite_canvas("Sprite").ok();
+    }
+
+    let grid_size = (rect.h - 96.0).min(rect.w * 0.45).max(96.0);
+    let pixel = (grid_size / canvas.width.max(canvas.height) as f32)
+        .floor()
+        .max(2.0);
+    let origin_x = rect.x + 18.0;
+    let origin_y = rect.y + 72.0;
+    draw_rect(
+        RectSpec {
+            x: origin_x - 6.0,
+            y: origin_y - 6.0,
+            w: canvas.width as f32 * pixel + 12.0,
+            h: canvas.height as f32 * pixel + 12.0,
+        },
+        Color::from_rgba(24, 28, 36, 255),
+    );
+    for y in 0..canvas.height {
+        for x in 0..canvas.width {
+            let color = canvas
+                .get_pixel(x, y)
+                .map(sprite_editor_color)
+                .unwrap_or(Color::from_rgba(0, 0, 0, 0));
+            let sx = origin_x + x as f32 * pixel;
+            let sy = origin_y + y as f32 * pixel;
+            draw_rectangle(sx, sy, pixel, pixel, checker_color(x, y));
+            draw_rectangle(sx, sy, pixel, pixel, color);
+            draw_rectangle_lines(sx, sy, pixel, pixel, 1.0, Color::from_rgba(0, 0, 0, 50));
+        }
+    }
+
+    let (mx, my) = mouse_position();
+    let local_x = ((mx - origin_x) / pixel).floor() as i32;
+    let local_y = ((my - origin_y) / pixel).floor() as i32;
+    if local_x >= 0
+        && local_y >= 0
+        && (local_x as u32) < canvas.width
+        && (local_y as u32) < canvas.height
+    {
+        if is_mouse_button_down(MouseButton::Left) {
+            game.paint_sprite_pixel(
+                local_x as u32,
+                local_y as u32,
+                game.sprite_editor.active_color,
+            );
+        }
+        if is_mouse_button_down(MouseButton::Right) {
+            game.paint_sprite_pixel(
+                local_x as u32,
+                local_y as u32,
+                game.sprite_editor.secondary_color,
+            );
+        }
+    }
+
+    let inspector = RectSpec {
+        x: origin_x + canvas.width as f32 * pixel + 26.0,
+        y: origin_y - 6.0,
+        w: rect.w - (origin_x + canvas.width as f32 * pixel + 40.0 - rect.x),
+        h: rect.h - 84.0,
+    };
+    draw_rect(inspector, Color::from_rgba(21, 25, 34, 238));
+    draw_rectangle_lines(
+        inspector.x,
+        inspector.y,
+        inspector.w,
+        inspector.h,
+        1.0,
+        Color::from_rgba(62, 74, 96, 255),
+    );
+    draw_text(
+        "Palette",
+        inspector.x + 12.0,
+        inspector.y + 24.0,
+        16.0,
+        Color::from_rgba(232, 238, 248, 255),
+    );
+    let swatches = [
+        SpriteColor {
+            r: 255,
+            g: 255,
+            b: 255,
+            a: 255,
+        },
+        SpriteColor {
+            r: 32,
+            g: 36,
+            b: 44,
+            a: 255,
+        },
+        SpriteColor {
+            r: 88,
+            g: 196,
+            b: 255,
+            a: 255,
+        },
+        SpriteColor {
+            r: 255,
+            g: 105,
+            b: 105,
+            a: 255,
+        },
+        SpriteColor {
+            r: 120,
+            g: 225,
+            b: 145,
+            a: 255,
+        },
+        SpriteColor {
+            r: 255,
+            g: 212,
+            b: 120,
+            a: 255,
+        },
+        SpriteColor::TRANSPARENT,
+    ];
+    let mut sx = inspector.x + 12.0;
+    let mut sy = inspector.y + 42.0;
+    for color in swatches {
+        let swatch = RectSpec {
+            x: sx,
+            y: sy,
+            w: 28.0,
+            h: 28.0,
+        };
+        draw_rectangle(swatch.x, swatch.y, swatch.w, swatch.h, checker_color(0, 0));
+        draw_rectangle(
+            swatch.x,
+            swatch.y,
+            swatch.w,
+            swatch.h,
+            sprite_editor_color(color),
+        );
+        draw_rectangle_lines(
+            swatch.x,
+            swatch.y,
+            swatch.w,
+            swatch.h,
+            1.0,
+            Color::from_rgba(88, 100, 124, 255),
+        );
+        if contains_mouse(swatch) && is_mouse_button_pressed(MouseButton::Left) {
+            game.sprite_editor.active_color = color;
+        }
+        sx += 36.0;
+        if sx + 28.0 > inspector.x + inspector.w - 12.0 {
+            sx = inspector.x + 12.0;
+            sy += 36.0;
+        }
+    }
+    draw_text(
+        "Left paints active color; right paints secondary.",
+        inspector.x + 12.0,
+        inspector.y + inspector.h - 26.0,
+        13.0,
+        Color::from_rgba(145, 162, 190, 255),
+    );
+}
+
+fn sprite_editor_color(color: SpriteColor) -> Color {
+    Color::from_rgba(color.r, color.g, color.b, color.a)
+}
+
+fn checker_color(x: u32, y: u32) -> Color {
+    if (x + y).is_multiple_of(2) {
+        Color::from_rgba(42, 47, 58, 255)
+    } else {
+        Color::from_rgba(30, 34, 42, 255)
+    }
+}
+
 fn draw_profiler_panel(game: &Game, rect: RectSpec) {
     draw_text("Profiler", rect.x + 14.0, rect.y + 20.0, 18.0, WHITE);
     let mut x = rect.x + 120.0;
@@ -4481,6 +6560,87 @@ fn draw_profiler_panel(game: &Game, rect: RectSpec) {
     }
 }
 
+const COMMAND_PALETTE_ITEMS: &[(&str, &str)] = &[
+    ("Spawn game object", "spawn_object"),
+    ("Spawn sprite entity", "spawn_sprite"),
+    ("Spawn advanced unit", "spawn_unit"),
+    ("Spawn enemy AI", "spawn_enemy"),
+    ("Spawn resource node", "spawn_resource"),
+    ("Spawn RTS command center", "spawn_rts_base"),
+    ("Queue worker on selected building", "queue_worker"),
+    ("Place Barracks construction site", "place_barracks"),
+    ("Create TopDown starter scene", "starter_topdown"),
+    ("Create Platformer starter scene", "starter_platformer"),
+    ("Create RTS skirmish scene", "rts_skirmish"),
+    ("Toggle Play Mode snapshot", "toggle_play"),
+    ("Open Play Window", "play_window"),
+    ("Open detached script window", "script_window"),
+    ("Add Health to selected", "add_health"),
+    ("Add NavAgent to selected", "add_nav"),
+    ("Add VisualScript to selected", "add_visual"),
+    ("Attach Graph LogAndMove", "attach_graph_log"),
+    ("Attach Graph PlayerVitalMovement", "attach_graph_player"),
+    ("Attach Graph HealthCombat", "attach_graph_combat"),
+    ("Attach Graph HealthPickup", "attach_graph_health"),
+    ("Attach Graph RTSOrder", "attach_graph_rts"),
+    (
+        "Attach Graph InventoryEconomyLoop",
+        "attach_graph_inventory",
+    ),
+    ("Attach Graph QuestAbilityLoop", "attach_graph_quest"),
+    (
+        "Attach Graph RTSProductionEconomy",
+        "attach_graph_rts_economy",
+    ),
+    ("Open Blueprint Picker", "blueprint_picker"),
+    ("Create visual graph asset", "create_graph"),
+    (
+        "Create inventory economy graph asset",
+        "create_graph_inventory",
+    ),
+    ("Create quest ability graph asset", "create_graph_quest"),
+    (
+        "Create RTS production graph asset",
+        "create_graph_rts_economy",
+    ),
+    ("Create sound cue asset", "asset_sound"),
+    ("Create material asset", "asset_material"),
+    ("Create UI Canvas HUD", "ui_canvas_hud"),
+    ("Create UI Canvas label", "ui_canvas_label"),
+    ("Save selected as prefab", "save_prefab"),
+    ("Create prefab variant", "variant_prefab"),
+    ("Instantiate first prefab", "instantiate_prefab"),
+    ("Apply selected prefab source", "apply_prefab"),
+    ("Revert selected prefab", "revert_prefab"),
+    ("Detach selected prefab", "detach_prefab"),
+    ("Open Scene Browser", "scene_browser"),
+    ("Open Sprite Editor", "sprite_editor"),
+    ("Export project package", "export_project_zip"),
+    ("Import project package", "import_project_zip"),
+    ("Workspace world", "workspace_world"),
+    ("Workspace scripting", "workspace_script"),
+    ("Workspace prefab", "workspace_prefab"),
+    ("Workspace profiling", "workspace_profile"),
+    ("Duplicate selected", "duplicate"),
+    ("Delete selected", "delete"),
+    ("Save project", "save_project"),
+    ("Save scene", "save"),
+    ("New scene", "new_scene"),
+    ("Recover autosave", "recover_autosave"),
+    ("Validate project", "validate"),
+    ("Refresh asset database", "refresh"),
+    ("Build manifest", "manifest"),
+    ("Export runtime debug", "export_debug"),
+    ("Export runtime release", "export_release"),
+    ("Package debug", "package_debug"),
+    ("Package release", "package_release"),
+    ("Create RTS template files", "template_rts"),
+    ("Create ActionRPG template files", "template_actionrpg"),
+    ("Create Survival template files", "template_survival"),
+    ("Cycle tilemap layer", "cycle_layer"),
+    ("Clear console", "clear_console"),
+];
+
 fn draw_command_palette(game: &mut Game, state: &mut EditorState, sw: f32, sh: f32) {
     let panel_h = (sh - 50.0).clamp(560.0, 760.0);
     let panel = RectSpec {
@@ -4489,73 +6649,50 @@ fn draw_command_palette(game: &mut Game, state: &mut EditorState, sw: f32, sh: f
         w: 600.0,
         h: panel_h,
     };
-    draw_rectangle(0.0, 0.0, sw, sh, Color::from_rgba(0, 0, 0, 105));
-    draw_rect(panel, Color::from_rgba(28, 32, 42, 248));
-    draw_rectangle_lines(
-        panel.x,
-        panel.y,
-        panel.w,
-        panel.h,
-        1.0,
-        Color::from_rgba(88, 98, 120, 255),
-    );
+    draw_rectangle(0.0, 0.0, sw, sh, Color::from_rgba(0, 0, 0, 145));
+    draw_surface(panel, true);
+    draw_panel_header(panel, "Command Palette", "instant engine actions");
     draw_text(
-        "Command Palette",
-        panel.x + 18.0,
-        panel.y + 30.0,
-        24.0,
-        WHITE,
-    );
-    draw_text(
-        "Click para ejecutar. Esc cierra.",
+        "Escribe para buscar. Enter ejecuta. Esc cierra.",
         panel.x + 18.0,
         panel.y + 54.0,
         15.0,
-        Color::from_rgba(165, 176, 196, 255),
+        ui_text_muted(),
     );
 
-    let commands = [
-        ("Spawn advanced unit", "spawn_unit"),
-        ("Spawn enemy AI", "spawn_enemy"),
-        ("Spawn resource node", "spawn_resource"),
-        ("Spawn RTS command center", "spawn_rts_base"),
-        ("Queue worker on selected building", "queue_worker"),
-        ("Place Barracks construction site", "place_barracks"),
-        ("Create TopDown starter scene", "starter_topdown"),
-        ("Create Platformer starter scene", "starter_platformer"),
-        ("Create RTS skirmish scene", "rts_skirmish"),
-        ("Toggle Play Mode (snapshot)", "toggle_play"),
-        ("Add Health to selected", "add_health"),
-        ("Add NavAgent to selected", "add_nav"),
-        ("Add VisualScript to selected", "add_visual"),
-        ("Attach Graph LogAndMove", "attach_graph_log"),
-        ("Attach Graph HealthPickup", "attach_graph_health"),
-        ("Attach Graph RTSOrder", "attach_graph_rts"),
-        ("Create visual graph asset", "create_graph"),
-        ("Save selected as prefab", "save_prefab"),
-        ("Create prefab variant", "variant_prefab"),
-        ("Instantiate first prefab", "instantiate_prefab"),
-        ("Workspace world", "workspace_world"),
-        ("Workspace scripting", "workspace_script"),
-        ("Workspace prefab", "workspace_prefab"),
-        ("Workspace profiling", "workspace_profile"),
-        ("Duplicate selected", "duplicate"),
-        ("Delete selected", "delete"),
-        ("Save scene", "save"),
-        ("Validate project", "validate"),
-        ("Refresh asset database", "refresh"),
-        ("Build manifest", "manifest"),
-        ("Export runtime debug", "export_debug"),
-        ("Export runtime release", "export_release"),
-        ("Create RTS template files", "template_rts"),
-        ("Create ActionRPG template files", "template_actionrpg"),
-        ("Create Survival template files", "template_survival"),
-        ("Cycle tilemap layer", "cycle_layer"),
-        ("Clear console", "clear_console"),
-    ];
+    let search = RectSpec {
+        x: panel.x + 14.0,
+        y: panel.y + 66.0,
+        w: panel.w - 28.0,
+        h: 30.0,
+    };
+    draw_gradient_rect(
+        search,
+        Color::from_rgba(23, 31, 46, 255),
+        Color::from_rgba(12, 16, 24, 255),
+    );
+    draw_rectangle_lines(search.x, search.y, search.w, search.h, 1.0, ui_line());
+    let query_label = if state.command_palette_search.is_empty() {
+        "buscar comando, blueprint, inventario, economia..."
+    } else {
+        &state.command_palette_search
+    };
+    draw_text(
+        &ellipsize(query_label, 68),
+        search.x + 10.0,
+        search.y + 21.0,
+        15.0,
+        if state.command_palette_search.is_empty() {
+            ui_text_muted()
+        } else {
+            ui_text()
+        },
+    );
 
-    let mut y = panel.y + 78.0;
-    for (label, command) in commands {
+    let commands = filtered_palette_commands(&state.command_palette_search);
+    let mut y = panel.y + 116.0;
+    let max_rows = ((panel.h - 158.0) / 22.0).floor().max(1.0) as usize;
+    for (label, command) in commands.into_iter().take(max_rows) {
         let row = RectSpec {
             x: panel.x + 14.0,
             y: y - 18.0,
@@ -4566,18 +6703,19 @@ fn draw_command_palette(game: &mut Game, state: &mut EditorState, sw: f32, sh: f
         draw_rect(
             row,
             if hovered {
-                Color::from_rgba(58, 67, 86, 255)
+                Color::from_rgba(41, 58, 82, 255)
             } else {
-                Color::from_rgba(37, 43, 55, 255)
+                Color::from_rgba(23, 30, 43, 255)
             },
         );
-        draw_text(
-            label,
-            row.x + 10.0,
-            y,
-            16.0,
-            Color::from_rgba(232, 236, 245, 255),
+        draw_rectangle(
+            row.x,
+            row.y,
+            3.0,
+            row.h,
+            if hovered { ui_accent() } else { ui_line_soft() },
         );
+        draw_text(label, row.x + 10.0, y, 16.0, ui_text());
         if hovered && is_mouse_button_pressed(MouseButton::Left) {
             run_palette_command(game, state, command);
             state.command_palette = false;
@@ -4596,8 +6734,44 @@ fn draw_command_palette(game: &mut Game, state: &mut EditorState, sw: f32, sh: f
         panel.x + 18.0,
         panel.y + panel.h - 18.0,
         14.0,
-        Color::from_rgba(160, 172, 196, 255),
+        ui_text_muted(),
     );
+}
+
+fn filtered_palette_commands(query: &str) -> Vec<(&'static str, &'static str)> {
+    let query = query.trim().to_lowercase();
+    let mut scored = COMMAND_PALETTE_ITEMS
+        .iter()
+        .filter_map(|(label, command)| {
+            let score = palette_score(&query, label, command);
+            if query.is_empty() || score >= 0.58 {
+                Some((score, *label, *command))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.cmp(b.1))
+    });
+    scored
+        .into_iter()
+        .map(|(_, label, command)| (label, command))
+        .collect()
+}
+
+fn palette_score(query: &str, label: &str, command: &str) -> f64 {
+    if query.is_empty() {
+        return 1.0;
+    }
+    let label = label.to_lowercase();
+    let command = command.to_lowercase();
+    if label.contains(query) || command.contains(query) {
+        return 1.0;
+    }
+    jaro_winkler(&label, query).max(jaro_winkler(&command, query))
 }
 
 fn run_palette_command(game: &mut Game, state: &mut EditorState, command: &str) {
@@ -4635,7 +6809,7 @@ fn run_palette_command(game: &mut Game, state: &mut EditorState, command: &str) 
             game.create_platformer_starter();
         }
         "rts_skirmish" => game.create_rts_skirmish(),
-        "toggle_play" => toggle_play_mode(game),
+        "toggle_play" => toggle_play_mode(game, state),
         "add_health" => {
             if let Some(id) = selected_id(game) {
                 add_component(game, id, "Health");
@@ -4656,6 +6830,16 @@ fn run_palette_command(game: &mut Game, state: &mut EditorState, command: &str) 
             state.show_console = true;
             state.bottom_tab = BottomTab::Programming;
         }
+        "attach_graph_player" => {
+            game.attach_program_template_to_selected("PlayerVitalMovement");
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Programming;
+        }
+        "attach_graph_combat" => {
+            game.attach_program_template_to_selected("HealthCombat");
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Programming;
+        }
         "attach_graph_health" => {
             game.attach_program_template_to_selected("HealthPickup");
             state.show_console = true;
@@ -4666,10 +6850,57 @@ fn run_palette_command(game: &mut Game, state: &mut EditorState, command: &str) 
             state.show_console = true;
             state.bottom_tab = BottomTab::Programming;
         }
+        "attach_graph_inventory" => {
+            game.attach_program_template_to_selected("InventoryEconomyLoop");
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Programming;
+            state.script_window_open = true;
+        }
+        "attach_graph_quest" => {
+            game.attach_program_template_to_selected("QuestAbilityLoop");
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Programming;
+            state.script_window_open = true;
+        }
+        "attach_graph_rts_economy" => {
+            game.attach_program_template_to_selected("RTSProductionEconomy");
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Programming;
+            state.script_window_open = true;
+        }
         "create_graph" => {
             if let Ok(path) = game.create_program_asset("LogAndMove") {
                 set_open_file_editor_state(state, &path);
             }
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Programming;
+        }
+        "create_graph_inventory" => {
+            if let Ok(path) = game.create_program_asset("InventoryEconomyLoop") {
+                set_open_file_editor_state(state, &path);
+                state.script_window_open = true;
+            }
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Programming;
+        }
+        "create_graph_quest" => {
+            if let Ok(path) = game.create_program_asset("QuestAbilityLoop") {
+                set_open_file_editor_state(state, &path);
+                state.script_window_open = true;
+            }
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Programming;
+        }
+        "create_graph_rts_economy" => {
+            if let Ok(path) = game.create_program_asset("RTSProductionEconomy") {
+                set_open_file_editor_state(state, &path);
+                state.script_window_open = true;
+            }
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Programming;
+        }
+        "blueprint_picker" => {
+            state.blueprint_picker_open = true;
             state.show_console = true;
             state.bottom_tab = BottomTab::Programming;
         }
@@ -4712,6 +6943,21 @@ fn run_palette_command(game: &mut Game, state: &mut EditorState, command: &str) 
             state.show_console = true;
             state.bottom_tab = BottomTab::Prefabs;
         }
+        "apply_prefab" => {
+            game.apply_selected_to_prefab_source().ok();
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Prefabs;
+        }
+        "revert_prefab" => {
+            game.revert_selected_prefab_instance().ok();
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Prefabs;
+        }
+        "detach_prefab" => {
+            game.detach_selected_prefab_instance();
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Prefabs;
+        }
         "workspace_world" => game.set_workspace_mode(WorkspaceMode::WorldBuilding),
         "workspace_script" => {
             game.set_workspace_mode(WorkspaceMode::Scripting);
@@ -4733,13 +6979,36 @@ fn run_palette_command(game: &mut Game, state: &mut EditorState, command: &str) 
         "save_project" => save_project(game),
         "save" => save_scene(game),
         "new_scene" => create_new_scene(game),
-        "command_palette" => state.command_palette = true,
+        "command_palette" => {
+            state.command_palette = true;
+            state.command_palette_search.clear();
+        }
         "toggle_browser" => {
             state.show_console = !state.show_console;
             state.bottom_tab = BottomTab::Assets;
         }
+        "scene_browser" => {
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Scenes;
+        }
+        "sprite_editor" => {
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Sprites;
+        }
         "toggle_hierarchy" => state.show_hierarchy = !state.show_hierarchy,
         "toggle_inspector" => state.show_inspector = !state.show_inspector,
+        "script_window" => {
+            state.script_window_open = true;
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Programming;
+        }
+        "play_window" => {
+            if game.mode == "PLAY" || state.external_play_child.is_some() {
+                state.play_window_open = true;
+            } else {
+                launch_play_window(game, state);
+            }
+        }
         "validate" => {
             game.validate_project();
         }
@@ -4751,6 +7020,8 @@ fn run_palette_command(game: &mut Game, state: &mut EditorState, command: &str) 
         "manifest" => build_manifest(game),
         "export_debug" => export_runtime(game, ExportProfile::Debug),
         "export_release" => export_runtime(game, ExportProfile::Release),
+        "export_project_zip" => export_project_zip(game),
+        "import_project_zip" => import_project_zip(game),
         "package_debug" => {
             if let Err(e) = game.package_distributable(ExportProfile::Debug, "game") {
                 game.console.log(format!("Package: {e}"), "ERROR");
@@ -4780,11 +7051,16 @@ fn run_palette_command(game: &mut Game, state: &mut EditorState, command: &str) 
 }
 
 fn draw_status_bar(game: &Game, state: &EditorState, rect: RectSpec) {
-    draw_rect(rect, Color::from_rgba(30, 34, 43, 255));
+    draw_gradient_rect(
+        rect,
+        Color::from_rgba(23, 29, 40, 255),
+        Color::from_rgba(13, 17, 25, 255),
+    );
+    draw_rectangle(rect.x, rect.y, rect.w, 1.0, ui_line_soft());
     let layer = &game.tilemap_layers.layers[game.tilemap_layers.active_layer].name;
     draw_text(
         &format!(
-            "FPS {:.0} | frame {:.2} ms avg {:.2} | {} | zoom {:.2} | camera {:.0},{:.0} | tool {} | layer {} | {}{}{}",
+            "FPS {:.0} | frame {:.2} ms avg {:.2} | {} | dock egui_dock | zoom {:.2} | camera {:.0},{:.0} | tool {} | layer {} | {}{}{}",
             game.diagnostics.fps,
             game.diagnostics.frame_time_ms,
             game.diagnostics.average_frame_time_ms,
@@ -4806,7 +7082,27 @@ fn draw_status_bar(game: &Game, state: &EditorState, rect: RectSpec) {
         rect.x + 12.0,
         rect.y + 18.0,
         16.0,
-        Color::from_rgba(205, 212, 226, 255),
+        ui_text_muted(),
+    );
+    draw_status_pill(
+        RectSpec {
+            x: rect.x + rect.w - 246.0,
+            y: rect.y + 4.0,
+            w: 92.0,
+            h: 18.0,
+        },
+        "UI 0.9.1.1",
+        true,
+    );
+    draw_status_pill(
+        RectSpec {
+            x: rect.x + rect.w - 146.0,
+            y: rect.y + 4.0,
+            w: 126.0,
+            h: 18.0,
+        },
+        game.mode.as_str(),
+        game.mode == "PLAY",
     );
 }
 
@@ -4878,6 +7174,52 @@ fn export_runtime(game: &mut Game, profile: ExportProfile) {
         Err(error) => game
             .console
             .log(format!("Error exportando runtime: {error}"), "ERROR"),
+    }
+}
+
+fn export_project_zip(game: &mut Game) {
+    match game.export_project_package() {
+        Ok(report) => game.console.log(
+            format!(
+                "Project package: {} ({} files, {} bytes)",
+                report.archive_path.display(),
+                report.files,
+                report.bytes
+            ),
+            "PROJECT",
+        ),
+        Err(error) => game
+            .console
+            .report_error("PROJECT", "Export project package", error),
+    }
+}
+
+fn import_project_zip(game: &mut Game) {
+    let archive_path = game.project_paths.builds.join("import.mfpkg.zip");
+    if !archive_path.exists() {
+        game.console.log(
+            format!("Import espera un paquete en {}", archive_path.display()),
+            "WARNING",
+        );
+        return;
+    }
+    let destination_root = game
+        .project_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("projects"));
+    match game.import_project_package(&archive_path, destination_root) {
+        Ok(report) => game.console.log(
+            format!(
+                "Imported package: {} ({} files)",
+                report.project_path.display(),
+                report.files
+            ),
+            "PROJECT",
+        ),
+        Err(error) => game
+            .console
+            .report_error("PROJECT", "Import project package", error),
     }
 }
 
@@ -5020,6 +7362,16 @@ fn entity_color(entity: &GameObject) -> Color {
     Color::from_rgba(95, 215, 170, 255)
 }
 
+fn entity_type_accent(tag: &str) -> Color {
+    match tag {
+        "Player" => Color::from_rgba(85, 178, 255, 255),
+        "Enemy" => Color::from_rgba(255, 105, 105, 255),
+        "Resource" => Color::from_rgba(245, 190, 78, 255),
+        "UI" => Color::from_rgba(160, 210, 255, 255),
+        _ => Color::from_rgba(95, 215, 170, 255),
+    }
+}
+
 fn tile_color(value: i32, layer_index: usize) -> Color {
     let palette = [
         Color::from_rgba(72, 126, 88, 210),
@@ -5058,6 +7410,181 @@ fn draw_rect(rect: RectSpec, color: Color) {
     draw_rectangle(rect.x, rect.y, rect.w, rect.h, color);
 }
 
+fn ui_bg() -> Color {
+    Color::from_rgba(9, 12, 18, 255)
+}
+
+fn ui_panel() -> Color {
+    Color::from_rgba(19, 24, 34, 248)
+}
+
+fn ui_panel_alt() -> Color {
+    Color::from_rgba(25, 31, 43, 248)
+}
+
+fn ui_line() -> Color {
+    Color::from_rgba(73, 88, 112, 255)
+}
+
+fn ui_line_soft() -> Color {
+    Color::from_rgba(49, 61, 80, 255)
+}
+
+fn ui_text() -> Color {
+    Color::from_rgba(237, 243, 252, 255)
+}
+
+fn ui_text_muted() -> Color {
+    Color::from_rgba(151, 166, 190, 255)
+}
+
+fn ui_accent() -> Color {
+    Color::from_rgba(83, 178, 255, 255)
+}
+
+fn ui_accent_2() -> Color {
+    Color::from_rgba(111, 226, 196, 255)
+}
+
+fn ui_warning() -> Color {
+    Color::from_rgba(255, 202, 92, 255)
+}
+
+fn blend_color(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    Color {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+        a: a.a + (b.a - a.a) * t,
+    }
+}
+
+fn draw_gradient_rect(rect: RectSpec, top: Color, bottom: Color) {
+    let steps = rect.h.max(1.0).min(96.0) as usize;
+    if steps == 0 {
+        return;
+    }
+    let step_h = rect.h / steps as f32;
+    for index in 0..steps {
+        let t = if steps <= 1 {
+            0.0
+        } else {
+            index as f32 / (steps - 1) as f32
+        };
+        draw_rectangle(
+            rect.x,
+            rect.y + index as f32 * step_h,
+            rect.w,
+            step_h + 1.0,
+            blend_color(top, bottom, t),
+        );
+    }
+}
+
+fn draw_editor_backdrop(sw: f32, sh: f32) {
+    draw_gradient_rect(
+        RectSpec {
+            x: 0.0,
+            y: 0.0,
+            w: sw,
+            h: sh,
+        },
+        Color::from_rgba(12, 16, 24, 255),
+        Color::from_rgba(6, 8, 13, 255),
+    );
+    draw_rectangle(0.0, 0.0, sw, 2.0, Color::from_rgba(107, 213, 255, 80));
+}
+
+fn draw_surface(rect: RectSpec, active: bool) {
+    draw_rectangle(
+        rect.x + 4.0,
+        rect.y + 6.0,
+        rect.w,
+        rect.h,
+        Color::from_rgba(0, 0, 0, 70),
+    );
+    draw_gradient_rect(
+        rect,
+        if active {
+            Color::from_rgba(31, 42, 62, 252)
+        } else {
+            ui_panel_alt()
+        },
+        ui_panel(),
+    );
+    draw_rectangle(
+        rect.x,
+        rect.y,
+        rect.w,
+        1.0,
+        Color::from_rgba(255, 255, 255, 22),
+    );
+    draw_rectangle_lines(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        1.0,
+        if active { ui_accent() } else { ui_line_soft() },
+    );
+}
+
+fn draw_panel_header(rect: RectSpec, title: &str, subtitle: &str) {
+    draw_gradient_rect(
+        RectSpec {
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: 42.0_f32.min(rect.h),
+        },
+        Color::from_rgba(35, 44, 61, 245),
+        Color::from_rgba(24, 30, 42, 235),
+    );
+    draw_rectangle(rect.x, rect.y, 4.0, rect.h.min(42.0), ui_accent());
+    draw_text(title, rect.x + 14.0, rect.y + 26.0, 19.0, ui_text());
+    if !subtitle.is_empty() {
+        draw_text(
+            &ellipsize(subtitle, 42),
+            rect.x + 128.0,
+            rect.y + 25.0,
+            12.0,
+            ui_text_muted(),
+        );
+    }
+}
+
+fn draw_status_pill(rect: RectSpec, label: &str, active: bool) {
+    draw_gradient_rect(
+        rect,
+        if active {
+            Color::from_rgba(42, 84, 122, 255)
+        } else {
+            Color::from_rgba(31, 38, 51, 255)
+        },
+        if active {
+            Color::from_rgba(25, 54, 84, 255)
+        } else {
+            Color::from_rgba(22, 27, 37, 255)
+        },
+    );
+    draw_rectangle_lines(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        1.0,
+        if active { ui_accent() } else { ui_line_soft() },
+    );
+    draw_text(
+        &ellipsize(label, (rect.w / 7.0).max(3.0) as usize),
+        rect.x + 8.0,
+        rect.y + rect.h * 0.68,
+        12.0,
+        if active { WHITE } else { ui_text_muted() },
+    );
+}
+
 fn draw_macos_chrome(rect: RectSpec) {
     let y = rect.y + 16.0;
     for (index, color) in [
@@ -5093,16 +7620,25 @@ fn command_modifier_down() -> bool {
 fn button(x: f32, y: f32, w: f32, h: f32, label: &str, active: bool) -> bool {
     let rect = RectSpec { x, y, w, h };
     let hovered = contains_mouse(rect);
-    let color = if active {
-        Color::from_rgba(68, 126, 196, 255)
+    let (top, bottom) = if active {
+        (
+            Color::from_rgba(55, 122, 176, 255),
+            Color::from_rgba(26, 74, 118, 255),
+        )
     } else if hovered {
-        Color::from_rgba(58, 66, 82, 255)
+        (
+            Color::from_rgba(49, 61, 80, 255),
+            Color::from_rgba(34, 42, 58, 255),
+        )
     } else {
-        Color::from_rgba(38, 44, 56, 255)
+        (
+            Color::from_rgba(31, 38, 51, 255),
+            Color::from_rgba(22, 27, 38, 255),
+        )
     };
-    draw_rectangle(x, y + 1.0, w, h, Color::from_rgba(0, 0, 0, 55));
-    draw_rectangle(x, y, w, h, color);
-    draw_rectangle(x, y, w, 1.0, Color::from_rgba(255, 255, 255, 24));
+    draw_rectangle(x, y + 2.0, w, h, Color::from_rgba(0, 0, 0, 70));
+    draw_gradient_rect(rect, top, bottom);
+    draw_rectangle(x, y, w, 1.0, Color::from_rgba(255, 255, 255, 28));
     draw_rectangle_lines(
         x,
         y,
@@ -5110,19 +7646,13 @@ fn button(x: f32, y: f32, w: f32, h: f32, label: &str, active: bool) -> bool {
         h,
         1.0,
         if hovered || active {
-            Color::from_rgba(120, 150, 205, 255)
+            Color::from_rgba(124, 202, 255, 255)
         } else {
-            Color::from_rgba(78, 86, 104, 255)
+            Color::from_rgba(67, 80, 104, 255)
         },
     );
     if active {
-        draw_rectangle(
-            x + 3.0,
-            y + h - 3.0,
-            w - 6.0,
-            2.0,
-            Color::from_rgba(150, 210, 255, 255),
-        );
+        draw_rectangle(x + 3.0, y + h - 3.0, w - 6.0, 2.0, ui_accent_2());
     }
     let font_size = 14;
     let shown = ellipsize(label, (w / 7.0).max(3.0) as usize);
@@ -5132,7 +7662,7 @@ fn button(x: f32, y: f32, w: f32, h: f32, label: &str, active: bool) -> bool {
         x + ((w - measure.width) * 0.5).max(4.0),
         y + h * 0.5 + measure.height * 0.34,
         font_size as f32,
-        WHITE,
+        ui_text(),
     );
     hovered && is_mouse_button_pressed(MouseButton::Left)
 }
@@ -5229,6 +7759,7 @@ pub async fn run_exported_runtime_player() {
         let sh = screen_height();
         let nav = EditorState::default();
         handle_camera_input(&mut game, dt, &nav);
+        handle_character_input(&mut game);
         game.run_headless_once(dt);
         clear_background(Color::from_rgba(18, 20, 26, 255));
         let viewport = Viewport {
@@ -5245,7 +7776,7 @@ pub async fn run_exported_runtime_player() {
         };
         draw_world_player(&game, viewport);
         draw_text(
-            "Runtime player — WASD mover cámara, Q/E zoom, Esc salir",
+            "Runtime player — WASD mover jugador, Space salto, Shift correr, X dash, Q/E zoom, Esc salir",
             14.0,
             18.0,
             16.0,
