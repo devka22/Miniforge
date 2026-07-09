@@ -121,7 +121,7 @@ fn default_box(
     collider: &crate::engine::component::Component,
 ) -> ColliderBuilder {
     ColliderBuilder::cuboid(
-        (collider.get_f64("width", entity.width).max(0.001) * entity.scale_x * 0.5) as Real,
-        (collider.get_f64("height", entity.height).max(0.001) * entity.scale_y * 0.5) as Real,
+        (collider.get_f64("width", entity.width).max(0.001) * entity.scale_x.abs() * 0.5) as Real,
+        (collider.get_f64("height", entity.height).max(0.001) * entity.scale_y.abs() * 0.5) as Real,
     )
 }

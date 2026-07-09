@@ -1,0 +1,10 @@
+{
+  "id": "scene_report",
+  "label": "Scene Production Report",
+  "entry": "tools/scene_report.py",
+  "menu_path": "Tools/Production/Scene Report",
+  "description": "Summarize the active scene, selection and indexed assets.",
+  "allow_generated_writes": false,
+  "trusted": true,
+  "timeout_ms": 5000
+}

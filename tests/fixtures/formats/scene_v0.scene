@@ -1,0 +1,15 @@
+{
+  "version": "0.8.0",
+  "scene_name": "LegacyLevel",
+  "objects": [
+    {
+      "id": 42,
+      "name": "LegacyEntity"
+    }
+  ],
+  "camera": {
+    "x": 4,
+    "y": 8,
+    "zoom": 2.0
+  }
+}

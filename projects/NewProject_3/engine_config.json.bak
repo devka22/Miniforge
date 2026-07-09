@@ -1,0 +1,42 @@
+{
+  "autosave": true,
+  "autosave_interval_seconds": 60,
+  "config_version": 3,
+  "editor": {
+    "fallback_assets": true,
+    "open_created_assets": true,
+    "script_hot_reload": true
+  },
+  "engine_alt_name": "MiniForge",
+  "engine_name": "MiniForge",
+  "engine_version": "0.9.3",
+  "logs": {
+    "engine": "logs/engine.log",
+    "error": "logs/error.log",
+    "file": "logs/miniforge.log",
+    "level": "info"
+  },
+  "project_name": "NewProject_3",
+  "rendering": {
+    "backend": "macroquad",
+    "enable_3d": false,
+    "experimental_wgpu": false,
+    "gpu_particles": false,
+    "max_texture_size": 8192,
+    "pixel_perfect": true,
+    "post_processing": true,
+    "prefer_metal_on_macos": true,
+    "render_scale": 1.0,
+    "sprite_batching": true,
+    "tilemap_chunk_batching": true,
+    "vsync": true
+  },
+  "runtime": {
+    "performance_class": "desktop",
+    "quality_preset": "balanced",
+    "scheduler_budget_ms": 16.67,
+    "system_audit_on_export": true
+  },
+  "safe_mode": true,
+  "start_scene": "main.scene"
+}

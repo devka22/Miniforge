@@ -1,0 +1,14 @@
+{
+  "name": "@miniforge/editor-plugins",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build:example": "esbuild examples/hello-plugin/src/index.ts --bundle --format=iife --global-name=MiniForgeHelloPlugin --outfile=dist/hello-plugin.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0"
+  }
+}

@@ -1,0 +1,92 @@
+{
+  "asset_hot_reload": true,
+  "debug": true,
+  "fixed_timestep": 0.016666667,
+  "fullscreen": false,
+  "game_name": "Neon Sombra",
+  "graphics": {
+    "backface_culling_3d": true,
+    "light_caster_padding": 0.5,
+    "light_sample_budget": 28,
+    "lighting_enabled": true,
+    "lod_cull_pixels": 3,
+    "lod_enabled": true,
+    "lod_far_pixels": 18,
+    "lod_near_pixels": 48,
+    "max_drawn_entities": 520,
+    "max_shadow_lights": 8,
+    "max_source_cores": 42,
+    "minimap_entity_budget": 58,
+    "occlusion_culling": true,
+    "occlusion_padding": 0,
+    "profiles": {
+      "high": {
+        "light_caster_padding": 1,
+        "light_sample_budget": 44,
+        "lod_far_pixels": 14,
+        "max_drawn_entities": 900,
+        "max_shadow_lights": 14,
+        "max_source_cores": 72,
+        "minimap_entity_budget": 84
+      },
+      "low": {
+        "light_caster_padding": 0,
+        "light_sample_budget": 18,
+        "lod_far_pixels": 24,
+        "max_drawn_entities": 260,
+        "max_shadow_lights": 0,
+        "max_source_cores": 18,
+        "minimap_entity_budget": 32
+      },
+      "medium": {
+        "light_caster_padding": 0.5,
+        "light_sample_budget": 28,
+        "lod_far_pixels": 18,
+        "max_drawn_entities": 520,
+        "max_shadow_lights": 8,
+        "max_source_cores": 42,
+        "minimap_entity_budget": 58
+      },
+      "ultra": {
+        "light_caster_padding": 1.4,
+        "light_sample_budget": 72,
+        "lod_far_pixels": 10,
+        "max_drawn_entities": 1600,
+        "max_shadow_lights": 32,
+        "max_source_cores": 128,
+        "minimap_entity_budget": 140
+      }
+    },
+    "quality": "medium",
+    "shadow_lights_enabled": true,
+    "view_frustum_culling": true
+  },
+  "max_entities": 5000,
+  "max_frame_steps": 5,
+  "max_particles": 20000,
+  "parallel_asset_scan": true,
+  "performance_class": "desktop",
+  "prefer_metal_on_macos": true,
+  "quality_preset": "medium",
+  "script_scheduler": {
+    "budget_bypass_priority": 100,
+    "default_update_interval": 0,
+    "distant_update_interval": 1.1,
+    "enabled": true,
+    "max_update_scripts_per_frame": 58
+  },
+  "start_scene": "main.scene",
+  "streaming_enabled": true,
+  "target_fps": 60,
+  "window_height": 720,
+  "window_width": 1280,
+  "worker_threads": "auto",
+  "world_simulation": {
+    "day_length_seconds": 1333,
+    "day_night_enabled": true,
+    "vehicle_headlights": true,
+    "weather_enabled": true,
+    "weather_max_seconds": 50,
+    "weather_min_seconds": 28
+  }
+}

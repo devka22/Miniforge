@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BUILD_DIR="${MINIFORGE_QT_BUILD_DIR:-"$ROOT/build/editor-qt"}"
+CMAKE_BIN="${MINIFORGE_QT_CMAKE:-cmake}"
+
+"$ROOT/scripts/configure-editor"
+"$CMAKE_BIN" --build "$BUILD_DIR" "$@"

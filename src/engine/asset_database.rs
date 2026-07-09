@@ -1,13 +1,19 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
+use std::io::{self, Read};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use petgraph::algo::{kosaraju_scc, toposort};
+use petgraph::graph::{DiGraph, NodeIndex};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::engine::asset_tools::AssetTools;
+
+pub const ASSET_METADATA_FORMAT: &str = "miniforge.asset-metadata";
+pub const ASSET_METADATA_SCHEMA_VERSION: u64 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AssetRecord {
@@ -19,6 +25,10 @@ pub struct AssetRecord {
     pub size_bytes: u64,
     #[serde(default)]
     pub modified_unix: u64,
+    /// Content fingerprint used only to reconcile externally moved files.
+    /// References continue to use `guid`, never this value.
+    #[serde(default)]
+    pub content_hash: String,
     pub import_settings: Value,
     #[serde(default)]
     pub labels: Vec<String>,
@@ -33,6 +43,27 @@ pub struct AssetDatabase {
     pub project_root: PathBuf,
     pub metadata_file: PathBuf,
     pub assets: BTreeMap<String, AssetRecord>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AssetDependencyReport {
+    /// Dependencies appear before the assets that consume them.
+    pub build_order: Vec<String>,
+    pub cycles: Vec<Vec<String>>,
+    pub edge_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ScannedAsset {
+    relative_path: String,
+    name: String,
+    asset_type: String,
+    size_bytes: u64,
+    modified_unix: u64,
+    content_hash: String,
+    import_settings: Value,
+    labels: Vec<String>,
+    compatibility: Vec<String>,
 }
 
 impl AssetDatabase {
@@ -54,6 +85,27 @@ impl AssetDatabase {
         self.assets.clear();
         if self.metadata_file.exists() {
             let value = AssetTools::read_json(&self.metadata_file)?;
+            if let Some(format) = value.get("format").and_then(Value::as_str)
+                && format != ASSET_METADATA_FORMAT
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("asset metadata format no soportado: {format}"),
+                ));
+            }
+            let schema_version = value
+                .get("schema_version")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if schema_version > ASSET_METADATA_SCHEMA_VERSION {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "asset metadata schema {schema_version} is newer than supported {}",
+                        ASSET_METADATA_SCHEMA_VERSION
+                    ),
+                ));
+            }
             if let Some(assets) = value.get("assets").and_then(Value::as_object) {
                 for (path, record) in assets {
                     if let Ok(record) = serde_json::from_value::<AssetRecord>(record.clone()) {
@@ -66,7 +118,15 @@ impl AssetDatabase {
     }
 
     pub fn save_metadata(&self) -> io::Result<()> {
-        AssetTools::write_json(&self.metadata_file, &json!({"assets": self.assets}))
+        AssetTools::write_json(
+            &self.metadata_file,
+            &json!({
+                "format": ASSET_METADATA_FORMAT,
+                "schema_version": ASSET_METADATA_SCHEMA_VERSION,
+                "engine_version": crate::engine::version::ENGINE_VERSION,
+                "assets": self.assets,
+            }),
+        )
     }
 
     pub fn scan(&mut self) -> io::Result<()> {
@@ -78,52 +138,174 @@ impl AssetDatabase {
             paths.settings,
             paths.prefabs,
         ];
-        let mut discovered = BTreeSet::new();
+        let mut file_paths = Vec::new();
         for root in scan_roots {
             if !root.exists() {
                 continue;
             }
-            for path in walk_files(&root)? {
-                let relative = path
-                    .strip_prefix(&self.project_root)
-                    .unwrap_or(&path)
+            file_paths.extend(walk_files(&root)?);
+        }
+        file_paths.sort();
+        file_paths.dedup();
+
+        let project_root = self.project_root.clone();
+        let scanned = file_paths
+            .par_iter()
+            .map(|path| {
+                let relative_path = path
+                    .strip_prefix(&project_root)
+                    .unwrap_or(path)
                     .to_string_lossy()
                     .to_string();
-                discovered.insert(relative.clone());
-                let stats = file_stats(&path);
-                let detected_type = detect_asset_type(&path);
-                let labels = labels_for(&path, &detected_type);
-                let compatibility = compatibility_for(&path, &detected_type, stats.0);
-                let record = self
-                    .assets
-                    .entry(relative.clone())
-                    .or_insert_with(|| AssetRecord {
-                        guid: make_guid(&relative),
-                        relative_path: relative.clone(),
-                        name: path
-                            .file_stem()
-                            .and_then(|value| value.to_str())
-                            .unwrap_or("asset")
-                            .to_string(),
-                        asset_type: detected_type.clone(),
-                        size_bytes: stats.0,
-                        modified_unix: stats.1,
-                        import_settings: default_import_settings(&path),
-                        labels: labels.clone(),
-                        compatibility: compatibility.clone(),
-                        dependencies: Vec::new(),
-                    });
-                record.relative_path = relative;
-                record.asset_type = detected_type;
-                record.size_bytes = stats.0;
-                record.modified_unix = stats.1;
-                record.labels = labels;
-                record.compatibility = compatibility;
+                let (size_bytes, modified_unix) = file_stats(path);
+                let content_hash = file_content_hash(path).unwrap_or_default();
+                let asset_type = detect_asset_type(path);
+                let labels = labels_for(path, &asset_type);
+                let compatibility = compatibility_for(path, &asset_type, size_bytes);
+                let name = path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("asset")
+                    .to_string();
+                ScannedAsset {
+                    relative_path,
+                    name,
+                    asset_type,
+                    size_bytes,
+                    modified_unix,
+                    content_hash,
+                    import_settings: default_import_settings(path),
+                    labels,
+                    compatibility,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let mut previous = std::mem::take(&mut self.assets);
+        let mut next = BTreeMap::new();
+        let mut moved_paths = BTreeMap::new();
+        for scanned in scanned {
+            let existing_path = scanned.relative_path.clone();
+            let moved_from = if previous.contains_key(&existing_path) {
+                None
+            } else {
+                unique_content_match(&previous, &scanned)
+            };
+            let mut record = if let Some(record) = previous.remove(&existing_path) {
+                record
+            } else if let Some(old_path) = moved_from.as_ref() {
+                let record = previous.remove(old_path).expect("matched asset exists");
+                moved_paths.insert(old_path.clone(), existing_path.clone());
+                record
+            } else {
+                AssetRecord {
+                    guid: make_guid(&scanned.relative_path),
+                    relative_path: scanned.relative_path.clone(),
+                    name: scanned.name.clone(),
+                    asset_type: scanned.asset_type.clone(),
+                    size_bytes: scanned.size_bytes,
+                    modified_unix: scanned.modified_unix,
+                    content_hash: scanned.content_hash.clone(),
+                    import_settings: scanned.import_settings.clone(),
+                    labels: scanned.labels.clone(),
+                    compatibility: scanned.compatibility.clone(),
+                    dependencies: Vec::new(),
+                }
+            };
+            record.relative_path = scanned.relative_path;
+            record.name = scanned.name;
+            record.asset_type = scanned.asset_type;
+            record.size_bytes = scanned.size_bytes;
+            record.modified_unix = scanned.modified_unix;
+            record.content_hash = scanned.content_hash;
+            record.labels = scanned.labels;
+            record.compatibility = scanned.compatibility;
+            next.insert(record.relative_path.clone(), record);
+        }
+        for record in next.values_mut() {
+            for dependency in &mut record.dependencies {
+                if let Some(next_path) = moved_paths.get(dependency) {
+                    *dependency = next_path.clone();
+                }
             }
         }
-        self.assets
-            .retain(|relative, _| discovered.contains(relative));
+        self.assets = next;
         self.save_metadata()
+    }
+
+    /// Resolves a persistent asset identity to its current project-relative path.
+    pub fn path_for_guid(&self, guid: &str) -> Option<&str> {
+        self.assets
+            .values()
+            .find(|record| record.guid == guid)
+            .map(|record| record.relative_path.as_str())
+    }
+
+    pub fn record_for_guid(&self, guid: &str) -> Option<&AssetRecord> {
+        self.assets.values().find(|record| record.guid == guid)
+    }
+
+    /// Moves an asset and its metadata as one logical operation.
+    ///
+    /// If persisting metadata fails, both the in-memory table and filesystem
+    /// move are rolled back, so references never observe a half-moved asset.
+    pub fn move_asset(
+        &mut self,
+        source_relative: &str,
+        target_relative: &str,
+    ) -> io::Result<PathBuf> {
+        validate_relative_asset_path(source_relative)?;
+        validate_relative_asset_path(target_relative)?;
+        let source = self.project_root.join(source_relative);
+        let target = self.project_root.join(target_relative);
+        if !source.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("asset no encontrado: {source_relative}"),
+            ));
+        }
+        if target.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("asset destino ya existe: {target_relative}"),
+            ));
+        }
+        let Some(mut record) = self.assets.get(source_relative).cloned() else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("asset sin metadata: {source_relative}"),
+            ));
+        };
+        let previous_assets = self.assets.clone();
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::rename(&source, &target)?;
+        self.assets.remove(source_relative);
+        record.relative_path = target_relative.to_string();
+        record.name = target
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("asset")
+            .to_string();
+        self.assets.insert(target_relative.to_string(), record);
+        for candidate in self.assets.values_mut() {
+            for dependency in &mut candidate.dependencies {
+                if dependency == source_relative {
+                    *dependency = target_relative.to_string();
+                }
+            }
+        }
+        if let Err(error) = self.save_metadata() {
+            self.assets = previous_assets;
+            if let Err(rollback_error) = fs::rename(&target, &source) {
+                return Err(io::Error::other(format!(
+                    "metadata move failed: {error}; filesystem rollback failed: {rollback_error}"
+                )));
+            }
+            return Err(error);
+        }
+        Ok(target)
     }
 
     pub fn get_import_settings(&self, relative_path: &str) -> Value {
@@ -153,6 +335,7 @@ impl AssetDatabase {
                 asset_type: detect_asset_type(Path::new(relative_path)),
                 size_bytes: 0,
                 modified_unix: 0,
+                content_hash: String::new(),
                 import_settings: default_import_settings(Path::new(relative_path)),
                 labels: labels_for(
                     Path::new(relative_path),
@@ -236,10 +419,63 @@ impl AssetDatabase {
             })
             .collect()
     }
+
+    /// Builds a real directed dependency graph for ordering imports/builds and
+    /// surfacing cycles in the editor.
+    pub fn dependency_report(&self) -> AssetDependencyReport {
+        let mut graph = DiGraph::<String, ()>::new();
+        let mut nodes = BTreeMap::<String, NodeIndex>::new();
+        for path in self.assets.keys() {
+            nodes.insert(path.clone(), graph.add_node(path.clone()));
+        }
+        let mut edge_count = 0;
+        for (owner, record) in &self.assets {
+            let Some(&owner_node) = nodes.get(owner) else {
+                continue;
+            };
+            for dependency in &record.dependencies {
+                let Some(&dependency_node) = nodes.get(dependency) else {
+                    continue;
+                };
+                // dependency -> consumer ensures topological build order.
+                graph.add_edge(dependency_node, owner_node, ());
+                edge_count += 1;
+            }
+        }
+
+        let cycles = kosaraju_scc(&graph)
+            .into_iter()
+            .filter(|component| component.len() > 1)
+            .map(|component| {
+                let mut paths = component
+                    .into_iter()
+                    .map(|node| graph[node].clone())
+                    .collect::<Vec<_>>();
+                paths.sort();
+                paths
+            })
+            .collect::<Vec<_>>();
+        let build_order = toposort(&graph, None)
+            .unwrap_or_else(|_| graph.node_indices().collect())
+            .into_iter()
+            .map(|node| graph[node].clone())
+            .collect();
+        AssetDependencyReport {
+            build_order,
+            cycles,
+            edge_count,
+        }
+    }
 }
 
 pub fn stable_guid(seed: &str) -> String {
     format!("{:016x}", hash_seed(seed))
+}
+
+/// Generates a new persistent identity. Use this at asset creation time and
+/// store the result; do not recompute it after a rename.
+pub fn new_asset_guid(seed: &str) -> String {
+    make_guid(seed)
 }
 
 fn make_guid(seed: &str) -> String {
@@ -248,6 +484,62 @@ fn make_guid(seed: &str) -> String {
         .map(|duration| duration.as_nanos() as u64)
         .unwrap_or(0);
     format!("{:016x}{:016x}", hash_seed(seed), now)
+}
+
+fn unique_content_match(
+    previous: &BTreeMap<String, AssetRecord>,
+    scanned: &ScannedAsset,
+) -> Option<String> {
+    if scanned.content_hash.is_empty() {
+        return None;
+    }
+    let mut matches = previous
+        .iter()
+        .filter(|(_, record)| {
+            record.content_hash == scanned.content_hash
+                && record.size_bytes == scanned.size_bytes
+                && record.asset_type == scanned.asset_type
+        })
+        .map(|(path, _)| path.clone());
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+fn validate_relative_asset_path(path: &str) -> io::Result<()> {
+    let path = Path::new(path);
+    let invalid = path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        });
+    if invalid || path.as_os_str().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "asset path must stay inside the project",
+        ));
+    }
+    Ok(())
+}
+
+fn file_content_hash(path: &Path) -> io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut hash = 1469598103934665603_u64;
+    let mut length = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        length = length.saturating_add(read as u64);
+        for byte in &buffer[..read] {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(1099511628211);
+        }
+    }
+    Ok(format!("{hash:016x}-{length:016x}"))
 }
 
 fn hash_seed(seed: &str) -> u64 {
@@ -267,6 +559,15 @@ fn detect_asset_type(path: &Path) -> String {
         .to_lowercase();
     if filename.ends_with(".spritesheet.json") {
         return "SpriteSheet".to_string();
+    }
+    if filename.ends_with(".spriteframes") || filename.ends_with(".spriteframes.json") {
+        return "SpriteFrames2D".to_string();
+    }
+    if filename.ends_with(".anim2d.json") {
+        return "AnimationBlueprint2D".to_string();
+    }
+    if filename.ends_with(".flipbook.json") {
+        return "FlipbookAnimation2D".to_string();
     }
     if filename.ends_with(".atlas.json") {
         return "Atlas".to_string();
@@ -289,6 +590,22 @@ fn detect_asset_type(path: &Path) -> String {
     if filename.ends_with(".shader.json") {
         return "Shader".to_string();
     }
+    let path_text = path.to_string_lossy().to_lowercase();
+    let image_like = matches!(
+        path.extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_lowercase()
+            .as_str(),
+        "png" | "jpg" | "jpeg" | "bmp" | "gif" | "webp" | "aseprite"
+    );
+    if image_like
+        && (path_text.contains("/textures/")
+            || path_text.contains("\\textures\\")
+            || looks_like_material_texture(&filename))
+    {
+        return "Texture2D".to_string();
+    }
     match path
         .extension()
         .and_then(|value| value.to_str())
@@ -297,10 +614,11 @@ fn detect_asset_type(path: &Path) -> String {
         .as_str()
     {
         "png" | "jpg" | "jpeg" | "bmp" | "gif" | "webp" | "aseprite" => "Sprite",
+        "svg" | "svgz" => "VectorImage",
         "wav" | "mp3" | "ogg" | "flac" => "Audio",
         "prefab" => "Prefab",
         "scene" => "Scene",
-        "rhai" => "RhaiScript",
+        "luau" => "LuauScript",
         "mfgraph" => "VisualGraph",
         "mat" | "material" => "Material",
         "glsl" | "wgsl" => "Shader",
@@ -315,12 +633,21 @@ fn detect_asset_type(path: &Path) -> String {
 
 fn default_import_settings(path: &Path) -> Value {
     match detect_asset_type(path).as_str() {
-        "Sprite" => json!({
+        "Sprite" | "VectorImage" => json!({
             "filter": "nearest",
             "include_in_build": true,
             "pixels_per_unit": 32,
             "generate_mips": false,
             "atlas": null,
+            "rasterize_on_import": detect_asset_type(path) == "VectorImage",
+        }),
+        "Texture2D" => json!({
+            "filter": "linear",
+            "include_in_build": true,
+            "generate_mips": true,
+            "usage": "material_slot",
+            "slot_hint": texture_slot_hint(path),
+            "srgb": texture_slot_hint(path) == "base_color",
         }),
         "Audio" => json!({
             "stream": false,
@@ -337,9 +664,13 @@ fn default_import_settings(path: &Path) -> Value {
         }),
         "Material" => json!({"shader": "sprite_default", "include_in_build": true}),
         "ParticlePreset" => json!({"include_in_build": true, "runtime": "particle_system"}),
-        "RhaiScript" => json!({"runtime": "rhai", "include_in_build": true, "hot_reload": true}),
+        "LuauScript" => json!({"runtime": "luau", "include_in_build": true, "hot_reload": true}),
         "VisualGraph" => json!({"runtime": "rust_visual_graph", "include_in_build": true}),
         "SpriteSheet" => json!({"include_in_build": true, "grid": {"w": 32, "h": 32}}),
+        "SpriteFrames2D" => json!({"include_in_build": true, "fps": 8, "runtime": "flipbook"}),
+        "AnimationBlueprint2D" | "FlipbookAnimation2D" => {
+            json!({"include_in_build": true, "runtime": "animator2d"})
+        }
         "Atlas" => json!({"include_in_build": true, "filter": "nearest"}),
         "Shader" => json!({"target": "macroquad", "include_in_build": true}),
         _ => json!({"include_in_build": true}),
@@ -396,12 +727,23 @@ fn labels_for(path: &Path, asset_type: &str) -> Vec<String> {
     if path_text.contains("/visual_graphs/") {
         labels.push("in-engine-code".to_string());
     }
-    if asset_type == "RhaiScript" {
+    if asset_type == "LuauScript" {
         labels.push("gameplay-code".to_string());
         labels.push("hot-reload".to_string());
     }
     if path_text.contains("/sprites/") {
         labels.push("rendering".to_string());
+    }
+    if asset_type == "SpriteFrames2D"
+        || asset_type == "AnimationBlueprint2D"
+        || asset_type == "FlipbookAnimation2D"
+    {
+        labels.push("animation".to_string());
+        labels.push("2d".to_string());
+    }
+    if asset_type == "Texture2D" {
+        labels.push("material-texture".to_string());
+        labels.push(texture_slot_hint(path).to_string());
     }
     if path_text.contains("/audio/") {
         labels.push("audio".to_string());
@@ -415,6 +757,9 @@ fn compatibility_for(path: &Path, asset_type: &str, size_bytes: u64) -> Vec<Stri
     let mut notes = Vec::new();
     if asset_type == "Sprite" && size_bytes > 8 * 1024 * 1024 {
         notes.push("Large sprite: consider atlas/import compression".to_string());
+    }
+    if asset_type == "Texture2D" && size_bytes > 16 * 1024 * 1024 {
+        notes.push("Large texture: consider mips/compression before shipping".to_string());
     }
     if asset_type == "Audio" && size_bytes > 16 * 1024 * 1024 {
         notes.push("Large audio: enable streaming for runtime builds".to_string());
@@ -430,4 +775,185 @@ fn compatibility_for(path: &Path, asset_type: &str, size_bytes: u64) -> Vec<Stri
         );
     }
     notes
+}
+
+fn looks_like_material_texture(filename: &str) -> bool {
+    [
+        "normal",
+        "nrm",
+        "roughness",
+        "rough",
+        "metallic",
+        "metalness",
+        "emissive",
+        "emission",
+        "glow",
+        "albedo",
+        "basecolor",
+        "base_color",
+    ]
+    .iter()
+    .any(|needle| filename.contains(needle))
+}
+
+fn texture_slot_hint(path: &Path) -> &'static str {
+    let filename = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if filename.contains("normal") || filename.contains("nrm") {
+        "normal"
+    } else if filename.contains("roughness") || filename.contains("rough") {
+        "roughness"
+    } else if filename.contains("metallic")
+        || filename.contains("metalness")
+        || filename.contains("metal")
+    {
+        "metallic"
+    } else if filename.contains("emissive")
+        || filename.contains("emission")
+        || filename.contains("glow")
+    {
+        "emissive"
+    } else {
+        "base_color"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+    fn test_project(label: &str) -> PathBuf {
+        let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "miniforge_asset_identity_{label}_{}_{}",
+            std::process::id(),
+            sequence
+        ))
+    }
+
+    fn record(path: &str, dependencies: &[&str]) -> AssetRecord {
+        AssetRecord {
+            guid: stable_guid(path),
+            relative_path: path.to_string(),
+            name: path.to_string(),
+            asset_type: "Data".to_string(),
+            size_bytes: 0,
+            modified_unix: 0,
+            content_hash: String::new(),
+            import_settings: json!({}),
+            labels: Vec::new(),
+            compatibility: Vec::new(),
+            dependencies: dependencies
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn petgraph_report_orders_dependencies_and_detects_cycles() {
+        let database = AssetDatabase {
+            root: PathBuf::new(),
+            project_root: PathBuf::new(),
+            metadata_file: PathBuf::new(),
+            assets: BTreeMap::from([
+                ("a".to_string(), record("a", &["b"])),
+                ("b".to_string(), record("b", &[])),
+                ("c".to_string(), record("c", &["d"])),
+                ("d".to_string(), record("d", &["c"])),
+            ]),
+        };
+        let report = database.dependency_report();
+        assert_eq!(report.edge_count, 3);
+        assert_eq!(report.cycles, vec![vec!["c".to_string(), "d".to_string()]]);
+        assert!(report.build_order.contains(&"a".to_string()));
+        assert!(report.build_order.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn managed_move_preserves_guid_and_updates_resolver() {
+        let project = test_project("managed_move");
+        let paths = AssetTools::ensure_project_folders(&project).expect("project folders");
+        let source = paths.assets.join("hero.txt");
+        fs::write(&source, "persistent hero asset").expect("source asset");
+        let mut database = AssetDatabase::new(&paths.assets, &project).expect("database");
+        database.scan().expect("initial scan");
+        let original_guid = database.assets["assets/hero.txt"].guid.clone();
+
+        let target = database
+            .move_asset("assets/hero.txt", "assets/characters/hero.txt")
+            .expect("managed move");
+
+        assert!(target.is_file());
+        assert!(!source.exists());
+        assert_eq!(
+            database.path_for_guid(&original_guid),
+            Some("assets/characters/hero.txt")
+        );
+        let reloaded = AssetDatabase::new(&paths.assets, &project).expect("reload database");
+        assert_eq!(
+            reloaded.path_for_guid(&original_guid),
+            Some("assets/characters/hero.txt")
+        );
+        let metadata = AssetTools::read_json(&database.metadata_file).expect("metadata");
+        assert_eq!(metadata["format"], ASSET_METADATA_FORMAT);
+        assert_eq!(metadata["schema_version"], ASSET_METADATA_SCHEMA_VERSION);
+        let _ = fs::remove_dir_all(project);
+    }
+
+    #[test]
+    fn scan_reconciles_unique_external_rename_by_content() {
+        let project = test_project("external_move");
+        let paths = AssetTools::ensure_project_folders(&project).expect("project folders");
+        let source = paths.assets.join("portrait.dat");
+        let target = paths.assets.join("portraits").join("hero.dat");
+        fs::write(&source, "unique portrait bytes 4adf8").expect("source asset");
+        let mut database = AssetDatabase::new(&paths.assets, &project).expect("database");
+        database.scan().expect("initial scan");
+        let original_guid = database.assets["assets/portrait.dat"].guid.clone();
+
+        fs::create_dir_all(target.parent().expect("target parent")).expect("target folder");
+        fs::rename(&source, &target).expect("external rename");
+        database.scan().expect("reconcile scan");
+
+        assert_eq!(
+            database.path_for_guid(&original_guid),
+            Some("assets/portraits/hero.dat")
+        );
+        assert_eq!(
+            database
+                .assets
+                .values()
+                .filter(|record| record.guid == original_guid)
+                .count(),
+            1
+        );
+        let _ = fs::remove_dir_all(project);
+    }
+
+    #[test]
+    fn future_asset_metadata_schema_is_rejected() {
+        let project = test_project("future_schema");
+        let paths = AssetTools::ensure_project_folders(&project).expect("project folders");
+        let metadata = project.join("project/asset_metadata.json");
+        AssetTools::write_json(
+            &metadata,
+            &json!({
+                "format": ASSET_METADATA_FORMAT,
+                "schema_version": ASSET_METADATA_SCHEMA_VERSION + 1,
+                "assets": {},
+            }),
+        )
+        .expect("future metadata");
+
+        let error = AssetDatabase::new(&paths.assets, &project).expect_err("future schema");
+        assert!(error.to_string().contains("newer than supported"));
+        let _ = fs::remove_dir_all(project);
+    }
 }

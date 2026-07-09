@@ -1,0 +1,73 @@
+{
+  "assets": {},
+  "components": [],
+  "engine_stream_version": "0.9.3.4",
+  "engine_version": "0.9.3.4",
+  "runtime": "rust",
+  "scenes": [],
+  "scripts": [],
+  "systems": [],
+  "update_093": {
+    "capabilities": [
+      {
+        "feature": "component bundle helpers",
+        "impact": "fewer panics and faster entity setup",
+        "system": "Core"
+      },
+      {
+        "feature": "edge states and axis helpers",
+        "impact": "menus/gameplay can react to press/release cleanly",
+        "system": "Input"
+      },
+      {
+        "feature": "scheduler frame reports",
+        "impact": "profiling and budget warnings per system",
+        "system": "Systems"
+      },
+      {
+        "feature": "configurable headless runner",
+        "impact": "tests/tools can boot multiple deterministic steps",
+        "system": "Runtime"
+      },
+      {
+        "feature": "frame render stats",
+        "impact": "visibility and draw-call pressure are measurable",
+        "system": "Render"
+      },
+      {
+        "feature": "path quality reports",
+        "impact": "AI can inspect detours and smoothing wins",
+        "system": "Pathfinding"
+      },
+      {
+        "feature": "screen manager stack",
+        "impact": "standard game screens are reusable",
+        "system": "UI"
+      },
+      {
+        "feature": "standalone launchers",
+        "impact": "games can run without source access",
+        "system": "Packaging"
+      },
+      {
+        "feature": "system readiness audit",
+        "impact": "each subsystem has next-pass actions",
+        "system": "Backend"
+      },
+      {
+        "feature": "0.9.3.4 release map",
+        "impact": "the upgrade is visible to users and tooling",
+        "system": "Docs"
+      }
+    ],
+    "codename": "2D Workflow Foundations",
+    "next_pass_focus": [
+      "connect SystemReadinessReport to an editor dashboard",
+      "drive ScreenManager2D from runtime input contexts",
+      "turn scheduler budget warnings into profiler markers",
+      "add packaged app bundles for macOS/Windows release profiles",
+      "promote render/pathfinding stats into in-game debug overlays"
+    ],
+    "version": "0.9.3.4"
+  }
+}

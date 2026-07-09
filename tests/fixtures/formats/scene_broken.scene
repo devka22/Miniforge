@@ -1,0 +1,9 @@
+{
+  "format": "miniforge.scene",
+  "schema_version": 1,
+  "engine_version": "0.9.3",
+  "scene_name": "",
+  "camera": {},
+  "entities": {},
+  "ui_canvases": []
+}

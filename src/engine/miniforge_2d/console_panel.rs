@@ -39,7 +39,7 @@ impl ConsolePanel2D {
             command("help", "help", "Lista comandos internos."),
             command("clear", "clear", "Limpia la consola."),
             command("reload_assets", "reload_assets", "Reescanea AssetDatabase."),
-            command("reload_scripts", "reload_scripts", "Recarga scripts Rhai."),
+            command("reload_scripts", "reload_scripts", "Recarga scripts Luau."),
             command(
                 "validate_project",
                 "validate_project",

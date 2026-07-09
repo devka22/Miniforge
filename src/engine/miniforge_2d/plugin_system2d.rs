@@ -14,6 +14,37 @@ pub struct PluginManifest2D {
     pub enabled: bool,
     pub description: String,
     pub systems: Vec<String>,
+    #[serde(default)]
+    pub extension_points: Vec<PluginExtensionPoint2D>,
+    #[serde(default)]
+    pub canvas_input_forwarding: bool,
+    #[serde(default)]
+    pub canvas_overlay_forwarding: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PluginExtensionSlot2D {
+    Toolbar,
+    CanvasMenu,
+    CanvasSideLeft,
+    CanvasSideRight,
+    CanvasBottom,
+    InspectorBottom,
+    ProjectSettingsLeft,
+    ProjectSettingsRight,
+    BottomPanel,
+    AssetImporter,
+    SceneOverlay,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginExtensionPoint2D {
+    pub id: String,
+    pub slot: PluginExtensionSlot2D,
+    pub label: String,
+    pub command: String,
+    #[serde(default)]
+    pub icon: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -36,7 +67,42 @@ impl PluginManifest2D {
                 "Navigation".to_string(),
                 "Commands".to_string(),
             ],
+            extension_points: vec![
+                PluginExtensionPoint2D::new(
+                    "rts_toolbar",
+                    PluginExtensionSlot2D::Toolbar,
+                    "RTS Tools",
+                    "rts.open_tools",
+                    "mouse-pointer-2",
+                ),
+                PluginExtensionPoint2D::new(
+                    "rts_overlay",
+                    PluginExtensionSlot2D::SceneOverlay,
+                    "RTS Overlay",
+                    "rts.draw_overlay",
+                    "layers",
+                ),
+                PluginExtensionPoint2D::new(
+                    "rts_bottom_panel",
+                    PluginExtensionSlot2D::BottomPanel,
+                    "RTS Debug",
+                    "rts.open_debug_panel",
+                    "terminal",
+                ),
+            ],
+            canvas_input_forwarding: true,
+            canvas_overlay_forwarding: true,
         }
+    }
+
+    pub fn extension_points_for(
+        &self,
+        slot: PluginExtensionSlot2D,
+    ) -> Vec<&PluginExtensionPoint2D> {
+        self.extension_points
+            .iter()
+            .filter(|extension| extension.slot == slot)
+            .collect()
     }
 
     pub fn validate(&self) -> ValidationReport2D {
@@ -54,7 +120,55 @@ impl PluginManifest2D {
                 "Plugin sin systems declarados.",
             );
         }
+        let mut ids = std::collections::BTreeSet::new();
+        for extension in &self.extension_points {
+            if extension.id.trim().is_empty() {
+                report.error(
+                    "plugin_extension_id",
+                    "plugin.json",
+                    "Extension point sin id.",
+                );
+            } else if !ids.insert(extension.id.clone()) {
+                report.error(
+                    "plugin_extension_duplicate",
+                    &extension.id,
+                    format!("Extension point duplicado: {}", extension.id),
+                );
+            }
+            if extension.label.trim().is_empty() {
+                report.warning(
+                    "plugin_extension_label",
+                    &extension.id,
+                    "Extension point sin label visible.",
+                );
+            }
+            if extension.command.trim().is_empty() {
+                report.error(
+                    "plugin_extension_command",
+                    &extension.id,
+                    "Extension point sin command.",
+                );
+            }
+        }
         report
+    }
+}
+
+impl PluginExtensionPoint2D {
+    pub fn new(
+        id: impl Into<String>,
+        slot: PluginExtensionSlot2D,
+        label: impl Into<String>,
+        command: impl Into<String>,
+        icon: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            slot,
+            label: label.into(),
+            command: command.into(),
+            icon: icon.into(),
+        }
     }
 }
 

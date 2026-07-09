@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::engine::asset_tools::AssetTools;
+use crate::engine::engine_backend::EngineBackend;
 use crate::engine::manifest_builder::ManifestBuilder;
 use crate::engine::project_validator::ProjectValidator;
 
@@ -13,6 +14,9 @@ use crate::engine::project_validator::ProjectValidator;
 pub enum ExportProfile {
     Debug,
     Release,
+    Shipping,
+    WebFuture,
+    MacosAppFuture,
 }
 
 impl ExportProfile {
@@ -20,7 +24,14 @@ impl ExportProfile {
         match self {
             Self::Debug => "debug",
             Self::Release => "release",
+            Self::Shipping => "shipping",
+            Self::WebFuture => "web_future",
+            Self::MacosAppFuture => "macos_app_future",
         }
+    }
+
+    pub fn release_optimized(self) -> bool {
+        matches!(self, Self::Release | Self::Shipping | Self::MacosAppFuture)
     }
 }
 
@@ -35,6 +46,8 @@ pub struct RuntimeExportReport {
     pub validation_warnings: Vec<String>,
     pub release_optimized: bool,
     pub manifest_path: PathBuf,
+    pub readiness_score: u8,
+    pub readiness_actions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -64,6 +77,13 @@ impl RuntimeExporter {
         }
         let mut validator = ProjectValidator::default();
         validator.validate(project_path);
+        if !validator.errors.is_empty() {
+            return Err(io::Error::other(format!(
+                "Export bloqueado por {} errores de validacion: {}",
+                validator.errors.len(),
+                validator.errors.join(" | ")
+            )));
+        }
         let copied_files = copy_dir(project_path, &output)?;
         let manifest = ManifestBuilder::build_manifest(project_path).unwrap_or_else(|_| json!({}));
         let used_assets = collect_used_assets(&manifest);
@@ -71,20 +91,31 @@ impl RuntimeExporter {
         missing_assets.extend(detect_missing_dependencies(project_path));
         missing_assets.sort();
         missing_assets.dedup();
+        let (backend_plan, readiness_score, readiness_actions) =
+            match EngineBackend::plan_project(project_path) {
+                Ok(plan) => {
+                    let readiness_score = plan.system_audit.total_score;
+                    let readiness_actions = plan.system_audit.top_actions(8);
+                    (plan.to_value(), readiness_score, readiness_actions)
+                }
+                Err(error) => (json!({"error": error.to_string()}), 0, Vec::new()),
+            };
         let manifest_path = output.join("runtime_manifest.json");
         AssetTools::write_json(
             &manifest_path,
             &json!({
                 "engine_version": crate::engine::version::ENGINE_VERSION,
+                "engine_stream_version": crate::engine::version::ENGINE_STREAM_VERSION,
                 "runtime": "rust",
                 "profile": profile.label(),
-                "release_optimized": profile == ExportProfile::Release,
+                "release_optimized": profile.release_optimized(),
                 "used_assets": used_assets.clone(),
                 "missing_assets": missing_assets.clone(),
                 "validation": {
                     "errors": validator.errors.clone(),
                     "warnings": validator.warnings.clone(),
                 },
+                "backend_plan": backend_plan,
                 "source_manifest": manifest,
             }),
         )?;
@@ -92,14 +123,20 @@ impl RuntimeExporter {
             output.join("build_info.json"),
             &json!({
                 "engine_version": crate::engine::version::ENGINE_VERSION,
+                "engine_stream_version": crate::engine::version::ENGINE_STREAM_VERSION,
                 "runtime": "rust",
                 "profile": profile.label(),
                 "optimization": match profile {
                     ExportProfile::Debug => "debug-symbols",
                     ExportProfile::Release => "release-optimized",
+                    ExportProfile::Shipping => "shipping-stripped",
+                    ExportProfile::WebFuture => "web-future",
+                    ExportProfile::MacosAppFuture => "macos-app-future",
                 },
                 "copied_files": copied_files,
                 "missing_assets": missing_assets.len(),
+                "readiness_score": readiness_score,
+                "readiness_actions": readiness_actions,
             }),
         )?;
         Ok(RuntimeExportReport {
@@ -110,8 +147,10 @@ impl RuntimeExporter {
             missing_assets,
             validation_errors: validator.errors,
             validation_warnings: validator.warnings,
-            release_optimized: profile == ExportProfile::Release,
+            release_optimized: profile.release_optimized(),
             manifest_path,
+            readiness_score,
+            readiness_actions,
         })
     }
 }
@@ -144,10 +183,33 @@ fn should_skip_export(path: &Path) -> bool {
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("");
-    if matches!(name, ".cache" | "target" | "builds" | "build" | "exports") {
+    if matches!(
+        name,
+        ".cache"
+            | ".git"
+            | ".miniforge"
+            | ".DS_Store"
+            | "target"
+            | "builds"
+            | "build"
+            | "exports"
+            | "logs"
+            | "native"
+            | "plugins"
+            | "templates"
+            | "tools"
+            | "README.md"
+            | "editor_layout.json"
+            | "project_state.json"
+            | "build_profiles.json"
+            | "build_settings.json"
+    ) {
         return true;
     }
-    false
+    matches!(
+        path.extension().and_then(|value| value.to_str()),
+        Some("bak" | "log" | "tmp")
+    )
 }
 
 fn collect_used_assets(manifest: &Value) -> Vec<String> {

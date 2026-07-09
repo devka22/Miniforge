@@ -1,3 +1,4 @@
+use crate::engine::ui_canvas::{UiCanvasEditReport, UiCanvasGizmoHandleKind, UiCanvasRoot};
 use crate::entities::game_object::GameObject;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,5 +130,59 @@ impl SceneViewTools {
             max_x: entity.x + half_w,
             max_y: entity.y + half_h,
         }
+    }
+
+    pub fn select_ui_element_at(
+        &self,
+        root: &UiCanvasRoot,
+        viewport_w: f32,
+        viewport_h: f32,
+        pointer: (f32, f32),
+    ) -> Option<String> {
+        root.hit_test_element(viewport_w, viewport_h, pointer)
+            .map(|element| element.id().to_string())
+    }
+
+    pub fn drag_ui_element(
+        &self,
+        root: &mut UiCanvasRoot,
+        element_id: &str,
+        viewport_w: f32,
+        viewport_h: f32,
+        screen_dx: f32,
+        screen_dy: f32,
+    ) -> UiCanvasEditReport {
+        let ref_dx = screen_dx * root.reference_width / viewport_w.max(1.0);
+        let ref_dy = screen_dy * root.reference_height / viewport_h.max(1.0);
+        let snap = self.grid_snapping.then_some(self.snap_size.max(1.0) as f32);
+        root.move_element(element_id, ref_dx, ref_dy, snap)
+    }
+
+    pub fn resize_ui_element(
+        &self,
+        root: &mut UiCanvasRoot,
+        element_id: &str,
+        width: f32,
+        height: f32,
+    ) -> UiCanvasEditReport {
+        let snap = self.grid_snapping.then_some(self.snap_size.max(1.0) as f32);
+        root.resize_element(element_id, width, height, snap)
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "UI resize command boundary")]
+    pub fn resize_ui_element_from_handle(
+        &self,
+        root: &mut UiCanvasRoot,
+        element_id: &str,
+        handle: UiCanvasGizmoHandleKind,
+        viewport_w: f32,
+        viewport_h: f32,
+        screen_dx: f32,
+        screen_dy: f32,
+    ) -> UiCanvasEditReport {
+        let ref_dx = screen_dx * root.reference_width / viewport_w.max(1.0);
+        let ref_dy = screen_dy * root.reference_height / viewport_h.max(1.0);
+        let snap = self.grid_snapping.then_some(self.snap_size.max(1.0) as f32);
+        root.resize_element_from_handle(element_id, handle, ref_dx, ref_dy, snap)
     }
 }

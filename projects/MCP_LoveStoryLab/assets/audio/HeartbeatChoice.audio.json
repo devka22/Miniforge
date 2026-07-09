@@ -1,0 +1,16 @@
+{
+  "version": "0.9.3",
+  "kind": "MiniForgeAudioEvent",
+  "runtime": "kira",
+  "name": "HeartbeatChoice",
+  "bus": "SFX",
+  "volume": 0.9,
+  "fade_seconds": 0,
+  "actions": [
+    {
+      "type": "play_sfx",
+      "cue": "HeartbeatChoice",
+      "loop": false
+    }
+  ]
+}

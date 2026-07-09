@@ -1,0 +1,16 @@
+{
+  "bus": "SFX",
+  "kind": "MiniForgeSoundCue",
+  "loop": false,
+  "name": "NewCue",
+  "pitch": 1.0,
+  "source": "assets/audio/new.wav",
+  "spatial": {
+    "enabled": false,
+    "max_distance": 18.0,
+    "min_distance": 4.0
+  },
+  "stream": false,
+  "version": "0.9.3",
+  "volume": 1.0
+}

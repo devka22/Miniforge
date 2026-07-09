@@ -173,6 +173,7 @@ fn packaging_manager_creates_destination() {
     let report = PackagingManager::package_project(&proj, &dest, ExportProfile::Debug).unwrap();
     assert!(report.destination.exists());
     assert!(dest.join("runtime_manifest.json").exists());
+    assert!(dest.join("standalone_manifest.json").exists());
 }
 
 #[test]

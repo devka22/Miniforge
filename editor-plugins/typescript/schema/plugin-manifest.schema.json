@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://miniforge.local/schemas/plugin-manifest.schema.json",
+  "title": "MiniForge TypeScript Plugin Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "version", "apiVersion", "permissions"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "version": {
+      "type": "string"
+    },
+    "apiVersion": {
+      "const": "1"
+    },
+    "main": {
+      "type": "string"
+    },
+    "permissions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "scene.read",
+          "scene.write",
+          "assets.read",
+          "assets.write",
+          "commands.execute",
+          "ui.panels",
+          "notifications"
+        ]
+      }
+    },
+    "activationEvents": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

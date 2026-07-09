@@ -1,0 +1,182 @@
+{
+  "assets": [
+    "assets/ui/hud.ui2d.json",
+    "assets/prefabs/Mara.prefab",
+    "assets/prefabs/Sol.prefab",
+    "assets/prefabs/MemoryTrigger.prefab",
+    "assets/audio/HeartbeatChoice.audio.json",
+    "assets/audio/RainTheme.audio.json",
+    "assets/sequences/IntroStation.seq2d.json",
+    "assets/sprites/RainyStationBackdrop-v2.png",
+    "assets/sprites/LoveLabCharacters.sprite.json",
+    "assets/sprites/LoveLabCharacters.spritesheet.json",
+    "assets/sprites/LoveLabCharacters.png",
+    "assets/data/ChoiceMatrix.json",
+    "assets/data/DialogueBeats.json",
+    "assets/data/EngineLabChecklist.json",
+    "assets/data/StoryBible.json",
+    "assets/animations/LoveLabCharacters.spriteframes"
+  ],
+  "components": [],
+  "engine_stream_version": "0.9.3.4",
+  "engine_version": "0.9.3.4",
+  "runtime": "rust",
+  "scenes": [
+    "saves/scenes/main.scene"
+  ],
+  "scripts": [
+    "scripts/DialogueProbe.luau",
+    "scripts/LoveSpriteLab.luau",
+    "scripts/visual_graphs/LoveStoryActLoop.mfgraph",
+    "scripts/SolController.luau",
+    "scripts/StoryDirector.luau"
+  ],
+  "systems": [],
+  "update_093": {
+    "capabilities": [
+      {
+        "feature": "component bundle helpers",
+        "impact": "fewer panics and faster entity setup",
+        "system": "Core"
+      },
+      {
+        "feature": "edge states and axis helpers",
+        "impact": "menus/gameplay can react to press/release cleanly",
+        "system": "Input"
+      },
+      {
+        "feature": "scheduler frame reports",
+        "impact": "profiling and budget warnings per system",
+        "system": "Systems"
+      },
+      {
+        "feature": "configurable headless runner",
+        "impact": "tests/tools can boot multiple deterministic steps",
+        "system": "Runtime"
+      },
+      {
+        "feature": "frame render stats",
+        "impact": "visibility and draw-call pressure are measurable",
+        "system": "Render"
+      },
+      {
+        "feature": "path quality reports",
+        "impact": "AI can inspect detours and smoothing wins",
+        "system": "Pathfinding"
+      },
+      {
+        "feature": "screen manager stack",
+        "impact": "standard game screens are reusable",
+        "system": "UI"
+      },
+      {
+        "feature": "standalone launchers",
+        "impact": "games can run without source access",
+        "system": "Packaging"
+      },
+      {
+        "feature": "system readiness audit",
+        "impact": "each subsystem has next-pass actions",
+        "system": "Backend"
+      },
+      {
+        "feature": "0.9.3.4 release map",
+        "impact": "the upgrade is visible to users and tooling",
+        "system": "Docs"
+      }
+    ],
+    "codename": "2D Workflow Foundations",
+    "next_pass_focus": [
+      "connect SystemReadinessReport to an editor dashboard",
+      "drive ScreenManager2D from runtime input contexts",
+      "turn scheduler budget warnings into profiler markers",
+      "add packaged app bundles for macOS/Windows release profiles",
+      "promote render/pathfinding stats into in-game debug overlays"
+    ],
+    "version": "0.9.3.4"
+  },
+  "update_0934": {
+    "capabilities": [
+      {
+        "area": "2D asset workflow",
+        "foundation": "Source fingerprints, import presets, batch options, dependency-aware reimport and rebuildable generated files",
+        "inspiration": "Godot import metadata/reimport + Unreal Content Browser asset actions",
+        "status": "foundation-ready"
+      },
+      {
+        "area": "2D editor workflow",
+        "foundation": "Context actions, fuzzy command palette, tool modes, multi-selection property transactions and undo/redo",
+        "inspiration": "Godot canvas workflow + Unreal editor modes and Property Matrix",
+        "status": "foundation-ready"
+      },
+      {
+        "area": "Sprite production",
+        "foundation": "First-class actions for sheet extraction, collision editing, sockets, pixel snap and animation preview",
+        "inspiration": "Unreal Paper 2D Sprite Editor + Godot SpriteFrames editor",
+        "status": "foundation-ready"
+      },
+      {
+        "area": "Language bridge",
+        "foundation": "Versioned JSON-value call ABI with explicit capabilities and backend readiness",
+        "inspiration": "Godot cross-language calls/GDExtension, adapted to a Rust-owned core",
+        "status": "foundation-ready"
+      },
+      {
+        "area": "Vector editor rendering",
+        "foundation": "Lyon-backed Bezier paths, smooth strokes, polygon fills, selection outlines and reusable gizmo meshes",
+        "inspiration": "Godot Path2D, Line2D and polygon editor workflows",
+        "status": "foundation-ready"
+      },
+      {
+        "area": "Spatial authoring",
+        "foundation": "Smart edge/center snapping, alignment, distribution, groups, layer state, pivots and editable collision polygons",
+        "inspiration": "Godot CanvasItem editor guides and 2D editor plugins",
+        "status": "foundation-ready"
+      },
+      {
+        "area": "Python production tools",
+        "foundation": "Trusted editor-only subprocess tools with a versioned JSON protocol, timeout and validated operations",
+        "inspiration": "Production automation without putting Python in exported gameplay",
+        "status": "foundation-ready"
+      }
+    ],
+    "focus": "2D-first editor, workflow, asset pipeline and scripting interoperability",
+    "language_backends": [
+      {
+        "adapter": "mlua-luau",
+        "hot_reload": true,
+        "language": "Luau",
+        "purpose": "Typed gameplay scripting with the MiniForge command API",
+        "sandboxed": true,
+        "state": "BuiltIn"
+      },
+      {
+        "adapter": "mfgraph",
+        "hot_reload": true,
+        "language": "Blueprint",
+        "purpose": "Compiled visual gameplay and editor-authored behavior",
+        "sandboxed": true,
+        "state": "BuiltIn"
+      },
+      {
+        "adapter": "miniforge-editor-tool-v1",
+        "hot_reload": false,
+        "language": "Python",
+        "purpose": "Trusted editor automation, import pipelines and production tools",
+        "sandboxed": true,
+        "state": "Available"
+      },
+      {
+        "adapter": "dotnet-plugin-manifest",
+        "hot_reload": false,
+        "language": "CSharp",
+        "purpose": "Editor/plugin tooling through generated C# plugin projects",
+        "sandboxed": true,
+        "state": "Available"
+      }
+    ],
+    "launch_allowed": true,
+    "release_state": "Released",
+    "version": "0.9.3.4"
+  }
+}

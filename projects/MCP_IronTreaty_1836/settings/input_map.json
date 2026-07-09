@@ -1,0 +1,109 @@
+{
+  "actions": {
+    "Move": {
+      "display_name": "Move",
+      "category": "Gameplay",
+      "devices": [
+        "keyboard",
+        "gamepad"
+      ],
+      "description": "Directional movement vector."
+    },
+    "Attack": {
+      "display_name": "Attack",
+      "category": "Gameplay",
+      "devices": [
+        "mouse",
+        "keyboard"
+      ],
+      "description": "Primary attack or pulse."
+    },
+    "Interact": {
+      "display_name": "Interact",
+      "category": "Gameplay",
+      "devices": [
+        "keyboard"
+      ],
+      "description": "Harvest, inspect or activate."
+    },
+    "Pause": {
+      "display_name": "Pause",
+      "category": "System",
+      "devices": [
+        "keyboard"
+      ],
+      "description": "Pause gameplay."
+    },
+    "Command": {
+      "display_name": "Command",
+      "category": "RTS",
+      "devices": [
+        "mouse"
+      ],
+      "description": "Context command."
+    },
+    "Select": {
+      "display_name": "Select",
+      "category": "RTS",
+      "devices": [
+        "mouse"
+      ],
+      "description": "Select units or confirm UI."
+    }
+  },
+  "bindings": {
+    "Move": [
+      "keyboard:wasd",
+      "keyboard:arrows",
+      "gamepad:left_stick"
+    ],
+    "Attack": [
+      "mouse_left",
+      "space"
+    ],
+    "Interact": [
+      "e"
+    ],
+    "Pause": [
+      "escape"
+    ],
+    "Command": [
+      "mouse_right"
+    ],
+    "Select": [
+      "mouse_left"
+    ],
+    "move_left": [
+      "a",
+      "left"
+    ],
+    "move_right": [
+      "d",
+      "right"
+    ],
+    "move_up": [
+      "w",
+      "up"
+    ],
+    "move_down": [
+      "s",
+      "down"
+    ],
+    "attack": [
+      "space",
+      "mouse1"
+    ],
+    "interact": [
+      "e"
+    ],
+    "pause": [
+      "escape"
+    ],
+    "play": [
+      "f5"
+    ],
+    "save": [
+      "s"
+    ]
+  }
+}

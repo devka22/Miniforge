@@ -1,0 +1,101 @@
+{
+  "format": "miniforge.visual-graph",
+  "schema_version": 1,
+  "engine_version": "0.9.3",
+  "version": "0.9.3",
+  "kind": "MiniForgeVisualGraph",
+  "runtime": "rust_visual_graph",
+  "name": "LoveStoryActLoop",
+  "variables": {
+    "act": 1,
+    "affection": 35,
+    "honesty": 40,
+    "courage": 20,
+    "selected_choice": "none"
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "EventStart",
+      "next": "quest"
+    },
+    {
+      "id": "quest",
+      "type": "AddQuest",
+      "quest": "letters_under_rain",
+      "title": "Letters Under Rain",
+      "objectives": [
+        {
+          "id": "meet",
+          "text": "Meet Mara at the station",
+          "progress": 0,
+          "target": 1
+        },
+        {
+          "id": "letter",
+          "text": "Find the unsent letter",
+          "progress": 0,
+          "target": 1
+        },
+        {
+          "id": "choice",
+          "text": "Choose what Sol says at the bridge",
+          "progress": 0,
+          "target": 1
+        }
+      ],
+      "next": "status"
+    },
+    {
+      "id": "status",
+      "type": "SetState",
+      "state": "Act1Station",
+      "next": "log"
+    },
+    {
+      "id": "log",
+      "type": "Log",
+      "message": "Love story laboratory systems loaded",
+      "next": null
+    },
+    {
+      "id": "update",
+      "type": "EventUpdate",
+      "next": null
+    },
+    {
+      "id": "remember",
+      "type": "TriggerAbility",
+      "true_next": "meet_progress",
+      "false_next": "recharge"
+    },
+    {
+      "id": "meet_progress",
+      "type": "QuestProgress",
+      "quest": "letters_under_rain",
+      "objective": "meet",
+      "progress": 1,
+      "next": "choice_progress"
+    },
+    {
+      "id": "choice_progress",
+      "type": "QuestProgress",
+      "quest": "letters_under_rain",
+      "objective": "choice",
+      "progress": 1,
+      "next": "complete"
+    },
+    {
+      "id": "complete",
+      "type": "CompleteQuest",
+      "quest": "letters_under_rain",
+      "next": null
+    },
+    {
+      "id": "recharge",
+      "type": "RechargeAbility",
+      "amount": 1,
+      "next": null
+    }
+  ]
+}

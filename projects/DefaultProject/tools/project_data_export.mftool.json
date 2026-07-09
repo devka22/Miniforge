@@ -1,0 +1,9 @@
+{
+  "id": "project_data_export",
+  "label": "Export Project Data",
+  "entry": "tools/production_suite.py",
+  "menu_path": "Tools/Production/Export Project Data",
+  "description": "Export the scene, manifest and asset index as machine-readable JSON.",
+  "trusted": true,
+  "timeout_ms": 30000
+}

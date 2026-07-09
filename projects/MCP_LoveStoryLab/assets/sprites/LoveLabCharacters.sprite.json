@@ -1,0 +1,19 @@
+{
+  "version": "0.9.3",
+  "kind": "SpriteImport",
+  "name": "LoveLabCharacters",
+  "source": "assets/sprites/LoveLabCharacters.png",
+  "atlas": "assets/sprites/LoveLabCharacters.spritesheet.json",
+  "animations": [
+    {
+      "name": "default",
+      "asset": "assets/animations/LoveLabCharacters.spriteframes",
+      "frames": 4
+    }
+  ],
+  "settings": {
+    "filter": "nearest",
+    "pixels_per_unit": 32,
+    "pivot": "center"
+  }
+}

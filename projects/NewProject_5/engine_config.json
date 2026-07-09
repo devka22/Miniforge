@@ -1,0 +1,61 @@
+{
+  "autosave": true,
+  "autosave_interval_seconds": 60,
+  "config_version": 3,
+  "editor": {
+    "fallback_assets": true,
+    "open_created_assets": true,
+    "script_hot_reload": true
+  },
+  "engine_alt_name": "MiniForge",
+  "engine_name": "MiniForge",
+  "engine_version": "0.9.3.4",
+  "logs": {
+    "engine": "logs/engine.log",
+    "error": "logs/error.log",
+    "file": "logs/miniforge.log",
+    "level": "info"
+  },
+  "project_name": "Neon Sombra",
+  "recover_corrupt_config": true,
+  "rendering": {
+    "backend": "macroquad",
+    "depth_buffer": false,
+    "enable_3d": false,
+    "experimental_wgpu": false,
+    "gpu_particles": false,
+    "hybrid_2d_3d": false,
+    "max_texture_size": 8192,
+    "mesh_batching": false,
+    "metal": {
+      "allow_compute_flow_fields": false,
+      "allow_compute_particles": false,
+      "allow_compute_tile_visibility": false,
+      "prefer_metal_on_macos": true,
+      "use_argument_buffers_future": false,
+      "use_memoryless_targets": true
+    },
+    "pixel_perfect": true,
+    "post_processing": true,
+    "prefer_metal_on_macos": true,
+    "render_scale": 1,
+    "shadow_maps_3d": false,
+    "sprite_batching": true,
+    "tilemap_chunk_batching": true,
+    "vsync": true,
+    "view_frustum_culling": true,
+    "occlusion_culling": true,
+    "lod_enabled": true,
+    "backface_culling": true,
+    "backface_culling_3d": true
+  },
+  "runtime": {
+    "performance_class": "desktop",
+    "quality_preset": "high",
+    "scheduler_budget_ms": 16.67,
+    "system_audit_on_export": true,
+    "graphics_quality": "medium"
+  },
+  "safe_mode": true,
+  "start_scene": "main.scene"
+}

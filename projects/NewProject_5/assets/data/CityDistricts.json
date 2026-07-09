@@ -1,0 +1,75 @@
+{
+  "districts": [
+    {
+      "id": "bajo_muelle",
+      "name": "Bajo Muelle",
+      "mood": "humedo, industrial, leal",
+      "danger": 2
+    },
+    {
+      "id": "talleres_sur",
+      "name": "Talleres Sur",
+      "mood": "metal caliente y carreras clandestinas",
+      "danger": 3
+    },
+    {
+      "id": "centro_civico",
+      "name": "Centro Civico",
+      "mood": "vigilado, limpio, hostil",
+      "danger": 4
+    },
+    {
+      "id": "mirador_norte",
+      "name": "Mirador Norte",
+      "mood": "dinero viejo y sirenas lejanas",
+      "danger": 2
+    },
+    {
+      "id": "mercado_viejo",
+      "name": "Mercado Viejo",
+      "mood": "neon, ruido, rumores",
+      "danger": 3
+    },
+    {
+      "id": "ribera",
+      "name": "La Ribera",
+      "mood": "verde oscuro, fiestas caras, secretos",
+      "danger": 2
+    },
+    {
+      "id": "playa_neon",
+      "name": "Playa Neon",
+      "mood": "arena fria, musica baja y agua negra",
+      "danger": 2
+    },
+    {
+      "id": "marina_sur",
+      "name": "Marina Sur",
+      "mood": "gasolina marina, yates cerrados, camaras privadas",
+      "danger": 3
+    },
+    {
+      "id": "coral_norte",
+      "name": "Coral Norte",
+      "mood": "hoteles altos, valet nervioso y ventanas encendidas",
+      "danger": 2
+    }
+  ],
+  "landmarks": [
+    "Taller_Ivo",
+    "Centro_Civico",
+    "Mercado_Viejo",
+    "Comisaria_Norte",
+    "Casa_Radio",
+    "Pier_21_Entrada",
+    "Yacht_Club"
+  ],
+  "world_size_tiles": [
+    128,
+    80
+  ],
+  "streaming_plan": {
+    "chunk_size_tiles": 24,
+    "future_chunks": "saves/scenes/chunks"
+  }
+}

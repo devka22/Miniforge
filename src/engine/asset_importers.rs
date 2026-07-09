@@ -23,6 +23,8 @@ pub struct SpriteSlice {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpriteSheetMetadata {
     pub source: String,
+    #[serde(default)]
+    pub source_format: String,
     pub image_width: u32,
     pub image_height: u32,
     pub cell_width: u32,
@@ -30,12 +32,28 @@ pub struct SpriteSheetMetadata {
     pub margin: u32,
     pub padding: u32,
     pub slices: Vec<SpriteSlice>,
+    #[serde(default)]
+    pub import_warnings: Vec<String>,
 }
 
 #[derive(Debug, Default)]
 pub struct SpriteSheetImporter;
 
 impl SpriteSheetImporter {
+    pub fn supported_extensions() -> Vec<&'static str> {
+        vec!["png", "jpg", "jpeg", "webp"]
+    }
+
+    pub fn supports_image(path: &Path) -> bool {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|ext| {
+                let ext = ext.to_lowercase();
+                Self::supported_extensions().contains(&ext.as_str())
+            })
+            .unwrap_or(false)
+    }
+
     pub fn build_metadata(
         image_path: &Path,
         cell_width: u32,
@@ -43,7 +61,7 @@ impl SpriteSheetImporter {
         margin: u32,
         padding: u32,
     ) -> io::Result<SpriteSheetMetadata> {
-        let (iw, ih) = image_dimensions(image_path)?;
+        let image_info = image_info(image_path)?;
         if cell_width == 0 || cell_height == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -55,9 +73,9 @@ impl SpriteSheetImporter {
         let mut slices = Vec::new();
         let mut index = 0usize;
         let mut y = margin;
-        while y + cell_height <= ih {
+        while y + cell_height <= image_info.height {
             let mut x = margin;
-            while x + cell_width <= iw {
+            while x + cell_width <= image_info.width {
                 slices.push(SpriteSlice {
                     index,
                     x,
@@ -72,13 +90,15 @@ impl SpriteSheetImporter {
         }
         Ok(SpriteSheetMetadata {
             source: image_path.to_string_lossy().to_string(),
-            image_width: iw,
-            image_height: ih,
+            source_format: image_info.format,
+            image_width: image_info.width,
+            image_height: image_info.height,
             cell_width,
             cell_height,
             margin,
             padding,
             slices,
+            import_warnings: image_info.warnings,
         })
     }
 
@@ -94,6 +114,14 @@ impl SpriteSheetImporter {
         AssetTools::write_json(&sidecar, &serde_json::to_value(meta).unwrap_or(json!({})))?;
         Ok(sidecar)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ImageInfo {
+    width: u32,
+    height: u32,
+    format: String,
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -246,19 +274,49 @@ fn compute_wav_peaks(path: &Path, buckets: usize) -> io::Result<Vec<f32>> {
     Ok(peaks)
 }
 
-fn image_dimensions(path: &Path) -> io::Result<(u32, u32)> {
+fn image_info(path: &Path) -> io::Result<ImageInfo> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
     match ext.as_str() {
-        "png" => read_png_dimensions(path),
+        "png" => {
+            let (width, height) = read_png_dimensions(path)?;
+            Ok(ImageInfo {
+                width,
+                height,
+                format: "png".to_string(),
+                warnings: Vec::new(),
+            })
+        }
+        "jpg" | "jpeg" | "webp" => read_image_dimensions_with_decoder(path, &ext),
         _ => Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "SpriteSheetImporter: dimensiones solo desde PNG (IHDR). Convierte a PNG o amplía el importador.",
+            format!("SpriteSheetImporter: formato no soportado '{ext}'. Usa PNG, JPEG/JPG o WebP."),
         )),
     }
+}
+
+fn read_image_dimensions_with_decoder(path: &Path, ext: &str) -> io::Result<ImageInfo> {
+    let reader = image::ImageReader::open(path)
+        .map_err(io::Error::other)?
+        .with_guessed_format()
+        .map_err(io::Error::other)?;
+    let (width, height) = reader.into_dimensions().map_err(io::Error::other)?;
+    let mut warnings = Vec::new();
+    if matches!(ext, "jpg" | "jpeg") {
+        warnings.push(
+            "JPEG es con perdida; para pixel art o sprites con alpha se recomienda PNG/WebP."
+                .to_string(),
+        );
+    }
+    Ok(ImageInfo {
+        width,
+        height,
+        format: ext.to_string(),
+        warnings,
+    })
 }
 
 fn read_png_dimensions(path: &Path) -> io::Result<(u32, u32)> {

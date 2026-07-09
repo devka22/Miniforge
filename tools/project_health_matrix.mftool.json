@@ -1,0 +1,10 @@
+{
+  "id": "project_health_matrix",
+  "label": "Project Health Matrix",
+  "entry": "tools/project_health_matrix.py",
+  "menu_path": "Tools/Production/Project Health Matrix",
+  "description": "Summarize scenes, scripts, plugins, render settings and asset coverage for the active project.",
+  "allow_generated_writes": false,
+  "trusted": true,
+  "timeout_ms": 5000
+}

@@ -172,44 +172,52 @@ impl AnimationClip {
             };
         }
 
-        let mut keys = self.keyframes.clone();
-        keys.sort_by(|a, b| {
-            a.time
-                .partial_cmp(&b.time)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let first = keys.first().expect("checked non-empty");
+        // Find the bracketing keys without cloning and sorting the complete clip
+        // for every animated entity on every frame.
+        let first = self
+            .keyframes
+            .iter()
+            .min_by(|a, b| a.time.total_cmp(&b.time))
+            .expect("checked non-empty");
         if time <= first.time {
             return sample_from_key(first, time);
         }
-        let last = keys.last().expect("checked non-empty");
+        let last = self
+            .keyframes
+            .iter()
+            .max_by(|a, b| a.time.total_cmp(&b.time))
+            .expect("checked non-empty");
         if time >= last.time {
             return sample_from_key(last, time);
         }
-        for pair in keys.windows(2) {
-            let a = &pair[0];
-            let b = &pair[1];
-            if time >= a.time && time <= b.time {
-                let span = (b.time - a.time).max(0.0001);
-                let t = ((time - a.time) / span).clamp(0.0, 1.0);
-                return AnimationSample {
-                    time,
-                    sprite_name: b.sprite_name.clone().or_else(|| a.sprite_name.clone()),
-                    x: lerp_opt(a.x, b.x, t),
-                    y: lerp_opt(a.y, b.y, t),
-                    rotation: lerp_opt(a.rotation, b.rotation, t),
-                    scale_x: lerp_opt(a.scale_x, b.scale_x, t),
-                    scale_y: lerp_opt(a.scale_y, b.scale_y, t),
-                    tint: match (a.tint, b.tint) {
-                        (Some(from), Some(to)) => Some(lerp_color(from, to, t)),
-                        (None, Some(to)) => Some(to),
-                        (Some(from), None) => Some(from),
-                        _ => None,
-                    },
-                };
+
+        let mut a = first;
+        let mut b = last;
+        for key in &self.keyframes {
+            if key.time <= time && key.time >= a.time {
+                a = key;
+            }
+            if key.time >= time && key.time <= b.time {
+                b = key;
             }
         }
-        sample_from_key(last, time)
+        let span = (b.time - a.time).max(0.0001);
+        let t = ((time - a.time) / span).clamp(0.0, 1.0);
+        AnimationSample {
+            time,
+            sprite_name: b.sprite_name.clone().or_else(|| a.sprite_name.clone()),
+            x: lerp_opt(a.x, b.x, t),
+            y: lerp_opt(a.y, b.y, t),
+            rotation: lerp_opt(a.rotation, b.rotation, t),
+            scale_x: lerp_opt(a.scale_x, b.scale_x, t),
+            scale_y: lerp_opt(a.scale_y, b.scale_y, t),
+            tint: match (a.tint, b.tint) {
+                (Some(from), Some(to)) => Some(lerp_color(from, to, t)),
+                (None, Some(to)) => Some(to),
+                (Some(from), None) => Some(from),
+                _ => None,
+            },
+        }
     }
 }
 

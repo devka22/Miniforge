@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
@@ -6,12 +6,33 @@ use serde_json::Value;
 pub struct EventBus {
     pub events: Vec<(String, Value)>,
     pub counters: BTreeMap<String, usize>,
+    pub subscriptions: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl EventBus {
+    pub fn connect(&mut self, event: &str, subscriber: &str) {
+        self.subscriptions
+            .entry(event.to_string())
+            .or_default()
+            .insert(subscriber.to_string());
+    }
+
+    pub fn disconnect(&mut self, event: &str, subscriber: &str) -> bool {
+        self.subscriptions
+            .get_mut(event)
+            .is_some_and(|subscribers| subscribers.remove(subscriber))
+    }
+
     pub fn emit(&mut self, event: &str, payload: Value) {
         *self.counters.entry(event.to_string()).or_insert(0) += 1;
         self.events.push((event.to_string(), payload));
+    }
+
+    pub fn emit_signal(&mut self, event: &str, source: &str, payload: Value) {
+        self.emit(
+            event,
+            serde_json::json!({"source": source, "payload": payload}),
+        );
     }
 
     pub fn drain(&mut self) -> Vec<(String, Value)> {
@@ -34,5 +55,12 @@ impl EventBus {
 
     pub fn count(&self, event: &str) -> usize {
         self.counters.get(event).copied().unwrap_or(0)
+    }
+
+    pub fn subscribers_for(&self, event: &str) -> Vec<String> {
+        self.subscriptions
+            .get(event)
+            .map(|subscribers| subscribers.iter().cloned().collect())
+            .unwrap_or_default()
     }
 }

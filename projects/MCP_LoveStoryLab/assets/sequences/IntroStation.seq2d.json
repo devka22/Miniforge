@@ -1,0 +1,61 @@
+{
+  "version": "0.9.3",
+  "kind": "MiniForgeSequencer2D",
+  "name": "IntroStation",
+  "duration": 18,
+  "tracks": [
+    {
+      "type": "camera",
+      "target": "Sol",
+      "keys": [
+        {
+          "time": 0,
+          "zoom": 1
+        },
+        {
+          "time": 8,
+          "zoom": 1.12
+        },
+        {
+          "time": 18,
+          "zoom": 1.02
+        }
+      ]
+    },
+    {
+      "type": "dialogue",
+      "target": "HUD_Dialogue",
+      "keys": [
+        {
+          "time": 1,
+          "text": "Rain taps on the platform roof."
+        },
+        {
+          "time": 6,
+          "text": "Mara waits where the old train map used to hang."
+        }
+      ]
+    },
+    {
+      "type": "audio",
+      "target": "RainTheme",
+      "keys": [
+        {
+          "time": 0,
+          "action": "fade_in",
+          "seconds": 2
+        }
+      ]
+    },
+    {
+      "type": "event",
+      "target": "StoryDirector",
+      "keys": [
+        {
+          "time": 12,
+          "event": "EnablePlayerInput"
+        }
+      ]
+    }
+  ]
+}

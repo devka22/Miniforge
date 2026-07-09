@@ -1,0 +1,52 @@
+{
+  "map_name": "Aurelian Basin",
+  "projection": "boardgame_grid",
+  "provinces": [
+    "albion",
+    "whitecliff",
+    "ironvale",
+    "borgrad",
+    "frostmarch",
+    "redriver",
+    "cyrhaven",
+    "glassport"
+  ],
+  "adjacencies": {
+    "albion": [
+      "whitecliff",
+      "ironvale",
+      "cyrhaven"
+    ],
+    "whitecliff": [
+      "albion",
+      "borgrad"
+    ],
+    "ironvale": [
+      "albion",
+      "redriver",
+      "cyrhaven"
+    ],
+    "borgrad": [
+      "whitecliff",
+      "frostmarch",
+      "redriver"
+    ],
+    "frostmarch": [
+      "borgrad"
+    ],
+    "redriver": [
+      "borgrad",
+      "ironvale",
+      "cyrhaven"
+    ],
+    "cyrhaven": [
+      "albion",
+      "ironvale",
+      "redriver",
+      "glassport"
+    ],
+    "glassport": [
+      "cyrhaven"
+    ]
+  }
+}

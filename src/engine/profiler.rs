@@ -6,6 +6,7 @@ pub struct Profiler {
     pub frame_start: Option<Instant>,
     pub frame_time: Duration,
     pub systems: BTreeMap<String, f64>,
+    pub metrics: BTreeMap<String, f64>,
     pub counters: BTreeMap<String, usize>,
 }
 
@@ -21,6 +22,7 @@ impl Profiler {
             frame_start: None,
             frame_time: Duration::ZERO,
             systems: BTreeMap::new(),
+            metrics: BTreeMap::new(),
             counters: BTreeMap::new(),
         }
     }
@@ -43,10 +45,19 @@ impl Profiler {
         self.counters.insert(name.to_string(), value);
     }
 
+    pub fn set_metric(&mut self, name: &str, value: f64) {
+        self.metrics.insert(name.to_string(), value);
+    }
+
     pub fn rows(&self) -> Vec<(String, String)> {
         self.systems
             .iter()
             .map(|(name, value)| (name.clone(), format!("{value:.1} ms")))
+            .chain(
+                self.metrics
+                    .iter()
+                    .map(|(name, value)| (name.clone(), format!("{value:.2}"))),
+            )
             .collect()
     }
 

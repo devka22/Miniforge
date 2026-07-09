@@ -2,10 +2,14 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::engine::version::ENGINE_VERSION;
+use crate::engine::prefab_serializer::{PREFAB_FORMAT, PREFAB_SCHEMA_VERSION};
+use crate::engine::project_storage::ProjectStorage;
+use crate::engine::scene_serializer::{SCENE_FORMAT, SCENE_SCHEMA_VERSION};
+use crate::engine::version::{ENGINE_STREAM_VERSION, ENGINE_VERSION};
 
 pub const DEFAULT_PROJECT_NAME: &str = "DefaultProject";
 
@@ -97,6 +101,8 @@ impl AssetTools {
         let paths = Self::get_project_paths(project_path);
         for path in paths.as_map().values() {
             fs::create_dir_all(path)?;
+            ProjectStorage::cleanup_stale_temporary_files(path, Duration::from_secs(24 * 60 * 60))
+                .map_err(io::Error::from)?;
         }
         Self::ensure_project_files(&paths.project)?;
         Ok(paths)
@@ -118,7 +124,7 @@ impl AssetTools {
                 "start_scene": "main.scene",
                 "author": "",
                 "license": "GPL-3.0",
-                "description": "MiniForge 0.9.1.1 Interface Overhaul project",
+                "description": format!("MiniForge {ENGINE_VERSION} 2D Workflow Foundations project"),
             }),
         )?;
         Self::write_json_if_missing(
@@ -132,12 +138,43 @@ impl AssetTools {
                 "autosave": true,
                 "autosave_interval_seconds": 60,
                 "safe_mode": true,
-                "config_version": 2,
+                "config_version": 3,
                 "logs": {
                     "level": "info",
                     "file": "logs/miniforge.log",
                     "engine": "logs/engine.log",
                     "error": "logs/error.log"
+                },
+                "editor": {
+                    "open_created_assets": true,
+                    "script_hot_reload": true,
+                    "fallback_assets": true
+                },
+                "rendering": {
+                    "backend": "macroquad",
+                    "experimental_wgpu": false,
+                    "prefer_metal_on_macos": true,
+                    "vsync": true,
+                    "pixel_perfect": true,
+                    "render_scale": 1.0,
+                    "max_texture_size": 8192,
+                    "sprite_batching": true,
+                    "tilemap_chunk_batching": true,
+                    "view_frustum_culling": true,
+                    "occlusion_culling": true,
+                    "lod_enabled": true,
+                    "backface_culling": true,
+                    "backface_culling_3d": true,
+                    "gpu_particles": false,
+                    "post_processing": true,
+                    "enable_3d": false
+                },
+                "runtime": {
+                    "quality_preset": "balanced",
+                    "performance_class": "desktop",
+                    "graphics_quality": "medium",
+                    "system_audit_on_export": true,
+                    "scheduler_budget_ms": 16.67
                 },
             }),
         )?;
@@ -145,6 +182,9 @@ impl AssetTools {
             project_path.join("manifest.json"),
             &json!({
                 "engine_version": ENGINE_VERSION,
+                "engine_stream_version": ENGINE_STREAM_VERSION,
+                "runtime": "rust",
+                "update_093": crate::engine::update_093::Engine093UpgradePlan::current().to_value(),
                 "assets": {},
                 "scenes": [],
                 "scripts": [],
@@ -162,6 +202,84 @@ impl AssetTools {
                 "fullscreen": false,
                 "target_fps": 60,
                 "debug": true,
+                "fixed_timestep": 0.016666667,
+                "max_frame_steps": 5,
+                "max_entities": 5000,
+                "max_particles": 20000,
+                "streaming_enabled": false,
+                "asset_hot_reload": true,
+                "quality_preset": "balanced",
+                "performance_class": "desktop",
+                "world_simulation": {
+                    "day_night_enabled": true,
+                    "weather_enabled": true,
+                    "vehicle_headlights": true,
+                    "day_length_seconds": 1333,
+                    "weather_min_seconds": 28,
+                    "weather_max_seconds": 50
+                },
+                "script_scheduler": {
+                    "enabled": true,
+                    "max_update_scripts_per_frame": 100000,
+                    "default_update_interval": 0.0,
+                    "distant_update_interval": 0.75,
+                    "budget_bypass_priority": 100
+                },
+                "graphics": {
+                    "quality": "medium",
+                    "view_frustum_culling": true,
+                    "occlusion_culling": true,
+                    "lod_enabled": true,
+                    "backface_culling_3d": true,
+                    "lod_near_pixels": 48,
+                    "lod_far_pixels": 18,
+                    "lod_cull_pixels": 3,
+                    "occlusion_padding": 0.0,
+                    "lighting_enabled": true,
+                    "shadow_lights_enabled": true,
+                    "light_sample_budget": 28,
+                    "max_shadow_lights": 8,
+                    "max_source_cores": 42,
+                    "max_drawn_entities": 520,
+                    "minimap_entity_budget": 58,
+                    "profiles": {
+                        "low": {
+                            "light_sample_budget": 18,
+                            "max_shadow_lights": 0,
+                            "max_source_cores": 18,
+                            "max_drawn_entities": 260,
+                            "minimap_entity_budget": 32,
+                            "lod_far_pixels": 24
+                        },
+                        "medium": {
+                            "light_sample_budget": 28,
+                            "max_shadow_lights": 8,
+                            "max_source_cores": 42,
+                            "max_drawn_entities": 520,
+                            "minimap_entity_budget": 58,
+                            "lod_far_pixels": 18
+                        },
+                        "high": {
+                            "light_sample_budget": 44,
+                            "max_shadow_lights": 14,
+                            "max_source_cores": 72,
+                            "max_drawn_entities": 900,
+                            "minimap_entity_budget": 84,
+                            "lod_far_pixels": 14
+                        },
+                        "ultra": {
+                            "light_sample_budget": 72,
+                            "max_shadow_lights": 32,
+                            "max_source_cores": 128,
+                            "max_drawn_entities": 1600,
+                            "minimap_entity_budget": 140,
+                            "lod_far_pixels": 10
+                        }
+                    }
+                },
+                "worker_threads": "auto",
+                "parallel_asset_scan": true,
+                "prefer_metal_on_macos": true,
             }),
         )?;
         Self::write_json_if_missing(
@@ -204,19 +322,9 @@ impl AssetTools {
     }
 
     pub fn write_json(path: impl AsRef<Path>, data: &Value) -> io::Result<()> {
-        let path = path.as_ref();
-        if let Some(folder) = path.parent() {
-            fs::create_dir_all(folder)?;
-        }
-        let bytes = serde_json::to_vec_pretty(data).map_err(io::Error::other)?;
-        let filename = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("data.json");
-        let tmp = path.with_file_name(format!("{filename}.tmp"));
-        fs::write(&tmp, bytes)?;
-        fs::rename(&tmp, path)?;
-        Ok(())
+        ProjectStorage::write_json_atomic(path, data)
+            .map(|_| ())
+            .map_err(io::Error::from)
     }
 
     fn write_json_if_missing(path: impl AsRef<Path>, data: &Value) -> io::Result<()> {
@@ -283,13 +391,7 @@ impl AssetTools {
                 .unwrap_or("NewFile");
             path = Self::unique_path(folder, filename);
         }
-        let filename = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("NewFile");
-        let tmp = path.with_file_name(format!("{filename}.tmp"));
-        fs::write(&tmp, content.as_bytes())?;
-        fs::rename(&tmp, &path)?;
+        ProjectStorage::write_atomic(&path, content.as_bytes()).map_err(io::Error::from)?;
         Ok(path)
     }
 
@@ -329,36 +431,47 @@ impl AssetTools {
         })
     }
 
-    pub fn template_rhai_script(script_name: &str) -> String {
+    pub fn template_luau_script(script_name: &str) -> String {
         format!(
-            r#"// MiniForge Rhai script: {script_name}
-// Attach this file to an entity with script = "{script_name}.rhai".
+            r#"--!strict
+-- MiniForge Luau script: {script_name}
+-- Attach this file with ScriptComponent.path = "{script_name}.luau".
 
-fn on_start() {{
-    // play_sound("spawn");
-}}
+local {script_name} = {{}}
 
-fn on_update(dt) {{
-    if input_pressed("A") {{
-        move(-4.0 * dt, 0.0);
-    }}
-    if input_pressed("D") {{
-        move(4.0 * dt, 0.0);
-    }}
-}}
+function {script_name}:on_create()
+    self.speed = self.speed or 220
+    -- play_sound("spawn")
+    -- set_sprite("assets/sprites/player.sprite.json")
+end
 
-fn on_key_down(key) {{
-    if key == "Space" {{
-        play_sound("jump");
-    }}
-}}
+function {script_name}:on_ready()
+end
 
-fn on_collision_enter(other) {{
-    // ui_text("Hit " + other);
-}}
+function {script_name}:on_update(dt: number)
+    local direction = Input.get_axis("A", "D")
+    if direction < 0 then
+        face_left()
+    elseif direction > 0 then
+        face_right()
+    end
+    self.entity.transform.position.x += direction * self.speed * dt
+end
 
-fn on_destroy() {{
-}}
+function {script_name}:on_fixed_update(dt: number)
+end
+
+function {script_name}:on_collision_enter(other: string)
+    -- ui_text("Hit " .. other)
+end
+
+function {script_name}:on_collision_exit(other: string)
+end
+
+function {script_name}:on_destroy()
+end
+
+return {script_name}
 "#
         )
     }
@@ -397,6 +510,8 @@ fn on_destroy() {{
 
     pub fn template_scene(scene_name: &str) -> Value {
         json!({
+            "format": SCENE_FORMAT,
+            "schema_version": SCENE_SCHEMA_VERSION,
             "version": ENGINE_VERSION,
             "engine_version": ENGINE_VERSION,
             "scene_name": scene_name,
@@ -418,6 +533,8 @@ fn on_destroy() {{
 
     pub fn template_prefab(prefab_name: &str) -> Value {
         json!({
+            "format": PREFAB_FORMAT,
+            "schema_version": PREFAB_SCHEMA_VERSION,
             "version": ENGINE_VERSION,
             "engine_version": ENGINE_VERSION,
             "prefab_name": prefab_name,
@@ -491,6 +608,8 @@ fn on_destroy() {{
 
     pub fn template_enemy_prefab(enemy_name: &str) -> Value {
         json!({
+            "format": PREFAB_FORMAT,
+            "schema_version": PREFAB_SCHEMA_VERSION,
             "version": ENGINE_VERSION,
             "engine_version": ENGINE_VERSION,
             "prefab_name": enemy_name,
@@ -505,7 +624,7 @@ fn on_destroy() {{
                 "speed": 2.8,
                 "radius": 0.45,
                 "sprite_name": null,
-                "script": "EnemyBrain.rhai",
+                "script": "EnemyBrain.luau",
                 "tag": "Enemy",
                 "layer": "Units",
                 "state": "IDLE",
@@ -517,14 +636,17 @@ fn on_destroy() {{
                     {"component_type": "Collider2D", "shape": "circle", "radius": 0.45, "collision_layer": "Enemy", "collision_mask": ["Default", "Player", "Projectile"]},
                     {"component_type": "Rigidbody2D", "body_type": "dynamic", "use_gravity": false, "friction": 0.4}
                 ],
-                "scripts": [{"runtime": "rhai", "path": "EnemyBrain.rhai"}],
+                "scripts": [{"runtime": "luau", "path": "EnemyBrain.luau"}],
             },
         })
     }
 
     pub fn template_ui_asset(ui_name: &str) -> Value {
         json!({
+            "format": PREFAB_FORMAT,
+            "schema_version": PREFAB_SCHEMA_VERSION,
             "version": ENGINE_VERSION,
+            "engine_version": ENGINE_VERSION,
             "kind": "MiniForgeUIPrefab",
             "name": ui_name,
             "entity": {
@@ -552,6 +674,12 @@ fn on_destroy() {{
             "blend_mode": "alpha",
             "render_queue": 0,
             "texture": null,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "roughness_texture": null,
+            "metallic_texture": null,
+            "emissive_texture": null,
+            "texture_parameters": {},
             "lighting": false,
             "fog": false,
             "roughness": 0.5,
@@ -591,7 +719,7 @@ fn on_destroy() {{
             .strip_suffix(".component.json")
             .or_else(|| file_name.strip_suffix(".system.json"))
             .or_else(|| file_name.strip_suffix(".mfgraph"))
-            .or_else(|| file_name.strip_suffix(".rhai"))
+            .or_else(|| file_name.strip_suffix(".luau"))
             .or_else(|| {
                 Path::new(file_name)
                     .file_stem()
@@ -646,19 +774,19 @@ fn on_destroy() {{
         Self::create_json_file(path, &Self::template_visual_graph(graph_name), true)
     }
 
-    pub fn create_rhai_script(project_path: impl AsRef<Path>, name: &str) -> io::Result<PathBuf> {
+    pub fn create_luau_script(project_path: impl AsRef<Path>, name: &str) -> io::Result<PathBuf> {
         let paths = Self::get_project_paths(project_path);
         let mut filename = Self::safe_name(name, "NewScript");
-        if !filename.ends_with(".rhai") {
+        if !filename.ends_with(".luau") {
             let stem = Path::new(&filename)
                 .file_stem()
                 .and_then(|value| value.to_str())
                 .unwrap_or("NewScript");
-            filename = format!("{stem}.rhai");
+            filename = format!("{stem}.luau");
         }
         let script_name = Self::logical_name_from_file_name(&filename, "NewScript");
         let path = Self::unique_path(paths.scripts, &filename);
-        Self::create_file(path, &Self::template_rhai_script(&script_name), true)
+        Self::create_file(path, &Self::template_luau_script(&script_name), true)
     }
 
     pub fn create_component(project_path: impl AsRef<Path>, name: &str) -> io::Result<PathBuf> {

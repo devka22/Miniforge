@@ -1,7 +1,12 @@
 target/
 target/tmp/
+build/
+node_modules/
 
 .DS_Store
+__pycache__/
+*.pyc
+*.blend1
 
 logs/
 *.log
@@ -12,8 +17,11 @@ project/recent_projects.json
 projects/*/project/asset_metadata.json
 projects/*/project/project_state.json
 projects/*/builds/
+projects/*/build/
 projects/*/logs/
 projects/*/saves/backups/
 projects/*/saves/autosave/
+projects/*/plugins/*/src/bin/
+projects/*/plugins/*/src/obj/
 saves/autosave/
 .miniforge_cache/

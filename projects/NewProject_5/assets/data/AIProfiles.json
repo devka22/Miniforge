@@ -1,0 +1,72 @@
+{
+  "pedestrians": {
+    "states": [
+      "wander",
+      "comment",
+      "uneasy",
+      "panic",
+      "witness",
+      "return"
+    ],
+    "stimuli": [
+      "weapon_discharge",
+      "police_chase",
+      "vehicle_near_miss",
+      "wanted_changed",
+      "weather_changed",
+      "time_phase_changed"
+    ],
+    "social_memory": [
+      "district",
+      "persona",
+      "routine",
+      "last_line",
+      "witness_timer"
+    ]
+  },
+  "police": {
+    "states": [
+      "patrol",
+      "investigate",
+      "chase",
+      "search",
+      "arrest"
+    ],
+    "senses": [
+      "distance",
+      "raycast_line_of_sight",
+      "wanted_level",
+      "last_known_position",
+      "weather_visibility"
+    ],
+    "dispatch": [
+      "foot patrols",
+      "vehicle pursuit",
+      "roadblocks at wanted tier 3+"
+    ],
+    "wanted_tiers": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "traffic": {
+    "states": [
+      "route_follow",
+      "yield",
+      "horn",
+      "player_controlled",
+      "resume"
+    ],
+    "rules": [
+      "stop near player",
+      "stop near police",
+      "loop district routes",
+      "headlights in night/rain/fog",
+      "weather traffic factor",
+      "F enters/exits drivable cars"
+    ]
+  }
+}

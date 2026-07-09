@@ -1,0 +1,12 @@
+{
+  "items": [
+    "Untagged",
+    "Player",
+    "Enemy",
+    "Neutral",
+    "Province",
+    "Nation",
+    "Trade",
+    "Army"
+  ]
+}

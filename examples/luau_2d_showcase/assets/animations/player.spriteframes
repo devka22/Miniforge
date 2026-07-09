@@ -1,0 +1,27 @@
+{
+  "name": "PlayerSpriteFrames",
+  "texture": "assets/sprites/player.png",
+  "animations": [
+    {
+      "name": "Idle",
+      "fps": 6.0,
+      "looped": true,
+      "ping_pong": false,
+      "tags": ["player"],
+      "frames": [
+        {"rect": {"x": 0, "y": 0, "width": 16, "height": 16}, "duration": 0.16, "pivot": [8.0, 8.0], "hitboxes": [], "hurtboxes": [], "collision_shapes": [], "events": []}
+      ]
+    },
+    {
+      "name": "Run",
+      "fps": 10.0,
+      "looped": true,
+      "ping_pong": false,
+      "tags": ["player"],
+      "frames": [
+        {"rect": {"x": 16, "y": 0, "width": 16, "height": 16}, "duration": 0.1, "pivot": [8.0, 8.0], "hitboxes": [], "hurtboxes": [], "collision_shapes": [], "events": [{"name": "footstep", "payload": {"volume": 0.4}}]},
+        {"rect": {"x": 32, "y": 0, "width": 16, "height": 16}, "duration": 0.1, "pivot": [8.0, 8.0], "hitboxes": [], "hurtboxes": [], "collision_shapes": [], "events": []}
+      ]
+    }
+  ]
+}

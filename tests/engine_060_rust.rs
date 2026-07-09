@@ -18,10 +18,11 @@ use miniforge::engine::build_profiles::BuildProfiles;
 use miniforge::engine::build_report::BuildReport;
 use miniforge::engine::camera::Camera;
 use miniforge::engine::component::{component_from_data, default_component};
+use miniforge::engine::component_registry::ComponentRegistry;
 use miniforge::engine::component_validation::ComponentValidation;
 use miniforge::engine::content_drag::DragPayload;
 use miniforge::engine::developer_console::{ConsoleSeverity, DeveloperConsole};
-use miniforge::engine::diagnostics::Diagnostics;
+use miniforge::engine::diagnostics::{Diagnostics, FrameHealth};
 use miniforge::engine::docking_panel::{EditorDockTab, EguiDockingWorkspace};
 use miniforge::engine::editor_workspace::{EditorPanelKind, EditorWorkspace, WorkspaceMode};
 use miniforge::engine::engine_programming::ProgrammingEnvironment;
@@ -32,7 +33,8 @@ use miniforge::engine::game_clock::GameClock;
 use miniforge::engine::hierarchy_manager::HierarchyManager;
 use miniforge::engine::input_map::InputMap;
 use miniforge::engine::logger::{LogLevel, Logger};
-use miniforge::engine::material_system::{Material2D, MaterialLibrary};
+use miniforge::engine::luau_scripting::LuauScriptRuntime;
+use miniforge::engine::material_system::{Material2D, MaterialLibrary, TextureSlot2D};
 use miniforge::engine::play_mode_manager::PlayModeManager;
 use miniforge::engine::plugin_manager::PluginManager;
 use miniforge::engine::prefab_manager::PrefabManager;
@@ -42,8 +44,9 @@ use miniforge::engine::project_launcher::{EguiProjectLauncher, LauncherTemplate}
 use miniforge::engine::project_package::ProjectPackageManager;
 use miniforge::engine::project_templates::ProjectTemplates;
 use miniforge::engine::project_validator::ProjectValidator;
-use miniforge::engine::resource_manager::ResourceManager;
-use miniforge::engine::rhai_scripting::RhaiScriptRuntime;
+use miniforge::engine::resource_manager::{
+    ResourceCacheMode, ResourceKind, ResourceLoadStatus, ResourceManager,
+};
 use miniforge::engine::runtime_exporter::{ExportProfile, RuntimeExporter};
 use miniforge::engine::scene_serializer::SceneSerializer;
 use miniforge::engine::scene_view_tools::SceneViewTools;
@@ -58,6 +61,7 @@ use miniforge::engine::ui_runtime::{UiEventKind, UiRuntime};
 use miniforge::engine::upgrade_manifest::EngineUpgradeManifest;
 use miniforge::engine::visual_input_editor::VisualInputEditor;
 use miniforge::engine::visual_scripting::VisualScriptRuntime;
+use miniforge::engine::xcode_integration::XcodeBuildPlan;
 use miniforge::entities::game_object::GameObject;
 use miniforge::input::input_handler::InputHandler;
 use miniforge::map::flow_field::FlowField;
@@ -124,6 +128,11 @@ fn build_profiles_cycle() {
     let first = profiles.active.clone();
     let second = profiles.cycle().unwrap();
     assert_ne!(first, second);
+    assert!(
+        profiles
+            .xcode_profiles()
+            .contains(&"AppleXcodeDebug".to_string())
+    );
 }
 
 #[test]
@@ -155,8 +164,8 @@ fn script_editor_validates_syntax() {
 #[test]
 fn script_editor_tabs_can_close_and_cycle_between_files() {
     let tmp = temp_dir("script-tabs");
-    let first = tmp.join("First.rhai");
-    let second = tmp.join("Second.rhai");
+    let first = tmp.join("First.luau");
+    let second = tmp.join("Second.luau");
     fs::write(&first, "fn on_start() {}").unwrap();
     fs::write(&second, "fn on_update(dt) {}").unwrap();
 
@@ -203,6 +212,63 @@ fn editor_workspace_modes_surface_useful_panels() {
             .any(|panel| panel.kind == EditorPanelKind::AssetGraph)
     );
     assert_eq!(workspace.performance_status(8.0), "Realtime");
+}
+
+#[test]
+fn godot_core_patterns_improve_registry_resource_loader_signals_and_xcode() {
+    let registry = ComponentRegistry::new();
+    let sprite = registry.descriptor("SpriteRenderer").unwrap();
+    assert_eq!(sprite.category, "Rendering");
+    assert!(sprite.creatable);
+    assert!(
+        registry
+            .submenu_model()
+            .iter()
+            .any(|submenu| submenu.category == "Physics"
+                && submenu.component_types.contains(&"Collider2D".to_string()))
+    );
+    assert!(
+        registry
+            .search("render")
+            .iter()
+            .any(|descriptor| descriptor.name == "SpriteRenderer")
+    );
+
+    let tmp = temp_dir("resource-loader");
+    fs::create_dir_all(tmp.join("sprites")).unwrap();
+    fs::write(tmp.join("sprites/hero.png"), [0_u8, 1, 2]).unwrap();
+    let mut resources = ResourceManager::new(&tmp);
+    resources.scan_all().unwrap();
+    let request = resources
+        .request_load_by_kind(ResourceKind::Image, "hero", ResourceCacheMode::Reuse)
+        .unwrap();
+    let processed = resources.process_load_queue();
+    assert_eq!(
+        resources.load_status(&request.id),
+        Some(ResourceLoadStatus::Loaded)
+    );
+    assert_eq!(processed[0].message, "loaded");
+    assert_eq!(
+        resources.cached_entries_by_kind(ResourceKind::Image).len(),
+        1
+    );
+
+    let mut bus = EventBus::default();
+    bus.connect("ResourceLoaded", "AssetService");
+    bus.emit_signal(
+        "ResourceLoaded",
+        "ResourceManager",
+        json!({"id": request.id}),
+    );
+    assert_eq!(bus.subscribers_for("ResourceLoaded"), vec!["AssetService"]);
+    assert_eq!(bus.count("ResourceLoaded"), 1);
+
+    let xcode = XcodeBuildPlan::macos_debug(&tmp, "MiniForgeGame");
+    assert!(xcode.validate().is_empty());
+    let args = xcode.command_args();
+    assert!(args.contains(&"-workspace".to_string()));
+    assert!(args.contains(&"build".to_string()));
+    assert_eq!(xcode.open_command()[0], "open");
 }
 
 #[test]
@@ -268,6 +334,10 @@ fn visual_graph_view_supports_node_layout_and_pin_connections() {
 #[test]
 fn productivity_blueprint_catalog_search_and_branch_pins_work() {
     let programming = ProgrammingEnvironment::new();
+    let catalog = programming.catalog_summary();
+    assert!(catalog.node_count >= 40);
+    assert!(catalog.categories.iter().any(|category| category == "Flow"));
+    assert!(catalog.quick_action_count >= 4);
     assert!(
         programming
             .search_node_catalog("health")
@@ -300,6 +370,20 @@ fn productivity_blueprint_catalog_search_and_branch_pins_work() {
         view.connections
             .iter()
             .any(|connection| connection.from == "low_check" && connection.pin == "true")
+    );
+
+    let action = programming
+        .quick_actions()
+        .into_iter()
+        .find(|action| action.label == "Health branch")
+        .unwrap();
+    let added = ProgrammingEnvironment::add_quick_action_to_graph(&mut graph, &action);
+    assert!(added.len() >= 3);
+    let view = programming.graph_view(&graph);
+    assert!(
+        view.connections
+            .iter()
+            .any(|connection| added.contains(&connection.from))
     );
 }
 
@@ -490,51 +574,54 @@ fn visual_scripting_wait_node_pauses_chain_until_timer_finishes() {
 }
 
 #[test]
-fn rhai_scripts_drive_gameplay_events_and_hot_reload() {
-    let tmp = temp_dir("rhai-runtime");
+fn luau_scripts_drive_gameplay_events_and_hot_reload() {
+    let tmp = temp_dir("luau-runtime");
     AssetTools::ensure_project_folders(&tmp).unwrap();
-    let script = AssetTools::create_rhai_script(&tmp, "PlayerController").unwrap();
+    let script = AssetTools::create_luau_script(&tmp, "PlayerController").unwrap();
     fs::write(
         &script,
         r#"
-fn on_start() {
-    set_position(2.0, 3.0);
-    ui_text("ready");
-}
+function on_start()
+    set_position(2.0, 3.0)
+    ui_text("ready")
+    set_blackboard("mood", "hope")
+    add_quest("letters", "Letters", "meet", "Meet Mara", 1)
+    quest_progress("letters", "meet", 1)
+    recharge_ability(1)
+    trigger_ability()
+end
 
-fn on_update(dt) {
-    if input_pressed("D") {
-        move(10.0 * dt, 0.0);
-    }
-}
+function on_update(dt: number)
+    if input_pressed("D") then move(10.0 * dt, 0.0) end
+end
 
-fn on_key_down(key) {
-    if key == "Space" {
-        spawn("Bullet", 7.0, 8.0);
-        play_sound("jump");
-        load_scene("Arena.scene");
-    }
-}
+function on_key_down(key: string)
+    if key == "Space" then
+        spawn("Bullet", 7.0, 8.0)
+        play_sound("jump")
+        load_scene("Arena.scene")
+    end
+end
 
-fn on_collision_enter(other) {
-    set_ui_text("Hud", "hit " + other);
-}
+function on_collision_enter(other: string)
+    set_ui_text("Hud", "hit " .. other)
+end
 
-fn on_destroy() {
-    spawn("Poof", 1.0, 1.0);
-}
+function on_destroy()
+    spawn("Poof", 1.0, 1.0)
+end
 "#,
     )
     .unwrap();
 
     let mut player = GameObject::new(0.0, 0.0, Some("Player".to_string()));
-    player.script = Some("PlayerController.rhai".to_string());
+    player.script = Some("PlayerController.luau".to_string());
     let player_id = player.id;
     let mut hud = GameObject::new(0.0, 0.0, Some("Hud".to_string()));
     hud.add_component(default_component("UIElement").unwrap());
     let mut entities = vec![player, hud];
 
-    let mut runtime = RhaiScriptRuntime::new(&tmp);
+    let mut runtime = LuauScriptRuntime::new(&tmp);
     runtime.set_input_pressed("D", true);
     let update_report = runtime.update_entities(&mut entities, 0.5, "PLAY");
     assert!(
@@ -552,6 +639,12 @@ fn on_destroy() {
             .and_then(|value| value.as_str()),
         Some("ready")
     );
+    assert_eq!(
+        GameAPI::get_blackboard(&entities[0], "mood", json!("")).as_str(),
+        Some("hope")
+    );
+    assert!(entities[0].get_component("QuestLog").is_some());
+    assert!(entities[0].get_component("Ability").is_some());
 
     let key_report = runtime.run_key_down(&mut entities, "Space");
     assert_eq!(key_report.spawned.len(), 1);
@@ -591,17 +684,17 @@ fn on_destroy() {
 }
 
 #[test]
-fn game_loop_runs_rhai_and_records_profiler_counters() {
-    let tmp = temp_dir("game-rhai");
+fn game_loop_runs_luau_and_records_profiler_counters() {
+    let tmp = temp_dir("game-luau");
     AssetTools::ensure_project_folders(&tmp).unwrap();
     fs::write(
-        tmp.join("scripts").join("Mover.rhai"),
-        r#"fn on_update(dt) { if input_pressed("D") { move(4.0 * dt, 0.0); } }"#,
+        tmp.join("scripts").join("Mover.luau"),
+        r#"function on_update(dt: number) if input_pressed("D") then move(4.0 * dt, 0.0) end end"#,
     )
     .unwrap();
     let mut game = Game::from_project(&tmp, true).unwrap();
     let mut entity = GameObject::new(0.0, 0.0, Some("Mover".to_string()));
-    entity.script = Some("Mover.rhai".to_string());
+    entity.script = Some("Mover.luau".to_string());
     game.units = vec![entity];
     game.set_script_input_pressed("D", true);
     game.run_headless_once(0.25);
@@ -609,7 +702,7 @@ fn game_loop_runs_rhai_and_records_profiler_counters() {
     assert!(
         game.profiler
             .counters
-            .get("RhaiScripts")
+            .get("LuauScripts")
             .copied()
             .unwrap_or(0)
             >= 1
@@ -703,6 +796,18 @@ fn production_polish_animation_particles_materials_ui_and_debugger() {
     let material_preview = materials.apply_to_entity(&mut entities[0], "LitFog");
     assert_eq!(material_preview.shader, "sprite_lit_fog");
     assert!(material_preview.warnings.is_empty());
+    let material_preview = materials.assign_texture_to_material(
+        "LitFog",
+        TextureSlot2D::Normal,
+        "assets/textures/hero_normal.png",
+    );
+    assert_eq!(
+        material_preview
+            .texture_slots
+            .get("normal")
+            .map(String::as_str),
+        Some("assets/textures/hero_normal.png")
+    );
 
     let mut ui_runtime = UiRuntime::default();
     let canvas = miniforge::engine::ui_canvas::UiCanvasRoot::default_hud();
@@ -735,7 +840,7 @@ fn production_polish_launcher_export_autosave_debugger_and_demo() {
             .iter()
             .any(|path| path.to_string_lossy().contains("Demo_Game"))
     );
-    assert!(tmp.join("scripts").join("DemoPlayer.rhai").exists());
+    assert!(tmp.join("scripts").join("DemoPlayer.luau").exists());
     assert!(
         tmp.join("assets")
             .join("data")
@@ -756,11 +861,11 @@ fn production_polish_launcher_export_autosave_debugger_and_demo() {
         game.script_debugger
             .active_scripts
             .iter()
-            .any(|script| script.ends_with("DemoPlayer.rhai"))
+            .any(|script| script.ends_with("DemoPlayer.luau"))
     );
 
     let mut debugger = ScriptDebugger::default();
-    debugger.refresh(&game.rhai_script_runtime, &tmp, &game.units);
+    debugger.refresh(&game.luau_script_runtime, &tmp, &game.units);
     assert!(!debugger.active_scripts.is_empty());
     assert!(!debugger.has_errors());
 
@@ -779,7 +884,9 @@ fn production_polish_launcher_export_autosave_debugger_and_demo() {
     );
 
     assert!(matches!(game.autosave_manager.health(), "empty" | "ready"));
-    game.autosave_manager.save(&mut game.units).unwrap();
+    game.autosave_manager
+        .save(&mut game.runtime_world.units)
+        .unwrap();
     assert_eq!(game.autosave_manager.health(), "ready");
     assert!(!game.autosave_manager.recover_entities().unwrap().is_empty());
 
@@ -826,11 +933,41 @@ fn profiler_records_scheduler_time() {
 #[test]
 fn diagnostics_and_event_bus_track_runtime_health() {
     let mut diagnostics = Diagnostics::default();
-    diagnostics.update(0.016);
-    diagnostics.update(0.032);
+    diagnostics.update_with_budget(0.016, 8.33);
+    diagnostics.update_with_budget(0.032, 8.33);
     assert_eq!(diagnostics.frames, 2);
+    assert_eq!(diagnostics.over_budget_frames, 2);
+    assert_eq!(diagnostics.dropped_frames, 1);
     assert!(diagnostics.average_frame_time_ms > diagnostics.min_frame_time_ms);
     assert!(diagnostics.max_frame_time_ms >= diagnostics.average_frame_time_ms);
+
+    let mut clock = GameClock::new(1.0 / 60.0);
+    clock.configure_fixed_step(1.0 / 60.0, 2);
+    let advance = clock.advance(0.25);
+    diagnostics.record_frame_runtime(
+        advance,
+        clock.fixed_delta,
+        42,
+        12.0,
+        Some(("Physics".to_string(), 9.5)),
+    );
+    assert_eq!(diagnostics.last_frame.health, FrameHealth::Saturated);
+    assert_eq!(diagnostics.last_frame.entity_count, 42);
+    assert_eq!(
+        diagnostics.last_frame.slowest_system.as_deref(),
+        Some("Physics")
+    );
+    assert!(
+        diagnostics
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("fisica/scripts"))
+    );
+    assert!(
+        diagnostics
+            .health_summary()
+            .contains("fixed step saturated")
+    );
 
     let mut events = EventBus::default();
     events.emit("unit_spawned", json!({"id": 1}));
@@ -1108,14 +1245,14 @@ fn asset_browser_templates_launcher_and_kira_audio_cover_game_creation_flow() {
     AssetTools::ensure_project_folders(&tmp).unwrap();
     let browser = FileBrowser::new(&tmp);
 
-    let rhai = browser.create_script("EnemyBrain").unwrap();
+    let luau = browser.create_script("EnemyBrain").unwrap();
     let graph = browser.create_visual_graph("SpawnGraph").unwrap();
     let enemy = browser.create_enemy("Slime").unwrap();
     let ui = browser.create_ui("ScoreLabel").unwrap();
     let audio_event = browser.create_audio_event("Explosion").unwrap();
     assert_eq!(
-        rhai.extension().and_then(|value| value.to_str()),
-        Some("rhai")
+        luau.extension().and_then(|value| value.to_str()),
+        Some("luau")
     );
     assert_eq!(
         graph.extension().and_then(|value| value.to_str()),
@@ -1148,7 +1285,7 @@ fn asset_browser_templates_launcher_and_kira_audio_cover_game_creation_flow() {
         database
             .assets
             .values()
-            .any(|record| record.asset_type == "RhaiScript")
+            .any(|record| record.asset_type == "LuauScript")
     );
     assert!(
         database
@@ -1161,7 +1298,7 @@ fn asset_browser_templates_launcher_and_kira_audio_cover_game_creation_flow() {
     assert!(created.iter().any(|path| {
         path.extension()
             .and_then(|value| value.to_str())
-            .is_some_and(|extension| extension == "rhai")
+            .is_some_and(|extension| extension == "luau")
     }));
 
     let workspace = temp_dir("launcher-workspace");
@@ -1207,6 +1344,9 @@ fn launcher_creates_projects_in_free_locations_and_surfaces_patch_notes() {
     let project = launcher.create_new_project().unwrap();
     assert!(project.starts_with(&free_location));
     assert!(project.join("project.json").exists());
+    assert!(launcher.backend_plan.is_some());
+    assert!(launcher.backend_summary.contains("readiness"));
+    assert!(!launcher.backend_actions.is_empty());
     assert!(
         launcher
             .active_patch_note()
@@ -1216,6 +1356,26 @@ fn launcher_creates_projects_in_free_locations_and_surfaces_patch_notes() {
             .any(|line| line.contains("Blueprint"))
     );
     assert!(launcher.discover_recent_projects().unwrap() >= 1);
+
+    launcher.open_path = project.display().to_string();
+    let summary = launcher.refresh_typed_project_status().unwrap();
+    assert!(summary.contains("editor="));
+
+    let repair_notes = launcher.repair_project(&project).unwrap();
+    assert!(repair_notes.iter().any(|note| note.contains("Manifest")));
+    assert!(repair_notes.iter().any(|note| note.starts_with("Next:")));
+    assert_eq!(launcher.last_repair_notes, repair_notes);
+
+    launcher.settings.validate_on_open = false;
+    launcher.settings.analyze_before_export = false;
+    launcher.export_profile = ExportProfile::Release;
+    launcher.save_state().unwrap();
+
+    let restored = EguiProjectLauncher::new(&workspace);
+    assert_eq!(restored.recent_projects.first(), Some(&project));
+    assert!(!restored.settings.validate_on_open);
+    assert!(!restored.settings.analyze_before_export);
+    assert_eq!(restored.export_profile, ExportProfile::Release);
 }
 
 #[test]
@@ -1423,6 +1583,57 @@ fn game_clock_produces_fixed_ticks_and_clamps_spikes() {
     let spike = clock.advance(1.0);
     assert_eq!(spike.fixed_steps, 2);
     assert!(spike.dropped_time >= 0.0);
+}
+
+#[test]
+fn game_clock_uses_runtime_tuning_and_reports_pacing() {
+    let mut clock = GameClock::new(1.0 / 60.0);
+    clock.configure_fixed_step(1.0 / 120.0, 6);
+    clock.configure_frame_budget(120);
+
+    assert!((clock.fixed_delta - 1.0 / 120.0).abs() < 0.000001);
+    assert_eq!(clock.max_steps_per_frame, 6);
+    assert!(clock.frame_budget_ms() < 8.4);
+
+    let frame = clock.advance(1.0 / 60.0);
+    assert_eq!(frame.fixed_steps, 2);
+    assert!(frame.over_budget);
+    assert!(!frame.saturated_fixed_steps);
+    assert!(frame.interpolation_alpha < 0.01);
+
+    clock.max_steps_per_frame = 1;
+    let spike = clock.advance(0.25);
+    assert_eq!(spike.fixed_steps, 1);
+    assert!(spike.saturated_fixed_steps);
+    assert!(spike.dropped_time > 0.0);
+}
+
+#[test]
+fn game_initializes_clock_from_runtime_config() {
+    let tmp = temp_dir("clock-runtime-config");
+    let paths = AssetTools::ensure_project_folders(&tmp).unwrap();
+    AssetTools::write_json(
+        paths.settings.join("runtime_config.json"),
+        &serde_json::json!({
+            "target_fps": 144,
+            "fixed_timestep": 1.0 / 120.0,
+            "max_frame_steps": 7,
+            "quality_preset": "balanced",
+            "performance_class": "desktop"
+        }),
+    )
+    .unwrap();
+
+    let mut game = Game::from_project(&tmp, true).unwrap();
+    assert!((game.clock.fixed_delta - 1.0 / 120.0).abs() < 0.000001);
+    assert_eq!(game.clock.max_steps_per_frame, 7);
+    assert!(game.clock.frame_budget_ms() < 7.0);
+
+    game.run_headless_once(1.0 / 60.0);
+    assert!(game.profiler.metrics.contains_key("FrameBudgetMs"));
+    assert_eq!(game.profiler.counters["FrameOverBudget"], 1);
+    assert_eq!(game.diagnostics.last_frame.health, FrameHealth::OverBudget);
+    assert!(game.diagnostics.health_summary().contains("over budget"));
 }
 
 #[test]
@@ -2556,20 +2767,20 @@ fn stability_config_recovers_corrupt_file_and_logger_writes_levels() {
 }
 
 #[test]
-fn stability_editor_can_create_open_edit_save_and_run_rhai_without_restart() {
+fn stability_editor_can_create_open_edit_save_and_run_luau_without_restart() {
     let tmp = temp_dir("stability-live-edit");
     AssetTools::ensure_project_folders(&tmp).unwrap();
     let mut game = Game::from_project(&tmp, false).unwrap();
-    let script_path = game.create_rhai_script_asset("PlayerController").unwrap();
+    let script_path = game.create_luau_script_asset("PlayerController").unwrap();
     game.edit_open_file(
         r#"
-fn on_start() {
-    set_position(3.0, 4.0);
-}
+function on_start()
+    set_position(3.0, 4.0)
+end
 
-fn on_update(dt) {
-    move(2.0 * dt, 0.0);
-}
+function on_update(dt: number)
+    move(2.0 * dt, 0.0)
+end
 "#,
     );
     assert!(game.save_open_file().unwrap());
@@ -2580,11 +2791,11 @@ fn on_update(dt) {
         .unwrap()
         .to_string_lossy()
         .to_string();
-    game.units[0].scripts = vec![json!({"runtime": "rhai", "path": relative})];
+    game.units[0].scripts = vec![json!({"runtime": "luau", "path": relative})];
     game.enter_play_mode();
     game.run_headless_once(0.5);
     assert!(game.units[0].x > 3.0);
-    assert!(game.rhai_script_runtime.last_errors.is_empty());
+    assert!(game.luau_script_runtime.last_errors.is_empty());
 }
 
 #[test]
@@ -2598,7 +2809,7 @@ fn stability_create_empty_scene_opens_blank_viewport_immediately() {
     let path = game.create_empty_scene("BlankGameplay").unwrap();
 
     assert_eq!(game.units.len(), 0);
-    assert_eq!(game.world.entities.len(), 0);
+    assert_eq!(game.runtime_world.entities().len(), 0);
     assert!(game.selected_units.is_empty());
     assert_eq!(
         game.scene_manager.loaded_scenes,

@@ -1,0 +1,24 @@
+{
+  "name": "@local/miniforge-mcp",
+  "version": "0.2.0",
+  "description": "Local MCP server that can inspect MiniForge, create playable projects, validate them, and log engine feedback.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "miniforge-mcp": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js",
+    "self-test": "node src/index.js --self-test",
+    "create-demo": "node src/index.js --create-demo-game MCP_AstroHarvester",
+    "create-love-story-lab": "node src/index.js --create-love-story-lab MCP_LoveStoryLab"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.1.13"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

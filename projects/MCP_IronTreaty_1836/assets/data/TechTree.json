@@ -1,0 +1,19 @@
+{
+  "schools": {
+    "industry": [
+      "steam_power",
+      "organized_factories",
+      "railroad_logistics"
+    ],
+    "army": [
+      "professional_army",
+      "breech_loaded_rifles",
+      "general_staff"
+    ],
+    "society": [
+      "public_schools",
+      "civil_service",
+      "mass_politics"
+    ]
+  }
+}

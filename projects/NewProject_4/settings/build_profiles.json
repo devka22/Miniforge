@@ -1,0 +1,43 @@
+{
+  "active": "Development",
+  "profiles": {
+    "AppleXcodeDebug": {
+      "configuration": "Debug",
+      "debug_mode": true,
+      "platform": "macos",
+      "target_fps": 60,
+      "toolchain": "xcode"
+    },
+    "AppleXcodeRelease": {
+      "configuration": "Release",
+      "debug_mode": false,
+      "platform": "macos",
+      "strip_debug": true,
+      "target_fps": 60,
+      "toolchain": "xcode"
+    },
+    "Development": {
+      "debug_mode": true,
+      "target_fps": 60
+    },
+    "MacosAppFuture": {
+      "debug_mode": false,
+      "platform": "macos_app_future",
+      "target_fps": 60
+    },
+    "Release": {
+      "debug_mode": false,
+      "target_fps": 60
+    },
+    "Shipping": {
+      "debug_mode": false,
+      "strip_debug": true,
+      "target_fps": 60
+    },
+    "WebFuture": {
+      "debug_mode": false,
+      "platform": "web_future",
+      "target_fps": 30
+    }
+  }
+}

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -81,6 +82,11 @@ impl ParticleSystem {
     }
 
     pub fn update_previews(&mut self, entities: &[GameObject], dt: f64) {
+        let dt = if dt.is_finite() {
+            dt.clamp(0.0, 0.1)
+        } else {
+            0.0
+        };
         let mut live = BTreeMap::new();
         for entity in entities {
             let Some(component) = entity.get_component("ParticleEmitter") else {
@@ -152,13 +158,18 @@ fn update_emitter(
     state: &mut ParticleEmitterState,
     dt: f64,
 ) {
-    for particle in &mut state.particles {
+    let update_particle = |particle: &mut Particle| {
         particle.age += dt;
         particle.x += particle.velocity_x * dt;
         particle.y += particle.velocity_y * dt;
         let t = (particle.age / particle.lifetime.max(0.0001)).clamp(0.0, 1.0);
         particle.size = config.start_size + (config.end_size - config.start_size) * t;
         particle.color[3] = ((config.color[3] as f64) * (1.0 - t)).round() as u8;
+    };
+    if state.particles.len() >= 256 {
+        state.particles.par_iter_mut().for_each(update_particle);
+    } else {
+        state.particles.iter_mut().for_each(update_particle);
     }
     state
         .particles

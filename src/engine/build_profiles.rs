@@ -30,8 +30,24 @@ impl BuildProfiles {
                     json!({"debug_mode": false, "target_fps": 60}),
                 ),
                 (
-                    "Web".to_string(),
-                    json!({"debug_mode": false, "target_fps": 30}),
+                    "Shipping".to_string(),
+                    json!({"debug_mode": false, "target_fps": 60, "strip_debug": true}),
+                ),
+                (
+                    "WebFuture".to_string(),
+                    json!({"debug_mode": false, "target_fps": 30, "platform": "web_future"}),
+                ),
+                (
+                    "MacosAppFuture".to_string(),
+                    json!({"debug_mode": false, "target_fps": 60, "platform": "macos_app_future"}),
+                ),
+                (
+                    "AppleXcodeDebug".to_string(),
+                    json!({"debug_mode": true, "target_fps": 60, "platform": "macos", "toolchain": "xcode", "configuration": "Debug"}),
+                ),
+                (
+                    "AppleXcodeRelease".to_string(),
+                    json!({"debug_mode": false, "target_fps": 60, "platform": "macos", "toolchain": "xcode", "configuration": "Release", "strip_debug": true}),
                 ),
             ]),
         };
@@ -81,5 +97,15 @@ impl BuildProfiles {
             }
         }
         Ok(())
+    }
+
+    pub fn xcode_profiles(&self) -> Vec<String> {
+        self.profiles
+            .iter()
+            .filter(|(_, profile)| {
+                profile.get("toolchain").and_then(Value::as_str) == Some("xcode")
+            })
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 }

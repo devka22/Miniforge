@@ -22,7 +22,7 @@ impl ScriptManager {
             for path in walk_files(&root)? {
                 if !matches!(
                     path.extension().and_then(|value| value.to_str()),
-                    Some("mfgraph" | "rhai")
+                    Some("mfgraph" | "luau")
                 ) {
                     continue;
                 }

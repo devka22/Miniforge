@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BUILD_DIR="${MINIFORGE_QT_BUILD_DIR:-"$ROOT/build/editor-qt"}"
+CMAKE_BIN="${MINIFORGE_QT_CMAKE:-cmake}"
+
+has_command() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+if [[ "$CMAKE_BIN" == */* ]]; then
+    if [[ ! -x "$CMAKE_BIN" ]]; then
+        echo "MiniForge Qt editor requires CMake 3.24+." >&2
+        echo "MINIFORGE_QT_CMAKE points to '$CMAKE_BIN', but it is not executable." >&2
+        exit 2
+    fi
+elif ! has_command "$CMAKE_BIN"; then
+    echo "MiniForge Qt editor requires CMake 3.24+." >&2
+    echo "CMake was not found in PATH. Install it or set MINIFORGE_QT_CMAKE=/path/to/cmake, then rerun scripts/configure-editor." >&2
+    exit 2
+fi
+
+CMAKE_NAME="$(basename "$CMAKE_BIN")"
+if [[ "$CMAKE_NAME" != "qt-cmake" ]] \
+    && ! has_command qt-cmake \
+    && ! has_command qmake6 \
+    && ! has_command qmllint \
+    && [[ -z "${CMAKE_PREFIX_PATH:-}" ]]; then
+    echo "MiniForge Qt editor requires Qt 6 development tools." >&2
+    echo "Qt 6 was not found in PATH. Install Qt 6, expose qt-cmake/qmake6/qmllint, or set CMAKE_PREFIX_PATH to the Qt 6 prefix." >&2
+    exit 2
+fi
+
+if [[ -n "${CMAKE_PREFIX_PATH:-}" ]]; then
+    echo "Using CMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH" >&2
+fi
+
+"$CMAKE_BIN" -S "$ROOT/editor-cpp" -B "$BUILD_DIR" "$@"

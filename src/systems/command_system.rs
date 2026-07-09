@@ -105,33 +105,16 @@ impl CommandSystem {
     }
 
     pub fn clean_target(grid: &Grid, target: (i32, i32)) -> Option<(i32, i32)> {
-        let mut x = target.0.clamp(0, grid.width.saturating_sub(1) as i32);
-        let mut y = target.1.clamp(0, grid.height.saturating_sub(1) as i32);
+        let x = target.0.clamp(0, grid.width.saturating_sub(1) as i32);
+        let y = target.1.clamp(0, grid.height.saturating_sub(1) as i32);
         if grid.is_walkable(x, y) {
             return Some((x, y));
         }
 
-        let mut best = None;
-        let mut best_distance = i32::MAX;
-        for py in 0..grid.height as i32 {
-            for px in 0..grid.width as i32 {
-                if !grid.is_walkable(px, py) {
-                    continue;
-                }
-                let distance = (px - x).abs() + (py - y).abs();
-                if distance < best_distance {
-                    best = Some((px, py));
-                    best_distance = distance;
-                }
-            }
-        }
-        if let Some((px, py)) = best {
-            x = px;
-            y = py;
-            Some((x, y))
-        } else {
-            None
-        }
+        grid.find_nearest_walkable(
+            (x, y),
+            grid.width.max(grid.height).min(i32::MAX as usize) as i32,
+        )
     }
 
     pub fn move_unit_to(unit: &mut GameObject, target: (f64, f64)) {

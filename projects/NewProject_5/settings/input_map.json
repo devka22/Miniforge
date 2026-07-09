@@ -1,0 +1,115 @@
+{
+  "actions": {
+    "Move": {
+      "display_name": "Move",
+      "category": "Gameplay",
+      "devices": [
+        "keyboard",
+        "gamepad"
+      ]
+    },
+    "Run": {
+      "display_name": "Run",
+      "category": "Gameplay",
+      "devices": [
+        "keyboard",
+        "gamepad"
+      ]
+    },
+    "Fire": {
+      "display_name": "Fire",
+      "category": "Gameplay",
+      "devices": [
+        "mouse",
+        "keyboard",
+        "gamepad"
+      ]
+    },
+    "Interact": {
+      "display_name": "Interact",
+      "category": "Gameplay",
+      "devices": [
+        "keyboard",
+        "gamepad"
+      ]
+    },
+    "Pause": {
+      "display_name": "Pause",
+      "category": "System",
+      "devices": [
+        "keyboard",
+        "gamepad"
+      ]
+    },
+    "EnterVehicle": {
+      "display_name": "Enter Vehicle",
+      "category": "Gameplay",
+      "devices": [
+        "keyboard",
+        "gamepad"
+      ]
+    }
+  },
+  "bindings": {
+    "Move": [
+      "keyboard:wasd",
+      "keyboard:arrows",
+      "gamepad:left_stick"
+    ],
+    "Run": [
+      "shift",
+      "gamepad:left_trigger"
+    ],
+    "Fire": [
+      "mouse_left",
+      "ctrl",
+      "gamepad:right_trigger"
+    ],
+    "Interact": [
+      "e",
+      "enter",
+      "gamepad:west"
+    ],
+    "Pause": [
+      "escape",
+      "gamepad:start"
+    ],
+    "EnterVehicle": [
+      "f",
+      "gamepad:north"
+    ],
+    "move_left": [
+      "A",
+      "Left"
+    ],
+    "move_right": [
+      "D",
+      "Right"
+    ],
+    "move_up": [
+      "W",
+      "Up"
+    ],
+    "move_down": [
+      "S",
+      "Down"
+    ],
+    "run": [
+      "Shift"
+    ],
+    "fire": [
+      "MouseLeft",
+      "Ctrl"
+    ],
+    "interact": [
+      "E",
+      "Enter"
+    ],
+    "pause": [
+      "Escape"
+    ],
+    "enter_vehicle": [
+      "F"
+    ]
+  }
+}

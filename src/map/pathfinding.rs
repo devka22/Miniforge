@@ -5,6 +5,18 @@ use pathfinding::prelude::{astar as pathfinding_astar, dijkstra_all};
 
 pub type Point = (i32, i32);
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct PathQueryReport {
+    pub start: Point,
+    pub goal: Point,
+    pub found: bool,
+    pub raw_len: usize,
+    pub smoothed_len: usize,
+    pub detour: i32,
+    pub used_visibility_smoothing: bool,
+    pub path: Vec<Point>,
+}
+
 pub fn heuristic(a: Point, b: Point) -> i32 {
     (a.0 - b.0).abs() + (a.1 - b.1).abs()
 }
@@ -48,7 +60,9 @@ pub fn smooth_path(path: &[Point]) -> Vec<Point> {
             last_dir = dir;
         }
     }
-    smoothed.push(*path.last().expect("non-empty path"));
+    if let Some(last) = path.last().copied() {
+        smoothed.push(last);
+    }
     smoothed
 }
 
@@ -66,7 +80,9 @@ pub fn smooth_path_with_visibility(grid: &Grid, path: &[Point]) -> Vec<Point> {
         }
         cursor += 1;
     }
-    smoothed.push(*path.last().expect("non-empty path"));
+    if let Some(last) = path.last().copied() {
+        smoothed.push(last);
+    }
     smoothed
 }
 
@@ -111,6 +127,35 @@ pub fn threat_aware_astar(
     )
     .map(|(path, _)| path)
     .unwrap_or_default()
+}
+
+pub fn astar_report(
+    grid: &Grid,
+    start: Point,
+    goal: Point,
+    use_visibility_smoothing: bool,
+) -> PathQueryReport {
+    let raw = astar(grid, start, goal, 0);
+    let path = if use_visibility_smoothing {
+        smooth_path_with_visibility(grid, &raw)
+    } else {
+        smooth_path(&raw)
+    };
+    let detour = if raw.is_empty() {
+        0
+    } else {
+        raw.len() as i32 - heuristic(start, goal).max(1)
+    };
+    PathQueryReport {
+        start,
+        goal,
+        found: !raw.is_empty(),
+        raw_len: raw.len(),
+        smoothed_len: path.len(),
+        detour,
+        used_visibility_smoothing: use_visibility_smoothing,
+        path,
+    }
 }
 
 pub fn distance_map(grid: &Grid, goal: Point, max_cells: usize) -> BTreeMap<Point, u32> {

@@ -41,6 +41,16 @@
       "player_controller": {"name": "BP_PlayerController2D", "controller_type": "player", "possessed_pawn": null, "input_context": "settings/input_map.json", "behavior_tree": null},
       "ai_controller": {"name": "BP_AIController2D", "controller_type": "ai", "possessed_pawn": null, "input_context": null, "behavior_tree": "assets/ai/basic_enemy.bt2d.json"}
     },
+    "ability_system": {
+      "tags": ["Character.Player", "Faction.Player", "Weapon.Sword"],
+      "attributes": {"Health": 100.0, "Mana": 50.0, "Stamina": 75.0},
+      "abilities": [
+        {"name": "Slash", "tags": {"tags": ["Ability.Melee"]}, "required_tags": {"tags": ["Weapon.Sword"]}, "blocked_tags": {"tags": ["State.Stunned"]}, "cooldown_seconds": 0.35, "cost_attribute": "Stamina", "cost_amount": 8.0, "targeting": {"mode": "cone", "radius": 1.5, "required_target_tags": {"tags": ["Faction.Enemy"]}}}
+      ],
+      "effects": [
+        {"name": "Burning", "duration_seconds": 4.0, "granted_tags": {"tags": ["State.Burning"]}, "modifiers": [{"attribute": "Health", "operation": "add", "magnitude": -3.0}]}
+      ]
+    },
     "blueprint_graph": {
       "name": "BP_PlayerPawn2D",
       "runtime": "miniforge_visual_script_2d",
@@ -90,11 +100,37 @@
       "debug_draw": false,
       "shortcuts": ["W", "E", "R", "F", "G", "Ctrl+S", "Ctrl+D", "Delete", "Ctrl+Z", "Ctrl+Y"]
     },
+    "hybrid_3d_rendering": {
+      "runtime": "miniforge_hybrid_2d_3d",
+      "supported_now": ["basic_meshes", "camera_3d", "unlit_materials", "debug_primitives", "sprite_billboards", "2d_ui_overlay"],
+      "deferred_for_wgpu": ["pbr_materials", "shadow_maps", "skinned_meshes", "gpu_instancing", "3d_particles", "scene_lighting_baker"],
+      "components": [
+        {"component_type": "Transform3D"},
+        {"component_type": "MeshRenderer3D", "mesh": "builtin:cube", "material": "Default3D"},
+        {"component_type": "Billboard3D", "sprite": "assets/sprites/player.png"},
+        {"component_type": "Camera3D", "renders_2d_overlay": true},
+        {"component_type": "Light3D", "light_type": "directional"},
+        {"component_type": "HybridScene3D", "physics_mode": "2d_gameplay"}
+      ]
+    },
     "paper2d": {
       "sprite": {"guid": "sprite-player-idle", "name": "PlayerIdle", "texture": "assets/sprites/player.png", "pixels_per_unit": 32.0, "pivot": [0.5, 0.5], "rect": {"x": 0, "y": 0, "width": 32, "height": 32}, "labels": ["player", "demo"]},
       "tileset": {"guid": "tileset-demo", "name": "DemoTiles", "texture": "assets/tiles/demo_tiles.png", "tile_width": 16, "tile_height": 16, "columns": 8, "collision_tiles": [{"tile_id": 1, "shape": "rect", "layer": "WorldStatic", "is_trigger": false}]},
       "tilemap": {"name": "DemoMap", "tileset": "assets/tiles/demo.tileset.json", "width": 4, "height": 3, "tile_width": 16, "tile_height": 16, "layers": [{"name": "Ground", "visible": true, "collision": false, "tiles": [0,0,0,0,0,1,1,0,0,0,0,0]}]},
-      "flipbook": {"name": "PlayerRun", "frames_per_second": 10.0, "looping": true, "frames": [{"sprite": "PlayerRun_0", "duration": 0.1}, {"sprite": "PlayerRun_1", "duration": 0.1}], "frame_events": [{"frame": 1, "event": "footstep", "payload": {"volume": 0.5}}]}
+      "flipbook": {"name": "PlayerRun", "frames_per_second": 10.0, "looping": true, "frames": [{"sprite": "PlayerRun_0", "duration": 0.1}, {"sprite": "PlayerRun_1", "duration": 0.1}], "frame_events": [{"frame": 1, "event": "footstep", "payload": {"volume": 0.5}}]},
+      "spriteframes": {"name": "PlayerSpriteFrames", "texture": "assets/player_sheet.png", "animations": [{"name": "attack", "fps": 12.0, "looped": false, "ping_pong": false, "tags": ["combat"], "frames": [{"rect": {"x": 0, "y": 64, "width": 32, "height": 32}, "duration": 0.083, "pivot": [16.0, 24.0], "hitboxes": [{"name": "sword", "rect": {"x": 22, "y": 10, "width": 20, "height": 12}, "damage": 10.0}], "hurtboxes": [{"name": "body", "rect": {"x": 8, "y": 4, "width": 16, "height": 26}, "damage": 0.0}], "collision_shapes": [{"name": "feet", "shape": "rect", "points": [[10.0, 24.0], [22.0, 32.0]]}], "events": [{"frame": 1, "event": "spawn_attack_fx", "payload": {"time": 0.12}}]}]}]}
+    },
+    "tilemap_editor2d": {
+      "active_brushes": ["Pencil", "Line", "Rectangle", "Random", "Terrain", "Rule", "Stamp", "Object"],
+      "palette": {"Grass": 1, "Dirt": 2, "Stone": 3, "Water": 4, "Wall": 9},
+      "stamps": [{"name": "ThreeByThreeRoom", "width": 3, "height": 3, "tiles": [[9,9,9],[9,1,9],[9,9,9]]}],
+      "object_brushes": [{"name": "CoinScatter", "prefab": "assets/prefabs/coin.prefab", "density": 0.35, "tags": ["pickup"]}],
+      "rule_tiles": [{"name": "WaterEdge", "output_tile": 5, "required_neighbors": {"north": 4}}]
+    },
+    "particles2d": {
+      "templates": ["Explosion2D", "Fire2D", "MagicAura2D", "Rain2D", "HitSpark2D", "Dust2D", "MuzzleFlash2D", "PickupBurst2D", "LevelUp2D", "Snow2D"],
+      "gpu_ready": ["Rain2D", "MagicAura2D", "Explosion2D"],
+      "runtime_bridge": {"component": "ParticleEmitter", "fields": ["rate", "burst_count", "lifetime", "velocity_x", "velocity_y", "spread", "color", "max_particles"]}
     },
     "animation_blueprint": {
       "name": "ABP_Player2D",
@@ -130,7 +166,9 @@
       "frame_rate": 30.0,
       "tracks": [
         {"id": "camera_main", "target": "CameraActor2D", "track_type": "camera", "keyframes": [{"time": 0.0, "easing": "linear", "value": {"x": 0.0, "y": 0.0, "zoom": 1.0}}]},
-        {"id": "dialogue_0", "target": null, "track_type": "dialogue", "keyframes": [{"time": 1.0, "easing": "step", "value": {"speaker": "Guide", "text": "Welcome to MiniForge2D."}}]}
+        {"id": "dialogue_0", "target": null, "track_type": "dialogue", "keyframes": [{"time": 1.0, "easing": "step", "value": {"speaker": "Guide", "text": "Welcome to MiniForge2D."}}]},
+        {"id": "material_flash", "target": "PlayerPawn", "track_type": "material_parameter", "keyframes": [{"time": 2.0, "easing": "linear", "value": {"parameter": "flash", "value": 1.0}}]},
+        {"id": "state_tag", "target": "PlayerPawn", "track_type": "gameplay_tag", "keyframes": [{"time": 2.5, "easing": "step", "value": {"add": "State.Invulnerable"}}]}
       ]
     },
     "physics2d": {
@@ -151,10 +189,17 @@
       "features": ["Unit Selection", "Box Selection", "Command System", "Move Command", "Attack Move", "Patrol", "Hold Position", "Resource Gather", "Building Placement", "Production Queue", "Squad Movement", "Flow Fields", "Influence Map", "Threat Map", "Fog of War"],
       "demo_scene": "RTS_Minimal_Demo"
     },
+    "massive_world2d": {
+      "world_partition": {"cell_size": 64.0, "load_radius_cells": 2, "keepalive_radius_cells": 3, "max_loaded_chunks": 49, "chunks": [{"cell_x": 0, "cell_y": 0, "scene_path": "saves/scenes/chunks/chunk_0_0.scene", "priority": 10, "loaded": true, "entity_count": 320, "last_touched_frame": 0}]},
+      "runtime_budget": {"target_fps": 60, "max_entities": 20000, "max_visible_sprites": 8000, "max_particles": 25000, "max_draw_calls": 500, "max_loaded_chunks": 49, "max_script_ms": 4.0, "max_physics_ms": 4.0, "max_ui_ms": 2.0, "max_memory_mb": 1024.0},
+      "object_pool": {"buckets": [{"prefab": "assets/prefabs/projectile.prefab", "warm": 128, "active": 0, "inactive": 128, "hard_limit": 1024}]},
+      "spawn_director": {"max_spawn_per_tick": 4, "rules": [{"prefab": "assets/prefabs/enemy.prefab", "tag": "Enemy", "min_distance_from_camera": 12.0, "max_distance_from_camera": 24.0, "max_alive": 80, "weight": 1.0, "cooldown_frames": 30, "last_spawn_frame": 0}]},
+      "save_shards": {"global_save_path": "saves/profile/global.json", "shard_paths": ["saves/shards/shard_0_0.json"]}
+    },
     "asset_registry": {"lookup_keys": ["guid", "path", "label", "type"]},
     "plugin_system": {"plugins": [{"name": "Paper2DExtras", "enabled": true, "version": "0.1.0", "modules": ["tileset_importer", "flipbook_tools"]}]},
     "project_settings": {"startup_scene": "saves/scenes/main.scene", "default_game_mode": "GM_Main2D", "input": "settings/input_map.json", "physics": "settings/physics2d.json"},
     "packaging": {"game_name": "MiniForge2DDemo", "profile": "Debug", "start_scene": "saves/scenes/main.scene", "used_assets": ["assets/sprites/player.png", "assets/ui/hud.ui2d.json"], "missing_assets": [], "validation_errors": [], "settings": {"runtime": "miniforge_runtime", "validate_assets": true}},
-    "play_in_editor": {"mode": "PlayInEditor", "snapshot_scene_before_play": true, "restore_on_stop": true, "start_paused": false, "simulate_controllers": true, "runtime": "macroquad+rhai"}
+    "play_in_editor": {"mode": "PlayInEditor", "snapshot_scene_before_play": true, "restore_on_stop": true, "start_paused": false, "simulate_controllers": true, "runtime": "macroquad+luau"}
   }
 }

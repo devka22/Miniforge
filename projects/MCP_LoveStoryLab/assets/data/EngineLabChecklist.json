@@ -1,0 +1,15 @@
+{
+  "purpose": "Use this project as a regression lab for MiniForge MCP-generated 2D story games.",
+  "checks": [
+    "Open scene and inspect Dialogue components on Mara and Tomas",
+    "Move Sol with WASD through CharacterController2D",
+    "Press Space to exercise Ability plus VisualScript quest flow",
+    "Press 1 or 2 to resolve a Dialogue choice through NarrativeSystem and Luau",
+    "Inspect QuestLog and Saveable on Sol",
+    "Inspect Trigger2D areas for station and bridge beats",
+    "Inspect AudioSource and audio event JSON placeholders",
+    "Inspect ParticleEmitter and ParallaxLayer on RainParticles",
+    "Inspect Sequencer2D on StoryDirector",
+    "Inspect tilemap_layers for Ground, Decoration, Collision and Overlay"
+  ]
+}

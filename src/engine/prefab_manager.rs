@@ -1,11 +1,12 @@
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use crate::engine::asset_database::new_asset_guid;
 use crate::engine::asset_tools::AssetTools;
-use crate::engine::runtime_manifest_loader::write_json_atomic;
+use crate::engine::prefab_serializer::PrefabSerializer;
+use crate::engine::project_storage::{BackupPolicy, DEFAULT_BACKUP_GENERATIONS, ProjectStorage};
 use crate::entities::game_object::GameObject;
 
 #[derive(Debug, Clone)]
@@ -45,16 +46,35 @@ impl PrefabManager {
             filename.push_str(".prefab");
         }
         let path = self.prefabs_path.join(filename);
-        if path.exists() {
-            let _ = fs::copy(&path, path.with_extension("prefab.bak"));
-        }
-        let data = json!({
+        let backup = path.with_extension("prefab.bak");
+        let guid = if path.is_file() {
+            AssetTools::read_json(&path)
+                .ok()
+                .and_then(|data| {
+                    data.get("guid")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                })
+                .unwrap_or_else(|| new_asset_guid(&path.to_string_lossy()))
+        } else {
+            new_asset_guid(&path.to_string_lossy())
+        };
+        let data = PrefabSerializer::stamp(json!({
             "version": crate::engine::version::ENGINE_VERSION,
+            "guid": guid,
             "prefab_name": path.file_name().and_then(|value| value.to_str()).unwrap_or("prefab"),
             "entity": entity.serialize(),
-        });
-        Self::validate_prefab_data(&data)?;
-        write_json_atomic(&path, &data)?;
+        }))
+        .map_err(io::Error::from)?;
+        ProjectStorage::write_json_atomic_with_backup(
+            &path,
+            &data,
+            BackupPolicy::new(backup, DEFAULT_BACKUP_GENERATIONS),
+        )
+        .map_err(io::Error::from)?;
+        entity.prefab_source = Some(path.to_string_lossy().to_string());
+        entity.prefab_guid = Some(guid);
+        entity.is_prefab_instance = true;
         Ok(path)
     }
 
@@ -74,35 +94,18 @@ impl PrefabManager {
         if !path.as_ref().exists() {
             return Ok(None);
         }
-        let data = match AssetTools::read_json(&path) {
-            Ok(data) => data,
-            Err(error) => {
-                let backup = path.as_ref().with_extension("prefab.bak");
-                if backup.exists() {
-                    AssetTools::read_json(&backup).map_err(|backup_error| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "Prefab invalido y backup ilegible: {} | {error}; backup: {backup_error}",
-                                path.as_ref().display()
-                            ),
-                        )
-                    })?
-                } else {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("Prefab invalido: {} | {error}", path.as_ref().display()),
-                    ));
-                }
-            }
-        };
-        Self::validate_prefab_data(&data)?;
+        let data = load_prefab_document_with_backup(path.as_ref())?;
+        let prefab_guid = data
+            .get("guid")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
         let Some(entity_data) = data.get("entity") else {
             return Ok(None);
         };
         let mut entity = Self::entity_from_data(entity_data, false);
         if let Some(entity) = &mut entity {
             entity.prefab_source = Some(path.as_ref().to_string_lossy().to_string());
+            entity.prefab_guid = prefab_guid;
             entity.is_prefab_instance = true;
         }
         Ok(entity)
@@ -127,25 +130,46 @@ impl PrefabManager {
     }
 
     pub fn validate_prefab_data(data: &Value) -> io::Result<()> {
-        let Some(entity) = data.get("entity") else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Prefab sin bloque entity",
-            ));
-        };
-        let name = entity.get("name").and_then(Value::as_str).unwrap_or("");
-        if name.trim().is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Prefab con entity sin nombre",
-            ));
-        }
-        if entity.get("components").and_then(Value::as_array).is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Prefab con entity sin components",
-            ));
-        }
-        Ok(())
+        PrefabSerializer::try_migrate(data.clone())
+            .map(|_| ())
+            .map_err(io::Error::from)
     }
+}
+
+fn load_prefab_document_with_backup(path: &Path) -> io::Result<Value> {
+    let primary_error = match AssetTools::read_json(path) {
+        Ok(data) => match PrefabSerializer::try_migrate(data) {
+            Ok(report) => return Ok(report.data),
+            Err(error) if error.is_future_version() => return Err(io::Error::from(error)),
+            Err(error) => error.to_string(),
+        },
+        Err(error) => error.to_string(),
+    };
+    let backup = path.with_extension("prefab.bak");
+    if !backup.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Prefab invalido: {} | {primary_error}", path.display()),
+        ));
+    }
+    let backup_data = AssetTools::read_json(&backup).map_err(|backup_error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Prefab invalido y backup ilegible: {} | {primary_error}; backup: {backup_error}",
+                path.display()
+            ),
+        )
+    })?;
+    PrefabSerializer::try_migrate(backup_data)
+        .map(|report| report.data)
+        .map_err(|backup_error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Prefab invalido y backup incompatible: {} | {primary_error}; backup: {backup_error}",
+                    path.display()
+                ),
+            )
+        })
 }

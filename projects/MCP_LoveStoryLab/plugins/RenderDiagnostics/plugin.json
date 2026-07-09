@@ -1,0 +1,41 @@
+{
+  "author": "MiniForge",
+  "automation_tools": [
+    "csharp_command_bridge"
+  ],
+  "description": "C# editor plugin scaffold for MiniForge panels, automation and render diagnostics.",
+  "editor_panels": [
+    "automation_dashboard",
+    "render_diagnostics"
+  ],
+  "enabled": true,
+  "entrypoints": {
+    "command": "dotnet run --project src",
+    "project": "src/RenderDiagnostics.csproj",
+    "protocol": "miniforge-plugin-command-v1"
+  },
+  "hooks": {
+    "editor.startup": "dotnet run --project src"
+  },
+  "language": "csharp",
+  "languages": [
+    "csharp"
+  ],
+  "min_engine_version": "0.9.3",
+  "name": "RenderDiagnostics",
+  "render_backends": [
+    "opengl_compatibility",
+    "metal_diagnostics"
+  ],
+  "runtime_policy": {
+    "editor_only": true,
+    "export": "exclude"
+  },
+  "services": [
+    "editor_plugin"
+  ],
+  "systems": [
+    "editor_tools"
+  ],
+  "version": "0.1.0"
+}

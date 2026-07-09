@@ -1,0 +1,19 @@
+{
+  "active": "Development",
+  "profiles": {
+    "Development": {
+      "debug_mode": true,
+      "target_fps": 60,
+      "simulation_tick": "monthly"
+    },
+    "Release": {
+      "debug_mode": false,
+      "target_fps": 60
+    },
+    "Shipping": {
+      "debug_mode": false,
+      "target_fps": 60,
+      "strip_debug": true
+    }
+  }
+}

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::engine::asset_tools::AssetTools;
+use crate::engine::prefab_serializer::PrefabSerializer;
 use crate::entities::game_object::GameObject;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -42,7 +43,7 @@ impl AdvancedPrefabSystem {
         let filename = format!("{}.prefab", AssetTools::safe_name(&entity.name, "Prefab"));
         let path = AssetTools::unique_path(&paths.prefabs, &filename);
         let guid = crate::engine::asset_database::stable_guid(&path.to_string_lossy());
-        let data = json!({
+        let data = PrefabSerializer::stamp(json!({
             "version": crate::engine::version::ENGINE_VERSION,
             "kind": "MiniForgeAdvancedPrefab",
             "prefab_name": entity.name,
@@ -56,7 +57,8 @@ impl AdvancedPrefabSystem {
                 "script_count": entity.scripts.len(),
                 "source": "rust_editor",
             }
-        });
+        }))
+        .map_err(io::Error::from)?;
         AssetTools::write_json(&path, &data)?;
         entity.prefab_source = Some(path.to_string_lossy().to_string());
         entity.prefab_guid = Some(guid);
@@ -81,7 +83,7 @@ impl AdvancedPrefabSystem {
         );
         let path = AssetTools::unique_path(paths.prefabs, &filename);
         let guid = crate::engine::asset_database::stable_guid(&path.to_string_lossy());
-        let data = json!({
+        let data = PrefabSerializer::stamp(json!({
             "version": crate::engine::version::ENGINE_VERSION,
             "kind": "MiniForgeAdvancedPrefab",
             "prefab_name": entity.name,
@@ -91,7 +93,8 @@ impl AdvancedPrefabSystem {
             "variant": true,
             "overrides": self.calculate_override_count(entity, None),
             "entity": entity.serialize(),
-        });
+        }))
+        .map_err(io::Error::from)?;
         AssetTools::write_json(&path, &data)?;
         self.variants_created += 1;
         Ok(path)

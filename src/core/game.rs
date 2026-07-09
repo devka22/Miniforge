@@ -1,4 +1,5 @@
 use std::io;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -16,7 +17,7 @@ use crate::engine::build_placement::{BuildFootprint, BuildPlacement};
 use crate::engine::build_profiles::BuildProfiles;
 use crate::engine::build_settings::BuildSettings;
 use crate::engine::camera::Camera;
-use crate::engine::component::default_component;
+use crate::engine::component::{Component, default_component};
 use crate::engine::component_registry::ComponentRegistry;
 use crate::engine::content_drag::{ContentDropper, DragAssetKind, DragPayload, DropOutcome};
 use crate::engine::developer_console::DeveloperConsole;
@@ -25,31 +26,37 @@ use crate::engine::docking_panel::{EditorDockTab, EguiDockingWorkspace};
 use crate::engine::editor_command::{EditorCommand, EditorCommandKind, EditorSnapshot};
 use crate::engine::editor_history::EditorHistory;
 use crate::engine::editor_workspace::{EditorWorkspace, WorkspaceMode};
-use crate::engine::engine_programming::{ProgrammingEnvironment, VisualGraphView};
+use crate::engine::engine_backend::{EngineBackend, EngineBackendPlan};
+use crate::engine::engine_programming::{
+    ProgrammingEnvironment, VisualGraphQuickAction, VisualGraphView,
+};
 use crate::engine::entity_id::generate_entity_name;
 use crate::engine::event_bus::EventBus;
 use crate::engine::game_clock::GameClock;
 use crate::engine::hierarchy_manager::HierarchyManager;
 use crate::engine::input_map::InputMap;
 use crate::engine::inspector_editor::InspectorEditor;
+use crate::engine::luau_scripting::{LuauRunReport, LuauScriptRuntime};
 use crate::engine::manifest_builder::ManifestBuilder;
 use crate::engine::material_system::MaterialLibrary;
+use crate::engine::native_library::NativeLibraryManager;
 use crate::engine::play_mode_manager::PlayModeManager;
 use crate::engine::prefab_manager::PrefabManager;
+use crate::engine::prefab_serializer::PrefabSerializer;
 use crate::engine::profiler::Profiler;
 use crate::engine::project_package::{ProjectPackageManager, ProjectPackageReport};
+use crate::engine::project_storage::{BackupPolicy, DEFAULT_BACKUP_GENERATIONS, ProjectStorage};
 use crate::engine::project_templates::ProjectTemplates;
 use crate::engine::project_validator::ProjectValidator;
 use crate::engine::resource_manager::ResourceManager;
-use crate::engine::rhai_scripting::{RhaiRunReport, RhaiScriptRuntime};
 use crate::engine::runtime_config::RuntimeConfig;
 use crate::engine::runtime_exporter::{ExportProfile, RuntimeExportReport, RuntimeExporter};
+use crate::engine::safe_mode::SafeModeSettings;
 use crate::engine::scene_manager::SceneManager;
 use crate::engine::scene_save_manager::SceneSaveManager;
 use crate::engine::scene_validator::SceneValidator;
 use crate::engine::script_debugger::ScriptDebugger;
 use crate::engine::script_editor::ScriptEditor;
-use crate::engine::spatial_index::SpatialIndex;
 use crate::engine::sprite_editor::{SpriteColor, SpriteEditorCanvas};
 use crate::engine::tags_layers_manager::TagsLayersManager;
 use crate::engine::tile_brush::{TileBrush, TileBrushMode};
@@ -60,17 +67,83 @@ use crate::engine::ui_canvas::{
 use crate::engine::ui_runtime::UiRuntime;
 use crate::engine::upgrade_manifest::EngineUpgradeManifest;
 use crate::engine::visual_scripting::VisualScriptRuntime;
-use crate::engine::world::World;
+use crate::engine::world::RuntimeWorld;
 use crate::entities::game_object::GameObject;
 use crate::map::grid::Grid;
 use crate::map::pathfinding::Point;
 use crate::systems::animation_system::AnimationSystem;
+use crate::systems::audio_system::AudioSystem;
 use crate::systems::gameplay_system::GameplaySystem;
 use crate::systems::movement_system::MovementSystem;
+use crate::systems::narrative_system::{NarrativeEvent, NarrativeSystem};
 use crate::systems::particle_system::ParticleSystem;
-use crate::systems::physics_system::{PhysicsEventPhase, PhysicsSystem};
+use crate::systems::physics_system::{PairType, PhysicsEventPhase, PhysicsSystem};
 use crate::systems::rts_system::RTSSystem;
 use crate::systems::runtime_2d_system::Runtime2DSystem;
+use crate::systems::sprite_animation_system::SpriteAnimationSystem;
+
+const COMPLEX_FOUNDATION_PLAYER_COMPONENTS: &[&str] = &[
+    "Health",
+    "Stats",
+    "Rigidbody2D",
+    "CharacterController2D",
+    "CameraFollow",
+    "Inventory",
+    "Equipment",
+    "Ability",
+    "QuestLog",
+    "Saveable",
+    "Cooldown",
+    "StatusEffects",
+    "Interaction",
+    "CombatTarget",
+    "NavAgent",
+    "VisualScript",
+];
+
+const COMPLEX_FOUNDATION_SYSTEM_COMPONENTS: &[&str] = &[
+    "RuntimeBudget2D",
+    "WorldPartition2D",
+    "ObjectPool2D",
+    "SpawnDirector2D",
+    "SaveShard2D",
+    "EconomyWallet",
+    "DontDestroyOnLoad",
+];
+
+fn physics_pair_type_name(pair_type: PairType) -> &'static str {
+    match pair_type {
+        PairType::Collision => "collision",
+        PairType::Trigger => "trigger",
+    }
+}
+
+fn physics_event_name(pair_type: PairType, phase: PhysicsEventPhase) -> &'static str {
+    match (pair_type, phase) {
+        (PairType::Collision, PhysicsEventPhase::Enter) => "physics_collision_enter",
+        (PairType::Collision, PhysicsEventPhase::Exit) => "physics_collision_exit",
+        (PairType::Collision, PhysicsEventPhase::Stay) => "physics_collision_stay",
+        (PairType::Trigger, PhysicsEventPhase::Enter) => "physics_trigger_enter",
+        (PairType::Trigger, PhysicsEventPhase::Exit) => "physics_trigger_exit",
+        (PairType::Trigger, PhysicsEventPhase::Stay) => "physics_trigger_stay",
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ComplexGameFoundationReport {
+    pub target_entity_id: u64,
+    pub systems_entity_id: Option<u64>,
+    pub created_player: bool,
+    pub created_systems_entity: bool,
+    pub created_ui_canvas: bool,
+    pub ui_canvas_ready: bool,
+    pub identity_changed: bool,
+    pub configured_components: Vec<String>,
+    pub added_player_components: Vec<String>,
+    pub added_system_components: Vec<String>,
+    pub missing_components: Vec<String>,
+    pub changed: bool,
+}
 
 #[derive(Debug)]
 pub struct Game {
@@ -85,9 +158,7 @@ pub struct Game {
     pub scene_dirty: bool,
     pub scene_dirty_reason: String,
     pub console: DeveloperConsole,
-    pub world: World,
-    pub spatial_index: SpatialIndex,
-    pub units: Vec<GameObject>,
+    pub runtime_world: RuntimeWorld,
     pub selected_units: Vec<u64>,
     pub grid: Grid,
     pub tilemap_layers: TilemapLayers,
@@ -112,10 +183,13 @@ pub struct Game {
     pub diagnostics: Diagnostics,
     pub docking_workspace: EguiDockingWorkspace,
     pub audio_mixer: AudioMixer,
+    pub audio_system: AudioSystem,
     pub animation_graphs: AnimationGraphLibrary,
     pub material_library: MaterialLibrary,
+    pub native_libraries: NativeLibraryManager,
+    pub safe_mode: SafeModeSettings,
     pub visual_script_runtime: VisualScriptRuntime,
-    pub rhai_script_runtime: RhaiScriptRuntime,
+    pub luau_script_runtime: LuauScriptRuntime,
     pub script_debugger: ScriptDebugger,
     pub script_editor: ScriptEditor,
     pub sprite_editor: SpriteEditorCanvas,
@@ -126,11 +200,190 @@ pub struct Game {
     pub runtime_2d_system: Runtime2DSystem,
     pub physics_system: PhysicsSystem,
     pub particle_system: ParticleSystem,
+    pub narrative_system: NarrativeSystem,
+    pub sprite_animation_system: SpriteAnimationSystem,
     pub advanced_prefabs: AdvancedPrefabSystem,
     pub archetypes: ArchetypeLibrary,
     pub upgrade_manifest: EngineUpgradeManifest,
     pub editor_workspace: EditorWorkspace,
     pub programming: ProgrammingEnvironment,
+}
+
+impl Deref for Game {
+    type Target = RuntimeWorld;
+
+    fn deref(&self) -> &Self::Target {
+        &self.runtime_world
+    }
+}
+
+impl DerefMut for Game {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.runtime_world
+    }
+}
+
+fn set_component_value_if_changed(component: &mut Component, key: &str, value: Value) -> bool {
+    if component.get(key) == Some(&value) {
+        return false;
+    }
+    component.set(key, value);
+    true
+}
+
+fn push_configured(configured: &mut Vec<String>, name: &str, changed: bool) {
+    if changed {
+        configured.push(name.to_string());
+    }
+}
+
+fn configure_complex_foundation_player(entity: &mut GameObject, entity_id: u64) -> Vec<String> {
+    let mut configured = Vec::new();
+
+    if let Some(body) = entity.get_component_mut("Rigidbody2D") {
+        let mut changed = false;
+        changed |= set_component_value_if_changed(body, "use_gravity", json!(false));
+        changed |= set_component_value_if_changed(body, "freeze_rotation", json!(true));
+        changed |= set_component_value_if_changed(body, "drag", json!(0.2));
+        push_configured(&mut configured, "Rigidbody2D", changed);
+    }
+
+    if let Some(controller) = entity.get_component_mut("CharacterController2D") {
+        let mut changed = false;
+        changed |= set_component_value_if_changed(controller, "mode", json!("topdown"));
+        changed |= set_component_value_if_changed(controller, "walk_speed", json!(5.25));
+        changed |= set_component_value_if_changed(controller, "run_speed", json!(7.25));
+        changed |= set_component_value_if_changed(controller, "dash_speed", json!(13.0));
+        changed |= set_component_value_if_changed(controller, "dash_cooldown", json!(0.5));
+        changed |= set_component_value_if_changed(controller, "input_enabled", json!(true));
+        push_configured(&mut configured, "CharacterController2D", changed);
+    }
+
+    if let Some(camera) = entity.get_component_mut("CameraFollow") {
+        let mut changed = false;
+        changed |= set_component_value_if_changed(camera, "target_id", json!(entity_id));
+        changed |= set_component_value_if_changed(camera, "zoom", json!(1.1));
+        changed |= set_component_value_if_changed(camera, "dead_zone", json!(0.25));
+        push_configured(&mut configured, "CameraFollow", changed);
+    }
+
+    if let Some(saveable) = entity.get_component_mut("Saveable") {
+        let mut changed = false;
+        changed |= set_component_value_if_changed(saveable, "save_key", json!("player"));
+        changed |= set_component_value_if_changed(saveable, "autosave", json!(true));
+        changed |= set_component_value_if_changed(saveable, "include_components", json!(true));
+        push_configured(&mut configured, "Saveable", changed);
+    }
+
+    if let Some(ability) = entity.get_component_mut("Ability") {
+        let mut changed = false;
+        changed |= set_component_value_if_changed(ability, "ability_id", json!("dash"));
+        changed |= set_component_value_if_changed(ability, "display_name", json!("Dash"));
+        changed |= set_component_value_if_changed(ability, "cooldown", json!(0.8));
+        changed |= set_component_value_if_changed(ability, "target_mode", json!("self"));
+        push_configured(&mut configured, "Ability", changed);
+    }
+
+    if let Some(interaction) = entity.get_component_mut("Interaction") {
+        let mut changed = false;
+        changed |= set_component_value_if_changed(interaction, "prompt", json!("Interact"));
+        changed |= set_component_value_if_changed(interaction, "radius", json!(1.35));
+        changed |= set_component_value_if_changed(interaction, "requires_tag", json!("Player"));
+        push_configured(&mut configured, "Interaction", changed);
+    }
+
+    if let Some(combat_target) = entity.get_component_mut("CombatTarget") {
+        let mut changed = false;
+        changed |= set_component_value_if_changed(combat_target, "target_tags", json!(["Enemy"]));
+        changed |= set_component_value_if_changed(combat_target, "attack_radius", json!(1.35));
+        push_configured(&mut configured, "CombatTarget", changed);
+    }
+
+    if let Some(nav_agent) = entity.get_component_mut("NavAgent") {
+        let mut changed = false;
+        changed |= set_component_value_if_changed(nav_agent, "speed", json!(5.0));
+        changed |= set_component_value_if_changed(nav_agent, "auto_repath", json!(true));
+        changed |= set_component_value_if_changed(nav_agent, "path_smoothing", json!(true));
+        push_configured(&mut configured, "NavAgent", changed);
+    }
+
+    if let Some(visual) = entity.get_component_mut("VisualScript") {
+        let mut changed = false;
+        changed |= set_component_value_if_changed(visual, "graph_name", json!("PlayerFoundation"));
+        changed |= set_component_value_if_changed(
+            visual,
+            "enabled_events",
+            json!(["start", "update", "collision"]),
+        );
+        push_configured(&mut configured, "VisualScript", changed);
+    }
+
+    configured
+}
+
+fn configure_complex_foundation_systems(entity: &mut GameObject) -> Vec<String> {
+    let mut configured = Vec::new();
+
+    if let Some(budget) = entity.get_component_mut("RuntimeBudget2D") {
+        let mut changed = false;
+        changed |= set_component_value_if_changed(budget, "target_fps", json!(60));
+        changed |= set_component_value_if_changed(budget, "max_script_ms", json!(4.0));
+        changed |= set_component_value_if_changed(budget, "max_physics_ms", json!(4.0));
+        changed |= set_component_value_if_changed(budget, "max_ui_ms", json!(2.0));
+        push_configured(&mut configured, "RuntimeBudget2D", changed);
+    }
+
+    if let Some(partition) = entity.get_component_mut("WorldPartition2D") {
+        let mut changed = false;
+        changed |= set_component_value_if_changed(partition, "streaming_enabled", json!(true));
+        changed |= set_component_value_if_changed(partition, "load_radius_cells", json!(2));
+        changed |= set_component_value_if_changed(partition, "keepalive_radius_cells", json!(3));
+        push_configured(&mut configured, "WorldPartition2D", changed);
+    }
+
+    if let Some(pool) = entity.get_component_mut("ObjectPool2D") {
+        let mut changed = false;
+        changed |= set_component_value_if_changed(pool, "enabled", json!(true));
+        push_configured(&mut configured, "ObjectPool2D", changed);
+    }
+
+    if let Some(spawn_director) = entity.get_component_mut("SpawnDirector2D") {
+        let mut changed = false;
+        changed |= set_component_value_if_changed(spawn_director, "enabled", json!(false));
+        changed |= set_component_value_if_changed(spawn_director, "max_spawn_per_tick", json!(8));
+        push_configured(&mut configured, "SpawnDirector2D", changed);
+    }
+
+    if let Some(save_shard) = entity.get_component_mut("SaveShard2D") {
+        let mut changed = false;
+        changed |= set_component_value_if_changed(save_shard, "autosave_dirty_shards", json!(true));
+        changed |= set_component_value_if_changed(
+            save_shard,
+            "global_save_path",
+            json!("saves/profile/global.json"),
+        );
+        push_configured(&mut configured, "SaveShard2D", changed);
+    }
+
+    if let Some(wallet) = entity.get_component_mut("EconomyWallet") {
+        let mut changed = false;
+        changed |= set_component_value_if_changed(
+            wallet,
+            "resources",
+            json!({"Gold": 0, "Wood": 0, "Gems": 0}),
+        );
+        changed |= set_component_value_if_changed(wallet, "allow_negative", json!(false));
+        push_configured(&mut configured, "EconomyWallet", changed);
+    }
+
+    if let Some(persistent) = entity.get_component_mut("DontDestroyOnLoad") {
+        let mut changed = false;
+        changed |= set_component_value_if_changed(persistent, "preserve", json!(true));
+        changed |= set_component_value_if_changed(persistent, "group", json!("systems"));
+        push_configured(&mut configured, "DontDestroyOnLoad", changed);
+    }
+
+    configured
 }
 
 impl Game {
@@ -139,6 +392,14 @@ impl Game {
     }
 
     pub fn from_project(project_path: impl AsRef<Path>, runtime_mode: bool) -> io::Result<Self> {
+        Self::from_project_with_safe_mode(project_path, runtime_mode, SafeModeSettings::default())
+    }
+
+    pub fn from_project_with_safe_mode(
+        project_path: impl AsRef<Path>,
+        runtime_mode: bool,
+        safe_mode: SafeModeSettings,
+    ) -> io::Result<Self> {
         let project_path = project_path.as_ref().to_path_buf();
         let project_paths = AssetTools::ensure_project_folders(&project_path)?;
         let engine_config = EngineConfig::new(&project_path)?;
@@ -153,6 +414,7 @@ impl Game {
             BuildProfiles::new(project_paths.settings.join("build_profiles.json"))?;
         let runtime_config =
             RuntimeConfig::new(project_paths.settings.join("runtime_config.json"))?;
+        let runtime_tuning = runtime_config.optimized_tuning();
         let tags_layers_manager = TagsLayersManager::new(&project_paths.settings)?;
         let grid = Grid::new(60, 40, 32, 8);
         let tilemap_layers = TilemapLayers::new(grid.width, grid.height);
@@ -171,9 +433,7 @@ impl Game {
         for unit in &mut units {
             unit.sync_to_components();
         }
-        let world = World {
-            entities: units.clone(),
-        };
+        let runtime_world = RuntimeWorld::new(units);
 
         let mut console = DeveloperConsole::with_log_file(project_paths.logs.join("miniforge.log"));
         console.log(
@@ -186,7 +446,12 @@ impl Game {
         }
 
         let mut history = EditorHistory::default();
-        history.take_snapshot("Initial Scene", &units);
+        history.take_snapshot("Initial Scene", &runtime_world.units);
+        let start_scene = engine_config
+            .get("start_scene")
+            .and_then(Value::as_str)
+            .unwrap_or("main.scene")
+            .to_string();
 
         let mut game = Self {
             runtime_mode,
@@ -200,14 +465,12 @@ impl Game {
             scene_dirty: false,
             scene_dirty_reason: String::new(),
             console,
-            world,
-            spatial_index: SpatialIndex::default(),
-            units,
+            runtime_world,
             selected_units: Vec::new(),
             grid,
             tilemap_layers,
             camera,
-            clock: GameClock::default(),
+            clock: GameClock::from_tuning(&runtime_tuning),
             event_bus: EventBus::default(),
             resources,
             asset_database,
@@ -217,7 +480,7 @@ impl Game {
             runtime_config,
             tags_layers_manager,
             component_registry: ComponentRegistry::new(),
-            scene_manager: SceneManager::new(&project_path),
+            scene_manager: SceneManager::new_with_start_scene(&project_path, &start_scene),
             scene_validator: SceneValidator::default(),
             scene_save_manager: SceneSaveManager::new(),
             ui_canvases: json!([]),
@@ -227,10 +490,13 @@ impl Game {
             diagnostics: Diagnostics::default(),
             docking_workspace: EguiDockingWorkspace::new(),
             audio_mixer: AudioMixer::new(),
+            audio_system: AudioSystem::default(),
             animation_graphs: AnimationGraphLibrary::new(),
             material_library: MaterialLibrary::default(),
+            native_libraries: NativeLibraryManager::new(&project_path),
+            safe_mode,
             visual_script_runtime: VisualScriptRuntime::default(),
-            rhai_script_runtime: RhaiScriptRuntime::new(&project_path),
+            luau_script_runtime: LuauScriptRuntime::new(&project_path),
             script_debugger: ScriptDebugger::default(),
             script_editor: ScriptEditor::default(),
             sprite_editor: SpriteEditorCanvas::default(),
@@ -241,12 +507,37 @@ impl Game {
             runtime_2d_system: Runtime2DSystem::default(),
             physics_system: PhysicsSystem::new(),
             particle_system: ParticleSystem::default(),
+            narrative_system: NarrativeSystem::default(),
+            sprite_animation_system: SpriteAnimationSystem::new(&project_path),
             advanced_prefabs: AdvancedPrefabSystem::default(),
             archetypes: ArchetypeLibrary::with_defaults(),
             upgrade_manifest: EngineUpgradeManifest::new(),
             editor_workspace: EditorWorkspace::default(),
             programming: ProgrammingEnvironment::new(),
         };
+
+        if game.safe_mode.allows_plugins() {
+            match game.native_libraries.load_enabled() {
+                Ok(count) if count > 0 => game.console.log(
+                    format!("{count} biblioteca(s) nativa(s) cargadas"),
+                    "NATIVE",
+                ),
+                Err(errors) => {
+                    for error in errors.into_iter().take(8) {
+                        game.console.log(error, "NATIVE");
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            game.console.warning(
+                format!(
+                    "Plugins nativos desactivados por Safe Mode: {}",
+                    game.safe_mode.reason
+                ),
+                "SAFE_MODE",
+            );
+        }
 
         match game.scene_manager.load_current_scene_data() {
             Ok(scene_data) => game.apply_scene_data(&scene_data),
@@ -256,14 +547,15 @@ impl Game {
             ),
         }
         game.scene_save_manager
-            .bootstrap_from_scene(&mut game.units, &game.tilemap_layers);
+            .bootstrap_from_scene(&mut game.runtime_world.units, &game.tilemap_layers);
         game.sync_world();
-        game.history.take_snapshot("Loaded Scene", &game.units);
+        game.history
+            .take_snapshot("Loaded Scene", &game.runtime_world.units);
 
         let mut open_validator = ProjectValidator::default();
         let _ = open_validator.validate_with_context(
             &game.project_path,
-            &game.units,
+            &game.runtime_world.units,
             Some(&game.asset_database),
         );
         for err in open_validator.errors.iter().take(10) {
@@ -284,7 +576,7 @@ impl Game {
 
     fn apply_scene_data(&mut self, data: &Value) {
         if let Some(entities) = data.get("entities").and_then(Value::as_array) {
-            self.units = entities
+            let units = entities
                 .iter()
                 .map(|entity| {
                     let mut entity = GameObject::from_data(entity, true);
@@ -292,13 +584,17 @@ impl Game {
                     entity
                 })
                 .collect();
-            for entity in &mut self.units {
+            self.runtime_world.replace_entities(units);
+            for entity in &mut self.runtime_world.units {
                 entity.sync_from_components();
             }
             self.clear_selection();
             self.sync_world();
             self.console.log(
-                format!("Escena cargada: {} entidades", self.units.len()),
+                format!(
+                    "Escena cargada: {} entidades",
+                    self.runtime_world.units.len()
+                ),
                 "SCENE",
             );
         }
@@ -313,6 +609,53 @@ impl Game {
         if let Some(tile_data) = tile_data {
             self.tilemap_layers.deserialize(tile_data);
         }
+
+        let grid_data = data.get("grid").and_then(Value::as_object);
+        let configured_width = grid_data
+            .and_then(|grid| grid.get("width"))
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .unwrap_or(0);
+        let configured_height = grid_data
+            .and_then(|grid| grid.get("height"))
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .unwrap_or(0);
+        let width = if self.tilemap_layers.width > 0 {
+            self.tilemap_layers.width
+        } else {
+            configured_width.max(1)
+        };
+        let height = if self.tilemap_layers.height > 0 {
+            self.tilemap_layers.height
+        } else {
+            configured_height.max(1)
+        };
+        let tile_size = grid_data
+            .and_then(|grid| grid.get("tile_size"))
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .unwrap_or(self.grid.tile_size.max(1));
+        let chunk_size = grid_data
+            .and_then(|grid| grid.get("chunk_size"))
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .unwrap_or(self.grid.chunk_size.max(1));
+        self.grid = Grid::new(width, height, tile_size, chunk_size);
+        if let Some(collision) = self.tilemap_layers.layer("Collision") {
+            for y in 0..height {
+                for x in 0..width {
+                    self.grid
+                        .set_tile(x, y, i32::from(collision.get(x, y) != 0));
+                }
+            }
+        }
+        self.camera.set_bounds(
+            0.0,
+            0.0,
+            (width * tile_size) as f64,
+            (height * tile_size) as f64,
+        );
 
         if let Some(camera) = data.get("camera").and_then(Value::as_object) {
             self.camera.x = camera
@@ -364,59 +707,94 @@ impl Game {
         self.profiler.begin_frame();
         let clock_advance = self.clock.advance(dt);
         let mut marker = Instant::now();
-        AnimationSystem.update_entities(&mut self.units, &self.animation_graphs, dt, &self.mode);
+        self.sprite_animation_system
+            .update_entities(&mut self.runtime_world.units, dt, &self.mode);
+        self.profiler
+            .record_system("SpriteFrames2D", marker.elapsed().as_secs_f64() * 1000.0);
+        marker = Instant::now();
+        AnimationSystem.update_entities(
+            &mut self.runtime_world.units,
+            &self.animation_graphs,
+            dt,
+            &self.mode,
+        );
         self.profiler
             .record_system("Animation", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
         self.particle_system
-            .update_entities(&self.units, dt, &self.mode);
+            .update_entities(&self.runtime_world.units, dt, &self.mode);
         self.profiler
             .record_system("Particles", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
-        self.visual_script_runtime
-            .update_entities(&mut self.units, dt, &self.mode);
-        for error in self.visual_script_runtime.last_errors.iter().take(4) {
-            self.console.log(error.clone(), "SCRIPT");
+        self.audio_system.update_entities(
+            &mut self.runtime_world.units,
+            &self.audio_mixer,
+            &self.mode,
+        );
+        self.profiler
+            .record_system("Audio", marker.elapsed().as_secs_f64() * 1000.0);
+        marker = Instant::now();
+        if self.safe_mode.allows_graphs() {
+            self.visual_script_runtime.update_entities(
+                &mut self.runtime_world.units,
+                dt,
+                &self.mode,
+            );
+            for error in self.visual_script_runtime.last_errors.iter().take(4) {
+                self.console.log(error.clone(), "SCRIPT");
+            }
         }
         self.profiler
             .record_system("VisualGraph", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
-        let rhai_report = self
-            .rhai_script_runtime
-            .update_entities(&mut self.units, dt, &self.mode);
-        self.handle_rhai_report(rhai_report);
+        if self.safe_mode.allows_scripts() {
+            self.luau_script_runtime.set_camera_state(&self.camera);
+            let luau_report = self.luau_script_runtime.update_entities_with_fixed_steps(
+                &mut self.runtime_world.units,
+                dt,
+                self.clock.fixed_delta,
+                clock_advance.fixed_steps,
+                &self.mode,
+            );
+            self.handle_luau_report(luau_report);
+        }
         self.profiler
-            .record_system("Rhai", marker.elapsed().as_secs_f64() * 1000.0);
+            .record_system("Luau", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
         self.runtime_2d_system
-            .update_entities(&mut self.units, dt, &self.mode);
+            .update_entities(&mut self.runtime_world.units, dt, &self.mode);
         self.profiler
             .record_system("Runtime2D", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
         self.gameplay_system
-            .update_entities(&mut self.units, dt, &self.mode);
+            .update_entities(&mut self.runtime_world.units, dt, &self.mode);
         self.profiler
             .record_system("Gameplay", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
         self.rts_system
-            .update_entities(&mut self.units, dt, &self.mode);
+            .update_entities(&mut self.runtime_world.units, dt, &self.mode);
         self.profiler
             .record_system("RTS", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
-        MovementSystem.update_entities(&mut self.units, dt);
+        MovementSystem.update_entities(&mut self.runtime_world.units, dt);
         self.profiler
             .record_system("Movement", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
         self.physics_system
-            .update_entities_mut(&mut self.units, dt, &self.mode);
+            .update_entities_mut(&mut self.runtime_world.units, dt, &self.mode);
         self.profiler
             .record_system("Physics", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
+        self.runtime_2d_system.resolve_tilemap_collisions(
+            &mut self.runtime_world.units,
+            &self.grid,
+            &self.mode,
+        );
         self.runtime_2d_system
-            .resolve_tilemap_collisions(&mut self.units, &self.grid, &self.mode);
+            .advance_camera_shakes(&mut self.runtime_world.units, dt, &self.mode);
         self.runtime_2d_system.update_camera(
             &mut self.camera,
-            &self.units,
+            &self.runtime_world.units,
             dt,
             &self.mode,
             self.grid.tile_size.max(1) as f64,
@@ -424,36 +802,131 @@ impl Game {
         self.profiler
             .record_system("Runtime2DLate", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
-        let collision_events = self.physics_system.events.clone();
-        let mut collision_report = RhaiRunReport::default();
-        for event in collision_events
-            .iter()
-            .filter(|event| event.phase == PhysicsEventPhase::Enter)
-        {
-            collision_report.merge(self.rhai_script_runtime.run_collision_enter(
-                &mut self.units,
-                event.first_id,
-                event.second_name.clone(),
-            ));
-            collision_report.merge(self.rhai_script_runtime.run_collision_enter(
-                &mut self.units,
-                event.second_id,
-                event.first_name.clone(),
-            ));
+        if self.safe_mode.allows_scripts() {
+            let collision_events = self.physics_system.events.clone();
+            let mut collision_report = LuauRunReport::default();
+            for event in collision_events.iter().filter(|event| {
+                matches!(
+                    event.phase,
+                    PhysicsEventPhase::Enter | PhysicsEventPhase::Exit
+                )
+            }) {
+                match event.phase {
+                    PhysicsEventPhase::Enter => {
+                        collision_report.merge(self.luau_script_runtime.run_collision_enter(
+                            &mut self.runtime_world.units,
+                            event.first_id,
+                            event.second_name.clone(),
+                        ));
+                        collision_report.merge(
+                            self.luau_script_runtime.run_custom_event_for_entity(
+                                &mut self.runtime_world.units,
+                                event.first_id,
+                                physics_event_name(event.pair_type, event.phase),
+                                json!({
+                                    "self_id": event.first_id,
+                                    "other_id": event.second_id,
+                                    "other_name": event.second_name.clone(),
+                                    "pair_type": physics_pair_type_name(event.pair_type),
+                                    "phase": "enter",
+                                    "normal": {"x": event.normal.0, "y": event.normal.1},
+                                    "depth": event.depth,
+                                }),
+                            ),
+                        );
+                        collision_report.merge(self.luau_script_runtime.run_collision_enter(
+                            &mut self.runtime_world.units,
+                            event.second_id,
+                            event.first_name.clone(),
+                        ));
+                        collision_report.merge(
+                            self.luau_script_runtime.run_custom_event_for_entity(
+                                &mut self.runtime_world.units,
+                                event.second_id,
+                                physics_event_name(event.pair_type, event.phase),
+                                json!({
+                                    "self_id": event.second_id,
+                                    "other_id": event.first_id,
+                                    "other_name": event.first_name.clone(),
+                                    "pair_type": physics_pair_type_name(event.pair_type),
+                                    "phase": "enter",
+                                    "normal": {"x": -event.normal.0, "y": -event.normal.1},
+                                    "depth": event.depth,
+                                }),
+                            ),
+                        );
+                    }
+                    PhysicsEventPhase::Exit => {
+                        collision_report.merge(self.luau_script_runtime.run_collision_exit(
+                            &mut self.runtime_world.units,
+                            event.first_id,
+                            event.second_name.clone(),
+                        ));
+                        collision_report.merge(
+                            self.luau_script_runtime.run_custom_event_for_entity(
+                                &mut self.runtime_world.units,
+                                event.first_id,
+                                physics_event_name(event.pair_type, event.phase),
+                                json!({
+                                    "self_id": event.first_id,
+                                    "other_id": event.second_id,
+                                    "other_name": event.second_name.clone(),
+                                    "pair_type": physics_pair_type_name(event.pair_type),
+                                    "phase": "exit",
+                                    "normal": {"x": event.normal.0, "y": event.normal.1},
+                                    "depth": event.depth,
+                                }),
+                            ),
+                        );
+                        collision_report.merge(self.luau_script_runtime.run_collision_exit(
+                            &mut self.runtime_world.units,
+                            event.second_id,
+                            event.first_name.clone(),
+                        ));
+                        collision_report.merge(
+                            self.luau_script_runtime.run_custom_event_for_entity(
+                                &mut self.runtime_world.units,
+                                event.second_id,
+                                physics_event_name(event.pair_type, event.phase),
+                                json!({
+                                    "self_id": event.second_id,
+                                    "other_id": event.first_id,
+                                    "other_name": event.first_name.clone(),
+                                    "pair_type": physics_pair_type_name(event.pair_type),
+                                    "phase": "exit",
+                                    "normal": {"x": -event.normal.0, "y": -event.normal.1},
+                                    "depth": event.depth,
+                                }),
+                            ),
+                        );
+                    }
+                    PhysicsEventPhase::Stay => {}
+                }
+            }
+            self.handle_luau_report(collision_report);
         }
-        self.handle_rhai_report(collision_report);
         self.profiler
-            .record_system("RhaiCollision", marker.elapsed().as_secs_f64() * 1000.0);
+            .record_system("LuauCollision", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
-        self.world.entities = self.units.clone();
-        self.spatial_index.rebuild(&self.units);
+        self.runtime_world.mark_changed();
+        self.runtime_world.rebuild_index();
         self.profiler
             .record_system("WorldSync", marker.elapsed().as_secs_f64() * 1000.0);
-        self.diagnostics.update(dt);
-        self.profiler.set_counter("Entities", self.units.len());
+        self.diagnostics
+            .update_with_budget(dt, clock_advance.target_frame_delta * 1000.0);
+        self.diagnostics.record_frame_runtime(
+            clock_advance,
+            self.clock.fixed_delta,
+            self.runtime_world.units.len(),
+            self.profiler.systems_time_total_ms(),
+            self.profiler.slowest_system(),
+        );
+        self.profiler
+            .set_counter("Entities", self.runtime_world.units.len());
         self.profiler.set_counter(
             "ActiveEntities",
-            self.units
+            self.runtime_world
+                .units
                 .iter()
                 .filter(|entity| entity.enabled && entity.visible)
                 .count(),
@@ -463,11 +936,11 @@ impl Game {
         self.profiler
             .set_counter("VisualNodes", self.visual_script_runtime.executed_nodes);
         self.profiler
-            .set_counter("RhaiScripts", self.rhai_script_runtime.last_frame_scripts);
+            .set_counter("LuauScripts", self.luau_script_runtime.last_frame_scripts);
         self.profiler
-            .set_counter("RhaiReloads", self.rhai_script_runtime.reload_count);
+            .set_counter("LuauReloads", self.luau_script_runtime.reload_count);
         self.profiler
-            .set_counter("RhaiErrors", self.rhai_script_runtime.last_errors.len());
+            .set_counter("LuauErrors", self.luau_script_runtime.last_errors.len());
         self.profiler.set_counter(
             "Particles",
             self.particle_system
@@ -498,26 +971,48 @@ impl Game {
                     .copied()
                     .unwrap_or(0),
         );
-        self.script_debugger
-            .refresh(&self.rhai_script_runtime, &self.project_path, &self.units);
+        self.script_debugger.refresh(
+            &self.luau_script_runtime,
+            &self.project_path,
+            &self.runtime_world.units,
+        );
         self.profiler
             .set_counter("FixedTicks", clock_advance.fixed_steps);
         self.profiler
-            .set_counter("SpatialCells", self.spatial_index.cells.len());
+            .set_counter("FrameOverBudget", usize::from(clock_advance.over_budget));
+        self.profiler.set_counter(
+            "FixedStepSaturated",
+            usize::from(clock_advance.saturated_fixed_steps),
+        );
+        self.profiler
+            .set_metric("FrameBudgetMs", clock_advance.target_frame_delta * 1000.0);
+        self.profiler
+            .set_metric("FrameDtMs", clock_advance.scaled_dt * 1000.0);
+        self.profiler
+            .set_metric("FixedStepMs", self.clock.fixed_delta * 1000.0);
+        self.profiler
+            .set_metric("InterpolationAlpha", clock_advance.interpolation_alpha);
+        self.profiler
+            .set_metric("DroppedTimeMs", clock_advance.dropped_time * 1000.0);
+        self.profiler
+            .set_counter("SpatialCells", self.runtime_world.spatial_index.cells.len());
         self.play_mode_manager.tick_frame();
         self.profiler
             .set_counter("PlayFrames", self.play_mode_manager.frame_count);
         self.profiler.end_frame();
     }
 
-    fn handle_rhai_report(&mut self, report: RhaiRunReport) {
+    fn handle_luau_report(&mut self, report: LuauRunReport) {
         for error in report.errors.iter().take(6) {
             self.console.log(error.clone(), "SCRIPT");
+        }
+        for message in report.debug_messages.iter().take(8) {
+            self.console.log(message.clone(), "SCRIPT");
         }
         for scene in report.scene_requests.iter().take(1) {
             if let Err(error) = self.load_scene(scene) {
                 self.console
-                    .log(format!("Rhai load_scene({scene}) falló: {error}"), "SCRIPT");
+                    .log(format!("Luau load_scene({scene}) falló: {error}"), "SCRIPT");
             }
         }
         if !report.spawned.is_empty() || !report.destroyed.is_empty() || report.ui_updates > 0 {
@@ -526,12 +1021,30 @@ impl Game {
     }
 
     pub fn dispatch_script_key_down(&mut self, key: &str) {
-        let report = self.rhai_script_runtime.run_key_down(&mut self.units, key);
-        self.handle_rhai_report(report);
+        if !self.safe_mode.allows_scripts() {
+            return;
+        }
+        let report = self
+            .luau_script_runtime
+            .run_key_down(&mut self.runtime_world.units, key);
+        self.handle_luau_report(report);
+    }
+
+    pub fn interact(&mut self) -> Option<NarrativeEvent> {
+        self.narrative_system
+            .interact(&mut self.runtime_world.units)
+    }
+
+    pub fn choose_dialogue(&mut self, choice_index: usize) -> Option<NarrativeEvent> {
+        self.narrative_system
+            .choose(&mut self.runtime_world.units, choice_index)
     }
 
     pub fn set_script_input_pressed(&mut self, key: &str, pressed: bool) {
-        self.rhai_script_runtime.set_input_pressed(key, pressed);
+        if !self.safe_mode.allows_scripts() {
+            return;
+        }
+        self.luau_script_runtime.set_input_pressed(key, pressed);
     }
 
     pub fn set_character_input(
@@ -568,7 +1081,7 @@ impl Game {
         dash_pressed: bool,
     ) -> usize {
         let mut updated = 0;
-        for entity in &mut self.units {
+        for entity in &mut self.runtime_world.units {
             if entity.tag != tag {
                 continue;
             }
@@ -605,7 +1118,13 @@ impl Game {
     }
 
     pub fn capture_editor_snapshot(&self) -> EditorSnapshot {
-        EditorSnapshot::capture(&self.units, &self.tilemap_layers, &self.grid, &self.camera)
+        EditorSnapshot::capture(
+            &self.runtime_world.units,
+            &self.tilemap_layers,
+            &self.grid,
+            &self.camera,
+            &self.ui_canvases,
+        )
     }
 
     pub fn push_editor_command(
@@ -624,10 +1143,11 @@ impl Game {
 
     pub fn undo_editor_command(&mut self) -> Option<String> {
         let label = self.history.undo_command(
-            &mut self.units,
+            &mut self.runtime_world.units,
             &mut self.tilemap_layers,
             &mut self.grid,
             &mut self.camera,
+            &mut self.ui_canvases,
         )?;
         self.clear_selection();
         self.sync_world();
@@ -637,10 +1157,11 @@ impl Game {
 
     pub fn redo_editor_command(&mut self) -> Option<String> {
         let label = self.history.redo_command(
-            &mut self.units,
+            &mut self.runtime_world.units,
             &mut self.tilemap_layers,
             &mut self.grid,
             &mut self.camera,
+            &mut self.ui_canvases,
         )?;
         self.clear_selection();
         self.sync_world();
@@ -652,7 +1173,7 @@ impl Game {
         if self.mode == "PLAY" {
             return;
         }
-        for entity in &mut self.units {
+        for entity in &mut self.runtime_world.units {
             entity.sync_from_components();
             if let Some(ai) = entity.get_component_mut("AIController") {
                 ai.set_f64("think_timer", 0.0);
@@ -662,7 +1183,7 @@ impl Game {
             }
         }
         self.play_mode_manager
-            .enter_play_mode(&self.units, &mut self.mode);
+            .enter_play_mode(&self.runtime_world.units, &mut self.mode);
         self.sync_world();
         let dirty = if self.scene_dirty {
             format!("dirty ({})", self.scene_dirty_reason)
@@ -672,7 +1193,7 @@ impl Game {
         self.console.log(
             format!(
                 "Play Mode ON: snapshot de {} entidades (live). F11 pausa simulación; F5 vuelve al editor y restaura escena. Estado: {dirty}.",
-                self.units.len()
+                self.runtime_world.units.len()
             ),
             "ENGINE",
         );
@@ -682,8 +1203,11 @@ impl Game {
         if self.mode != "PLAY" {
             return;
         }
-        self.play_mode_manager
-            .exit_play_mode(&mut self.units, &mut self.mode, reason);
+        self.play_mode_manager.exit_play_mode(
+            &mut self.runtime_world.units,
+            &mut self.mode,
+            reason,
+        );
         let frames = self.play_mode_manager.last_session_frames;
         self.clear_selection();
         self.sync_world();
@@ -705,15 +1229,15 @@ impl Game {
     }
 
     pub fn get_entity_by_id(&self, entity_id: u64) -> Option<&GameObject> {
-        self.units.iter().find(|entity| entity.id == entity_id)
+        self.runtime_world.entity(entity_id)
     }
 
     pub fn get_entity_by_id_mut(&mut self, entity_id: u64) -> Option<&mut GameObject> {
-        self.units.iter_mut().find(|entity| entity.id == entity_id)
+        self.runtime_world.entity_mut(entity_id)
     }
 
     pub fn clear_selection(&mut self) {
-        for entity in &mut self.units {
+        for entity in &mut self.runtime_world.units {
             entity.selected = false;
         }
         self.selected_units.clear();
@@ -721,12 +1245,55 @@ impl Game {
 
     pub fn select_entity(&mut self, entity_id: u64) -> bool {
         self.clear_selection();
+        self.select_entity_additive(entity_id)
+    }
+
+    pub fn select_entity_additive(&mut self, entity_id: u64) -> bool {
+        if self.selected_units.contains(&entity_id) {
+            return true;
+        }
         let Some(entity) = self.get_entity_by_id_mut(entity_id) else {
             return false;
         };
+        if entity.locked || !entity.visible || !entity.enabled {
+            return false;
+        }
         entity.set_selected(true);
         self.selected_units.push(entity_id);
         true
+    }
+
+    pub fn toggle_entity_selection(&mut self, entity_id: u64) -> bool {
+        if self.selected_units.contains(&entity_id) {
+            self.selected_units.retain(|id| *id != entity_id);
+            if let Some(entity) = self.get_entity_by_id_mut(entity_id) {
+                entity.set_selected(false);
+            }
+            return false;
+        }
+        self.select_entity_additive(entity_id)
+    }
+
+    pub fn select_editor_group(&mut self, group_id: &str, additive: bool) -> usize {
+        if !additive {
+            self.clear_selection();
+        }
+        let ids = self
+            .runtime_world
+            .units
+            .iter()
+            .filter(|entity| {
+                entity.editor_group.as_deref() == Some(group_id)
+                    && !entity.locked
+                    && entity.visible
+                    && entity.enabled
+            })
+            .map(|entity| entity.id)
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.select_entity_additive(id);
+        }
+        self.selected_units.len()
     }
 
     pub fn set_entity_parent(&mut self, child_id: u64, parent_id: u64) -> bool {
@@ -740,7 +1307,7 @@ impl Game {
             return false;
         };
         HierarchyManager::set_parent(child, &parent);
-        HierarchyManager::sync_child_world_transforms(&mut self.units);
+        HierarchyManager::sync_child_world_transforms(&mut self.runtime_world.units);
         self.sync_world();
         self.mark_scene_dirty("Set Parent");
         self.console.log(
@@ -765,16 +1332,22 @@ impl Game {
     }
 
     pub fn move_entity_in_hierarchy(&mut self, entity_id: u64, delta: isize) -> bool {
-        let Some(index) = self.units.iter().position(|entity| entity.id == entity_id) else {
+        let Some(index) = self
+            .runtime_world
+            .units
+            .iter()
+            .position(|entity| entity.id == entity_id)
+        else {
             return false;
         };
-        let next =
-            (index as isize + delta).clamp(0, self.units.len().saturating_sub(1) as isize) as usize;
+        let next = (index as isize + delta)
+            .clamp(0, self.runtime_world.units.len().saturating_sub(1) as isize)
+            as usize;
         if index == next {
             return false;
         }
-        let entity = self.units.remove(index);
-        self.units.insert(next, entity);
+        let entity = self.runtime_world.units.remove(index);
+        self.runtime_world.units.insert(next, entity);
         self.mark_scene_dirty("Move Hierarchy Row");
         self.console
             .log(format!("Hierarchy: entity #{entity_id} movida"), "EDITOR");
@@ -788,7 +1361,7 @@ impl Game {
         entity.height = 1.0;
         entity.sync_to_components();
         let id = entity.id;
-        self.units.push(entity);
+        self.runtime_world.units.push(entity);
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Spawn GameObject");
@@ -810,7 +1383,7 @@ impl Game {
         let before = self.capture_editor_snapshot();
         let entity = self.archetypes.instantiate(archetype_key, x, y, team_id)?;
         let id = entity.id;
-        self.units.push(entity);
+        self.runtime_world.units.push(entity);
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Spawn Archetype");
@@ -836,7 +1409,7 @@ impl Game {
         }
         entity.sync_to_components();
         let id = entity.id;
-        self.units.push(entity);
+        self.runtime_world.units.push(entity);
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Spawn Sprite Entity");
@@ -860,7 +1433,7 @@ impl Game {
         entity.add_component(default_component("Worker").expect("Worker"));
         entity.sync_to_components();
         let id = entity.id;
-        self.units.push(entity);
+        self.runtime_world.units.push(entity);
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Spawn Unit");
@@ -900,7 +1473,7 @@ impl Game {
         entity.add_component(default_component("LootTable").expect("LootTable"));
         entity.sync_to_components();
         let id = entity.id;
-        self.units.push(entity);
+        self.runtime_world.units.push(entity);
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Spawn Enemy");
@@ -922,7 +1495,7 @@ impl Game {
         entity.add_component(default_component("ObjectiveMarker").expect("ObjectiveMarker"));
         entity.sync_to_components();
         let id = entity.id;
-        self.units.push(entity);
+        self.runtime_world.units.push(entity);
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Spawn Resource");
@@ -959,7 +1532,7 @@ impl Game {
             );
         }
         let id = entity.id;
-        self.units.push(entity);
+        self.runtime_world.units.push(entity);
         self.sync_world();
         self.mark_scene_dirty("Spawn RTS Controller");
         id
@@ -1053,7 +1626,7 @@ impl Game {
         }
         entity.sync_to_components();
         let id = entity.id;
-        self.units.push(entity);
+        self.runtime_world.units.push(entity);
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Spawn RTS Building");
@@ -1089,7 +1662,7 @@ impl Game {
         }
         entity.sync_to_components();
         let id = entity.id;
-        self.units.push(entity);
+        self.runtime_world.units.push(entity);
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Spawn Construction Site");
@@ -1115,7 +1688,7 @@ impl Game {
         };
         let placement = BuildPlacement::find_nearest_valid(
             &self.grid,
-            &self.units,
+            &self.runtime_world.units,
             desired_cell,
             &footprint,
             8,
@@ -1144,7 +1717,7 @@ impl Game {
     }
 
     pub fn create_rts_skirmish(&mut self) {
-        self.units.clear();
+        self.runtime_world.units.clear();
         self.clear_selection();
         self.grid = Grid::new(48, 32, 32, 8);
         self.tilemap_layers = TilemapLayers::new(self.grid.width, self.grid.height);
@@ -1214,7 +1787,7 @@ impl Game {
 
     pub fn rts_threat_sources_for_team(&self, team_id: i64) -> Vec<(Point, u32)> {
         let mut threats = Vec::new();
-        for entity in &self.units {
+        for entity in &self.runtime_world.units {
             if !entity.visible || Self::entity_team_id(entity) == team_id {
                 continue;
             }
@@ -1273,7 +1846,7 @@ impl Game {
         clone.selected = false;
         clone.sync_to_components();
         let id = clone.id;
-        self.units.push(clone);
+        self.runtime_world.units.push(clone);
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Duplicate Entity");
@@ -1290,9 +1863,11 @@ impl Game {
 
     pub fn delete_entity(&mut self, entity_id: u64) -> bool {
         let snapshot_before = self.capture_editor_snapshot();
-        let len_before = self.units.len();
-        self.units.retain(|entity| entity.id != entity_id);
-        let deleted = self.units.len() != len_before;
+        let len_before = self.runtime_world.units.len();
+        self.runtime_world
+            .units
+            .retain(|entity| entity.id != entity_id);
+        let deleted = self.runtime_world.units.len() != len_before;
         if deleted {
             self.selected_units
                 .retain(|selected| *selected != entity_id);
@@ -1331,6 +1906,161 @@ impl Game {
             );
         }
         true
+    }
+
+    pub fn prepare_complex_game_foundations(&mut self) -> ComplexGameFoundationReport {
+        let before = self.capture_editor_snapshot();
+        let mut report = ComplexGameFoundationReport::default();
+
+        let target_id = self
+            .selected_units
+            .iter()
+            .copied()
+            .find(|id| self.get_entity_by_id(*id).is_some())
+            .or_else(|| {
+                self.runtime_world
+                    .units
+                    .iter()
+                    .find(|entity| entity.tag == "Player")
+                    .map(|entity| entity.id)
+            })
+            .unwrap_or_else(|| {
+                let mut player = GameObject::new(4.0, 4.0, Some("Player".to_string()));
+                player.entity_type = "Player".to_string();
+                player.tag = "Player".to_string();
+                player.layer = "Units".to_string();
+                player.width = 0.85;
+                player.height = 1.2;
+                player.sync_to_components();
+                let id = player.id;
+                self.runtime_world.units.push(player);
+                report.created_player = true;
+                id
+            });
+        report.target_entity_id = target_id;
+
+        if let Some(player) = self.get_entity_by_id_mut(target_id) {
+            if player.tag != "Player" {
+                player.tag = "Player".to_string();
+                report.identity_changed = true;
+            }
+            if player.layer != "Units" {
+                player.layer = "Units".to_string();
+                report.identity_changed = true;
+            }
+            if player.width < 0.25 {
+                player.width = 0.85;
+                report.identity_changed = true;
+            }
+            if player.height < 0.25 {
+                player.height = 1.2;
+                report.identity_changed = true;
+            }
+
+            let bundle = player.ensure_components(COMPLEX_FOUNDATION_PLAYER_COMPONENTS);
+            report.added_player_components = bundle.added;
+            report.missing_components.extend(bundle.missing);
+            report.configured_components.extend(
+                configure_complex_foundation_player(player, target_id)
+                    .into_iter()
+                    .map(|component| format!("Player.{component}")),
+            );
+            player.sync_to_components();
+        }
+
+        let systems_id = self
+            .runtime_world
+            .units
+            .iter()
+            .find(|entity| entity.name == "GameSystems" || entity.tag == "System")
+            .map(|entity| entity.id)
+            .unwrap_or_else(|| {
+                let mut systems = GameObject::new(0.0, 0.0, Some("GameSystems".to_string()));
+                systems.entity_type = "System".to_string();
+                systems.tag = "System".to_string();
+                systems.layer = "EditorOnly".to_string();
+                systems.visible = false;
+                systems.locked = true;
+                systems.sync_to_components();
+                let id = systems.id;
+                self.runtime_world.units.push(systems);
+                report.created_systems_entity = true;
+                id
+            });
+        report.systems_entity_id = Some(systems_id);
+
+        if let Some(systems) = self.get_entity_by_id_mut(systems_id) {
+            if systems.name != "GameSystems" {
+                systems.name = "GameSystems".to_string();
+                report.identity_changed = true;
+            }
+            if systems.tag != "System" {
+                systems.tag = "System".to_string();
+                report.identity_changed = true;
+            }
+            if systems.layer != "EditorOnly" {
+                systems.layer = "EditorOnly".to_string();
+                report.identity_changed = true;
+            }
+            if systems.visible {
+                systems.visible = false;
+                report.identity_changed = true;
+            }
+            if !systems.locked {
+                systems.locked = true;
+                report.identity_changed = true;
+            }
+
+            let bundle = systems.ensure_components(COMPLEX_FOUNDATION_SYSTEM_COMPONENTS);
+            report.added_system_components = bundle.added;
+            report.missing_components.extend(bundle.missing);
+            report.configured_components.extend(
+                configure_complex_foundation_systems(systems)
+                    .into_iter()
+                    .map(|component| format!("GameSystems.{component}")),
+            );
+            systems.sync_to_components();
+        }
+
+        let had_canvas = !ui_canvases_from_value(&self.ui_canvases).is_empty();
+        self.ensure_default_ui_canvas_scene_data();
+        report.ui_canvas_ready = !ui_canvases_from_value(&self.ui_canvases).is_empty();
+        report.created_ui_canvas = !had_canvas && report.ui_canvas_ready;
+
+        self.select_entity(target_id);
+        self.sync_world();
+
+        report.changed = report.created_player
+            || report.created_systems_entity
+            || report.created_ui_canvas
+            || report.identity_changed
+            || !report.added_player_components.is_empty()
+            || !report.added_system_components.is_empty()
+            || !report.configured_components.is_empty();
+
+        if report.changed {
+            self.mark_scene_dirty("Prepare Complex Foundations");
+            self.console.log(
+                format!(
+                    "Complex foundations listas: player #{target_id}, systems #{systems_id}, +{} player comps, +{} system comps",
+                    report.added_player_components.len(),
+                    report.added_system_components.len()
+                ),
+                "EDITOR",
+            );
+            self.push_editor_command(
+                "Prepare Complex Foundations",
+                EditorCommandKind::SceneOperation {
+                    name: "Prepare Complex Foundations".to_string(),
+                },
+                before,
+            );
+        } else {
+            self.console
+                .log("Complex foundations ya estaban listas.", "EDITOR");
+        }
+
+        report
     }
 
     pub fn remove_component_from_entity(
@@ -1425,11 +2155,36 @@ impl Game {
         x: f64,
         y: f64,
     ) -> io::Result<DropOutcome> {
+        let target = self.selected_units.first().copied();
+        self.drop_asset_to_target(payload, x, y, target)
+    }
+
+    /// Applies an asset only when the pointer is over `target_entity_id`;
+    /// dropping on empty viewport space always creates a new scene entity.
+    pub fn drop_asset_to_target(
+        &mut self,
+        payload: &DragPayload,
+        x: f64,
+        y: f64,
+        target_entity_id: Option<u64>,
+    ) -> io::Result<DropOutcome> {
+        if payload.kind == DragAssetKind::Scene {
+            let scene_name = payload
+                .relative_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(payload.relative_path.as_str())
+                .to_string();
+            self.load_scene(&scene_name)?;
+            return Ok(DropOutcome::OpenScene(scene_name));
+        }
+
         let before = self.capture_editor_snapshot();
         if payload.kind == DragAssetKind::Prefab {
             let manager = PrefabManager::new(&self.project_path);
             let path = self.project_path.join(&payload.relative_path);
-            let Some(id) = manager.instantiate_prefab(&mut self.units, path, x, y)? else {
+            let Some(id) = manager.instantiate_prefab(&mut self.runtime_world.units, path, x, y)?
+            else {
                 return Ok(DropOutcome::Unsupported(format!(
                     "No se pudo instanciar prefab {}",
                     payload.name
@@ -1446,10 +2201,8 @@ impl Game {
             return Ok(DropOutcome::SpawnedEntity(id));
         }
 
-        if matches!(
-            payload.kind,
-            DragAssetKind::Material | DragAssetKind::VisualGraph
-        ) && let Some(id) = self.selected_units.first().copied()
+        if payload.can_apply_to_entity()
+            && let Some(id) = target_entity_id
             && let Some(entity) = self.get_entity_by_id_mut(id)
         {
             let outcome = ContentDropper::apply_to_entity(entity, payload);
@@ -1476,7 +2229,7 @@ impl Game {
             )));
         };
         let id = entity.id;
-        self.units.push(entity);
+        self.runtime_world.units.push(entity);
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Drop Asset");
@@ -1497,7 +2250,12 @@ impl Game {
 
     pub fn refresh_assets(&mut self) -> io::Result<usize> {
         self.resources.scan_all()?;
-        self.asset_database.scan()?;
+        if self.safe_mode.allows_asset_importers() {
+            self.asset_database.scan()?;
+        } else {
+            self.console
+                .warning("Reimportación de assets omitida por Safe Mode", "SAFE_MODE");
+        }
         Ok(self.asset_database.assets.len())
     }
 
@@ -1544,7 +2302,7 @@ impl Game {
         let mut validator = ProjectValidator::default();
         let valid = validator.validate_with_context(
             &self.project_path,
-            &self.units,
+            &self.runtime_world.units,
             Some(&self.asset_database),
         );
         for warning in &validator.warnings {
@@ -1577,6 +2335,26 @@ impl Game {
         Ok(manifest)
     }
 
+    pub fn backend_plan(&mut self) -> io::Result<EngineBackendPlan> {
+        let plan = EngineBackend::plan_project(&self.project_path)?;
+        self.console.log(
+            format!(
+                "Backend plan: {} servicios, {} plugins, {} recursos, export_ready={}",
+                plan.service_startup_order.len(),
+                plan.plugins.load_order.len(),
+                plan.resources.total_files,
+                plan.export_ready
+            ),
+            "BACKEND",
+        );
+        for recommendation in plan.recommendations.iter().take(8) {
+            self.console.log(recommendation, "BACKEND");
+        }
+        self.console
+            .log(plan.system_audit.concise_summary(), "BACKEND");
+        Ok(plan)
+    }
+
     pub fn export_runtime(&mut self, profile: ExportProfile) -> io::Result<RuntimeExportReport> {
         self.save_project()?;
         let output_root = self.project_path.join("build");
@@ -1596,6 +2374,13 @@ impl Game {
             self.console
                 .log(format!("Asset faltante en build: {missing}"), "WARNING");
         }
+        self.console.log(
+            format!("Readiness export: {}%", report.readiness_score),
+            "BUILD",
+        );
+        for action in report.readiness_actions.iter().take(5) {
+            self.console.log(format!("Next pass: {action}"), "BUILD");
+        }
         Ok(report)
     }
 
@@ -1613,6 +2398,16 @@ impl Game {
         for w in report.warnings.iter().take(20) {
             self.console.log(w.clone(), "WARNING");
         }
+        if let Some(runtime) = report.runtime_binary_copied.as_ref() {
+            self.console
+                .log(format!("Runtime incluido: {}", runtime.display()), "BUILD");
+        }
+        for launcher in &report.launcher_scripts {
+            self.console.log(
+                format!("Launcher generado: {}", launcher.display()),
+                "BUILD",
+            );
+        }
         self.console.log(
             format!(
                 "Paquete {} creado en {}",
@@ -1629,7 +2424,7 @@ impl Game {
             .autosave_manager
             .recover_entities()
             .map_err(|e| e.to_string())?;
-        self.units = entities;
+        self.runtime_world.replace_entities(entities);
         self.sync_world();
         self.mark_scene_dirty("Recovered from autosave");
         self.console.log(
@@ -1682,15 +2477,15 @@ impl Game {
         Ok(path)
     }
 
-    pub fn create_rhai_script_asset(&mut self, name: &str) -> io::Result<PathBuf> {
-        let path = AssetTools::create_rhai_script(&self.project_path, name)?;
+    pub fn create_luau_script_asset(&mut self, name: &str) -> io::Result<PathBuf> {
+        let path = AssetTools::create_luau_script(&self.project_path, name)?;
         self.script_editor.open(path.clone())?;
         self.docking_workspace.open_tab(EditorDockTab::ScriptEditor);
         self.docking_workspace
             .set_floating_visibility("script_editor", true);
         self.refresh_assets().ok();
         self.console.log(
-            format!("Script Rhai creado y abierto: {}", path.display()),
+            format!("Script Luau creado y abierto: {}", path.display()),
             "SCRIPT",
         );
         Ok(path)
@@ -1712,6 +2507,14 @@ impl Game {
         }
         self.console
             .log(format!("Archivo abierto: {}", opened.display()), "EDITOR");
+        self.event_bus.emit(
+            if opened.extension().and_then(|value| value.to_str()) == Some("mfgraph") {
+                "GraphOpened"
+            } else {
+                "ScriptOpened"
+            },
+            serde_json::json!({"path": opened.to_string_lossy()}),
+        );
         Ok(opened)
     }
 
@@ -1736,9 +2539,21 @@ impl Game {
             self.console
                 .log(format!("Archivo guardado: {}", path.display()), "EDITOR");
         }
-        if path.extension().and_then(|value| value.to_str()) == Some("rhai") {
-            self.rhai_script_runtime.mark_script_changed(&path);
+        if path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("luau") || ext.eq_ignore_ascii_case("lua"))
+        {
+            self.luau_script_runtime.mark_script_changed(&path);
         }
+        self.event_bus.emit(
+            if path.extension().and_then(|value| value.to_str()) == Some("mfgraph") {
+                "GraphSaved"
+            } else {
+                "ScriptSaved"
+            },
+            serde_json::json!({"path": path.to_string_lossy(), "valid": valid}),
+        );
         self.refresh_assets().ok();
         Ok(valid)
     }
@@ -1800,6 +2615,22 @@ impl Game {
                 .log(format!("Nodo {node_type} agregado al graph"), "SCRIPT");
         }
         Ok(id)
+    }
+
+    pub fn add_quick_action_to_open_graph(
+        &mut self,
+        action: &VisualGraphQuickAction,
+    ) -> io::Result<Vec<String>> {
+        let mut graph = self.open_graph_json()?;
+        let ids = ProgrammingEnvironment::add_quick_action_to_graph(&mut graph, action);
+        if !ids.is_empty() {
+            self.replace_open_graph_json(&graph)?;
+            self.console.log(
+                format!("Quick action agregada al graph: {}", action.label),
+                "SCRIPT",
+            );
+        }
+        Ok(ids)
     }
 
     fn open_graph_json(&self) -> io::Result<Value> {
@@ -1914,10 +2745,14 @@ impl Game {
 
     pub fn attach_program_template_to_selected(&mut self, template_name: &str) -> Option<String> {
         let id = self.selected_units.first().copied()?;
-        let index = self.units.iter().position(|entity| entity.id == id)?;
+        let index = self
+            .runtime_world
+            .units
+            .iter()
+            .position(|entity| entity.id == id)?;
         let graph_name = {
             let programming = &mut self.programming;
-            let entity = &mut self.units[index];
+            let entity = &mut self.runtime_world.units[index];
             programming.attach_template_to_entity(entity, template_name)
         };
         self.mark_scene_dirty("Attach Visual Graph");
@@ -1932,10 +2767,16 @@ impl Game {
         let Some(id) = self.selected_units.first().copied() else {
             return Ok(None);
         };
-        let Some(index) = self.units.iter().position(|entity| entity.id == id) else {
+        let Some(index) = self
+            .runtime_world
+            .units
+            .iter()
+            .position(|entity| entity.id == id)
+        else {
             return Ok(None);
         };
         let dependencies = self
+            .runtime_world
             .units
             .get(index)
             .and_then(|entity| entity.sprite_guid.clone())
@@ -1944,7 +2785,7 @@ impl Game {
         let project_path = self.project_path.clone();
         let path = {
             let system = &mut self.advanced_prefabs;
-            let entity = &mut self.units[index];
+            let entity = &mut self.runtime_world.units[index];
             system.create_prefab_from_entity(project_path, entity, false, dependencies)?
         };
         self.refresh_assets().ok();
@@ -1958,13 +2799,18 @@ impl Game {
         let Some(id) = self.selected_units.first().copied() else {
             return Ok(None);
         };
-        let Some(index) = self.units.iter().position(|entity| entity.id == id) else {
+        let Some(index) = self
+            .runtime_world
+            .units
+            .iter()
+            .position(|entity| entity.id == id)
+        else {
             return Ok(None);
         };
         let project_path = self.project_path.clone();
         let path = {
             let system = &mut self.advanced_prefabs;
-            let entity = &mut self.units[index];
+            let entity = &mut self.runtime_world.units[index];
             system.create_variant_from_entity(project_path, entity)?
         };
         self.refresh_assets().ok();
@@ -1977,19 +2823,24 @@ impl Game {
         let Some(id) = self.selected_units.first().copied() else {
             return Ok(false);
         };
-        let Some(index) = self.units.iter().position(|entity| entity.id == id) else {
+        let Some(index) = self
+            .runtime_world
+            .units
+            .iter()
+            .position(|entity| entity.id == id)
+        else {
             return Ok(false);
         };
-        let Some(source) = self.units[index].prefab_source.clone() else {
+        let Some(source) = self.runtime_world.units[index].prefab_source.clone() else {
             return Ok(false);
         };
         let path = PathBuf::from(&source);
         if !path.exists() {
             return Ok(false);
         }
-        let entity = &mut self.units[index];
+        let entity = &mut self.runtime_world.units[index];
         entity.sync_to_components();
-        let data = json!({
+        let data = PrefabSerializer::stamp(json!({
             "version": crate::engine::version::ENGINE_VERSION,
             "kind": "MiniForgeAdvancedPrefab",
             "prefab_name": entity.name,
@@ -2001,8 +2852,17 @@ impl Game {
                 "script_count": entity.scripts.len(),
                 "source": "apply_instance",
             }
-        });
-        AssetTools::write_json(&path, &data)?;
+        }))
+        .map_err(io::Error::from)?;
+        ProjectStorage::write_json_atomic_with_backup(
+            &path,
+            &data,
+            BackupPolicy::new(
+                path.with_extension("prefab.bak"),
+                DEFAULT_BACKUP_GENERATIONS,
+            ),
+        )
+        .map_err(io::Error::from)?;
         self.refresh_assets().ok();
         self.mark_scene_dirty("Apply Prefab");
         self.console
@@ -2014,10 +2874,15 @@ impl Game {
         let Some(id) = self.selected_units.first().copied() else {
             return Ok(false);
         };
-        let Some(index) = self.units.iter().position(|entity| entity.id == id) else {
+        let Some(index) = self
+            .runtime_world
+            .units
+            .iter()
+            .position(|entity| entity.id == id)
+        else {
             return Ok(false);
         };
-        let Some(source) = self.units[index].prefab_source.clone() else {
+        let Some(source) = self.runtime_world.units[index].prefab_source.clone() else {
             return Ok(false);
         };
         let manager = PrefabManager::new(&self.project_path);
@@ -2025,13 +2890,13 @@ impl Game {
             return Ok(false);
         };
         loaded.id = id;
-        loaded.x = self.units[index].x;
-        loaded.y = self.units[index].y;
+        loaded.x = self.runtime_world.units[index].x;
+        loaded.y = self.runtime_world.units[index].y;
         loaded.prefab_source = Some(source);
-        loaded.prefab_guid = self.units[index].prefab_guid.clone();
+        loaded.prefab_guid = self.runtime_world.units[index].prefab_guid.clone();
         loaded.is_prefab_instance = true;
         loaded.sync_to_components();
-        self.units[index] = loaded;
+        self.runtime_world.units[index] = loaded;
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Revert Prefab");
@@ -2069,7 +2934,7 @@ impl Game {
         };
         let manager = PrefabManager::new(&self.project_path);
         let path = self.project_path.join(&prefab.relative_path);
-        let id = manager.instantiate_prefab(&mut self.units, path, x, y)?;
+        let id = manager.instantiate_prefab(&mut self.runtime_world.units, path, x, y)?;
         if let Some(id) = id {
             self.select_entity(id);
             self.sync_world();
@@ -2096,7 +2961,7 @@ impl Game {
         let before = self.capture_editor_snapshot();
         let manager = PrefabManager::new(&self.project_path);
         let path = self.project_path.join(relative_path);
-        let id = manager.instantiate_prefab(&mut self.units, &path, x, y)?;
+        let id = manager.instantiate_prefab(&mut self.runtime_world.units, &path, x, y)?;
         if let Some(id) = id {
             self.select_entity(id);
             self.sync_world();
@@ -2139,18 +3004,20 @@ impl Game {
 
     pub fn scene_summary(&self) -> String {
         let prefab_instances = self
+            .runtime_world
             .units
             .iter()
             .filter(|entity| entity.is_prefab_instance)
             .count();
         let visual_graphs = self
+            .runtime_world
             .units
             .iter()
             .filter(|entity| entity.get_component("VisualScript").is_some())
             .count();
         format!(
             "{} entities | {} prefab instances | {} visual graph components | {} assets | {} graph assets",
-            self.units.len(),
+            self.runtime_world.units.len(),
             prefab_instances,
             visual_graphs,
             self.asset_database.assets.len(),
@@ -2159,12 +3026,12 @@ impl Game {
     }
 
     pub fn sync_world(&mut self) {
-        self.world.entities = self.units.clone();
-        self.spatial_index.rebuild(&self.units);
+        self.runtime_world.mark_changed();
+        self.runtime_world.rebuild_index();
     }
 
     pub fn create_topdown_starter(&mut self) -> usize {
-        self.units.clear();
+        self.runtime_world.units.clear();
         self.selected_units.clear();
         self.grid = Grid::new(60, 40, 32, 8);
         self.tilemap_layers = TilemapLayers::new(self.grid.width, self.grid.height);
@@ -2256,9 +3123,13 @@ impl Game {
 
         for index in 0..3 {
             let pickup_id = self.spawn_game_object("HealthPickup", 10.0 + index as f64 * 3.0, 15.0);
-            if let Some(pickup_index) = self.units.iter().position(|entity| entity.id == pickup_id)
+            if let Some(pickup_index) = self
+                .runtime_world
+                .units
+                .iter()
+                .position(|entity| entity.id == pickup_id)
             {
-                let pickup = &mut self.units[pickup_index];
+                let pickup = &mut self.runtime_world.units[pickup_index];
                 pickup.tag = "Neutral".to_string();
                 pickup.add_component(default_component("Interaction").expect("Interaction"));
                 pickup
@@ -2281,11 +3152,11 @@ impl Game {
             "Starter TopDown creado: player, enemigos, pickups, NPC, UI y tilemap.",
             "PROJECT",
         );
-        self.units.len()
+        self.runtime_world.units.len()
     }
 
     pub fn create_platformer_starter(&mut self) -> usize {
-        self.units.clear();
+        self.runtime_world.units.clear();
         self.selected_units.clear();
         self.grid = Grid::new(80, 28, 32, 8);
         self.tilemap_layers = TilemapLayers::new(self.grid.width, self.grid.height);
@@ -2410,7 +3281,7 @@ impl Game {
             "Starter Platformer creado: controller 2D, plataformas, monedas, checkpoint y enemigos.",
             "PROJECT",
         );
-        self.units.len()
+        self.runtime_world.units.len()
     }
 
     pub fn create_ui_label(&mut self, text: &str, x: f64, y: f64) -> u64 {
@@ -2425,7 +3296,7 @@ impl Game {
         ui.set("text_align", json!("left"));
         entity.add_component(ui);
         let id = entity.id;
-        self.units.push(entity);
+        self.runtime_world.units.push(entity);
         self.sync_world();
         self.mark_scene_dirty("Create UI Label");
         id
@@ -2443,7 +3314,7 @@ impl Game {
         ui.set("interactable", json!(true));
         entity.add_component(ui);
         let id = entity.id;
-        self.units.push(entity);
+        self.runtime_world.units.push(entity);
         self.sync_world();
         self.mark_scene_dirty("Create UI Button");
         id
@@ -2462,7 +3333,7 @@ impl Game {
         ui.set_f64("max_progress", 1.0);
         entity.add_component(ui);
         let id = entity.id;
-        self.units.push(entity);
+        self.runtime_world.units.push(entity);
         self.sync_world();
         self.mark_scene_dirty("Create UI ProgressBar");
         id
@@ -2635,7 +3506,37 @@ impl Game {
     }
 
     pub fn save_scene(&mut self) -> io::Result<()> {
-        if !self.scene_validator.validate_entities(&self.units) {
+        let world_report = self.runtime_world.validate();
+        if !world_report.is_valid() {
+            for duplicate_id in world_report.duplicate_ids.iter().take(8) {
+                self.console.error(
+                    format!("RuntimeWorld contiene ID duplicado: {duplicate_id}"),
+                    "WORLD",
+                );
+            }
+            for (child_id, parent_id) in world_report.dangling_parent_ids.iter().take(8) {
+                self.console.error(
+                    format!(
+                        "RuntimeWorld contiene parent roto: entity {child_id} -> parent {parent_id}"
+                    ),
+                    "WORLD",
+                );
+            }
+            for cycle in world_report.hierarchy_cycles.iter().take(8) {
+                self.console.error(
+                    format!("RuntimeWorld contiene ciclo de parenting: {cycle:?}"),
+                    "WORLD",
+                );
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "El mundo runtime contiene identidades o jerarquia invalidas.",
+            ));
+        }
+        if !self
+            .scene_validator
+            .validate_entities(&self.runtime_world.units)
+        {
             for error in self.scene_validator.errors.iter().take(8) {
                 self.console.log(error.clone(), "ERROR");
             }
@@ -2652,7 +3553,7 @@ impl Game {
         }
         self.scene_save_manager.save_scene(
             &self.scene_manager,
-            &mut self.units,
+            &mut self.runtime_world.units,
             &self.tilemap_layers,
             &self.camera,
             &self.mode,
@@ -2668,12 +3569,12 @@ impl Game {
 
     pub fn create_empty_scene(&mut self, name: &str) -> io::Result<PathBuf> {
         let path = self.scene_manager.create_new_scene(name)?;
-        self.units.clear();
+        self.runtime_world.units.clear();
         self.selected_units.clear();
         self.tilemap_layers = TilemapLayers::new(self.grid.width, self.grid.height);
         self.ui_canvases = json!([]);
         self.scene_save_manager
-            .bootstrap_from_scene(&mut self.units, &self.tilemap_layers);
+            .bootstrap_from_scene(&mut self.runtime_world.units, &self.tilemap_layers);
         self.sync_world();
         self.mark_scene_dirty("New Empty Scene");
         self.save_scene()?;
@@ -2689,23 +3590,25 @@ impl Game {
 
     pub fn load_scene(&mut self, name: &str) -> io::Result<usize> {
         let data = self.scene_manager.load_scene_data(name)?;
-        let entities = self.scene_manager.load_scene(name, &self.units)?;
-        self.units = entities;
+        let entities = self
+            .scene_manager
+            .load_scene(name, &self.runtime_world.units)?;
+        self.runtime_world.replace_entities(entities);
         self.apply_scene_environment(&data);
         self.clear_selection();
         self.sync_world();
         self.scene_save_manager
-            .bootstrap_from_scene(&mut self.units, &self.tilemap_layers);
+            .bootstrap_from_scene(&mut self.runtime_world.units, &self.tilemap_layers);
         self.mark_scene_clean();
         self.console.log(
             format!(
                 "Escena cargada: {} ({} entidades)",
                 self.scene_manager.current_scene,
-                self.units.len()
+                self.runtime_world.units.len()
             ),
             "SCENE",
         );
-        Ok(self.units.len())
+        Ok(self.runtime_world.units.len())
     }
 
     pub fn scene_names(&self) -> io::Result<Vec<String>> {
@@ -2723,7 +3626,7 @@ impl Game {
     pub fn load_scene_additive(&mut self, name: &str) -> io::Result<usize> {
         let added = self
             .scene_manager
-            .load_scene_additive(name, &mut self.units)?;
+            .load_scene_additive(name, &mut self.runtime_world.units)?;
         self.sync_world();
         self.mark_scene_dirty("Load Additive Scene");
         self.console.log(
@@ -2737,7 +3640,9 @@ impl Game {
     }
 
     pub fn unload_scene(&mut self, name: &str) -> usize {
-        let removed = self.scene_manager.unload_scene(name, &mut self.units);
+        let removed = self
+            .scene_manager
+            .unload_scene(name, &mut self.runtime_world.units);
         self.clear_selection();
         self.sync_world();
         self.mark_scene_dirty("Unload Scene");
@@ -2752,8 +3657,10 @@ impl Game {
         let data = self
             .scene_manager
             .load_scene_data(&self.scene_manager.current_scene)?;
-        let entities = self.scene_manager.restart_scene(&self.units)?;
-        self.units = entities;
+        let entities = self
+            .scene_manager
+            .restart_scene(&self.runtime_world.units)?;
+        self.runtime_world.replace_entities(entities);
         self.apply_scene_environment(&data);
         self.clear_selection();
         self.sync_world();
@@ -2762,13 +3669,15 @@ impl Game {
             format!("Escena reiniciada: {}", self.scene_manager.current_scene),
             "SCENE",
         );
-        Ok(self.units.len())
+        Ok(self.runtime_world.units.len())
     }
 
     pub fn push_scene(&mut self, name: &str) -> io::Result<usize> {
         let data = self.scene_manager.load_scene_data(name)?;
-        let entities = self.scene_manager.push_scene(name, &self.units)?;
-        self.units = entities;
+        let entities = self
+            .scene_manager
+            .push_scene(name, &self.runtime_world.units)?;
+        self.runtime_world.replace_entities(entities);
         self.apply_scene_environment(&data);
         self.clear_selection();
         self.sync_world();
@@ -2777,17 +3686,17 @@ impl Game {
             format!("Scene stack push: {}", self.scene_manager.current_scene),
             "SCENE",
         );
-        Ok(self.units.len())
+        Ok(self.runtime_world.units.len())
     }
 
     pub fn pop_scene(&mut self) -> io::Result<Option<usize>> {
-        let Some(entities) = self.scene_manager.pop_scene(&self.units)? else {
+        let Some(entities) = self.scene_manager.pop_scene(&self.runtime_world.units)? else {
             return Ok(None);
         };
         let data = self
             .scene_manager
             .load_scene_data(&self.scene_manager.current_scene)?;
-        self.units = entities;
+        self.runtime_world.replace_entities(entities);
         self.apply_scene_environment(&data);
         self.clear_selection();
         self.sync_world();
@@ -2796,7 +3705,7 @@ impl Game {
             format!("Scene stack pop: {}", self.scene_manager.current_scene),
             "SCENE",
         );
-        Ok(Some(self.units.len()))
+        Ok(Some(self.runtime_world.units.len()))
     }
 
     pub fn transition_to_scene(
@@ -2806,10 +3715,13 @@ impl Game {
         duration: f64,
     ) -> io::Result<usize> {
         let data = self.scene_manager.load_scene_data(name)?;
-        let entities = self
-            .scene_manager
-            .transition_to_scene(name, kind, duration, &self.units)?;
-        self.units = entities;
+        let entities = self.scene_manager.transition_to_scene(
+            name,
+            kind,
+            duration,
+            &self.runtime_world.units,
+        )?;
+        self.runtime_world.replace_entities(entities);
         self.apply_scene_environment(&data);
         self.clear_selection();
         self.sync_world();
@@ -2826,7 +3738,7 @@ impl Game {
             ),
             "SCENE",
         );
-        Ok(self.units.len())
+        Ok(self.runtime_world.units.len())
     }
 
     pub fn save_project(&mut self) -> io::Result<()> {
@@ -2842,7 +3754,7 @@ impl Game {
             "active_tool": self.active_tool,
             "workspace": self.editor_workspace.active_mode.label(),
             "asset_count": self.asset_database.assets.len(),
-            "entity_count": self.units.len(),
+            "entity_count": self.runtime_world.units.len(),
             "scene_dirty": self.scene_dirty,
             "last_dirty_reason": self.scene_dirty_reason,
             "manifest": {

@@ -1,5 +1,8 @@
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
 use crate::engine::component::{
     Component, advanced_component_category, advanced_component_types, default_component,
 };
@@ -7,6 +10,21 @@ use crate::engine::component::{
 #[derive(Debug, Clone)]
 pub struct ComponentRegistry {
     pub categories: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ComponentClassDescriptor {
+    pub name: String,
+    pub category: String,
+    pub creatable: bool,
+    #[serde(default)]
+    pub properties: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ComponentSubMenu {
+    pub category: String,
+    pub component_types: Vec<String>,
 }
 
 impl Default for ComponentRegistry {
@@ -51,5 +69,61 @@ impl ComponentRegistry {
 
     pub fn names(&self) -> Vec<String> {
         self.categories.keys().cloned().collect()
+    }
+
+    pub fn category_for(&self, component_type: &str) -> Option<&str> {
+        self.categories.get(component_type).map(String::as_str)
+    }
+
+    pub fn descriptor(&self, component_type: &str) -> Option<ComponentClassDescriptor> {
+        let category = self.category_for(component_type)?.to_string();
+        let component = default_component(component_type);
+        Some(ComponentClassDescriptor {
+            name: component_type.to_string(),
+            category,
+            creatable: component.is_some(),
+            properties: component
+                .map(|component| component.data.into_iter().collect())
+                .unwrap_or_default(),
+        })
+    }
+
+    pub fn descriptors(&self) -> Vec<ComponentClassDescriptor> {
+        self.names()
+            .into_iter()
+            .filter_map(|name| self.descriptor(&name))
+            .collect()
+    }
+
+    pub fn submenu_model(&self) -> Vec<ComponentSubMenu> {
+        let mut by_category = BTreeMap::<String, Vec<String>>::new();
+        for (component_type, category) in &self.categories {
+            by_category
+                .entry(category.clone())
+                .or_default()
+                .push(component_type.clone());
+        }
+        by_category
+            .into_iter()
+            .map(|(category, mut component_types)| {
+                component_types.sort();
+                ComponentSubMenu {
+                    category,
+                    component_types,
+                }
+            })
+            .collect()
+    }
+
+    pub fn search(&self, query: &str) -> Vec<ComponentClassDescriptor> {
+        let query = query.to_lowercase();
+        self.descriptors()
+            .into_iter()
+            .filter(|descriptor| {
+                query.is_empty()
+                    || descriptor.name.to_lowercase().contains(&query)
+                    || descriptor.category.to_lowercase().contains(&query)
+            })
+            .collect()
     }
 }

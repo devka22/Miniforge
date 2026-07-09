@@ -52,6 +52,21 @@ pub struct VisualGraphNodeDefinition {
     pub default_node: Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisualGraphQuickAction {
+    pub label: String,
+    pub description: String,
+    pub node_types: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProgrammingCatalogSummary {
+    pub template_count: usize,
+    pub node_count: usize,
+    pub categories: Vec<String>,
+    pub quick_action_count: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProgrammingEnvironment {
     pub templates: Vec<ProgramTemplate>,
@@ -126,6 +141,16 @@ impl ProgrammingEnvironment {
                     "Wallet, receta, produccion preferida y cola base para RTS 2D.",
                     graph_rts_production_economy(),
                 ),
+                ProgramTemplate::new(
+                    "Massive2DSpawnDirector",
+                    "Controla oleadas, presupuestos y limite de entidades para mapas 2D grandes.",
+                    graph_massive_2d_spawn_director(),
+                ),
+                ProgramTemplate::new(
+                    "GrandStrategyMonthlyTick",
+                    "Tick mensual para economia, research y presion social en grand strategy 2D.",
+                    graph_grand_strategy_monthly_tick(),
+                ),
             ],
             opened_graphs: Vec::new(),
             compile_count: 0,
@@ -175,6 +200,70 @@ impl ProgrammingEnvironment {
         node_catalog()
             .into_iter()
             .find(|definition| definition.node_type.eq_ignore_ascii_case(node_type))
+    }
+
+    pub fn catalog_summary(&self) -> ProgrammingCatalogSummary {
+        let nodes = self.node_catalog();
+        ProgrammingCatalogSummary {
+            template_count: self.templates.len(),
+            node_count: nodes.len(),
+            categories: nodes
+                .iter()
+                .map(|node| node.category.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            quick_action_count: self.quick_actions().len(),
+        }
+    }
+
+    pub fn quick_actions(&self) -> Vec<VisualGraphQuickAction> {
+        vec![
+            quick_action(
+                "Debug startup",
+                "EventStart -> Log -> SetVariable",
+                &["EventStart", "Log", "SetVariable"],
+            ),
+            quick_action(
+                "Health branch",
+                "Damage/Heal decision flow",
+                &["SetHealth", "BranchHealth", "Damage", "Heal"],
+            ),
+            quick_action(
+                "Inventory buy",
+                "Resource check, spend and equip",
+                &["EconomyAdd", "BranchResource", "EconomySpend", "EquipItem"],
+            ),
+            quick_action(
+                "Ability loop",
+                "Trigger ability, quest progress and cooldown",
+                &[
+                    "TriggerAbility",
+                    "QuestProgress",
+                    "StartCooldown",
+                    "RechargeAbility",
+                ],
+            ),
+        ]
+    }
+
+    pub fn add_quick_action_to_graph(
+        graph: &mut Value,
+        action: &VisualGraphQuickAction,
+    ) -> Vec<String> {
+        let mut ids = Vec::new();
+        let mut x = next_graph_node_x(graph);
+        let y = 120.0;
+        for node_type in &action.node_types {
+            if let Some(id) = Self::add_graph_node_at(graph, node_type, x, y) {
+                ids.push(id);
+                x += 230.0;
+            }
+        }
+        for pair in ids.windows(2) {
+            Self::connect_graph_nodes(graph, &pair[0], &pair[1]);
+        }
+        ids
     }
 
     pub fn template_graph(&self, name: &str) -> Value {
@@ -469,6 +558,11 @@ impl ProgrammingEnvironment {
     }
 
     pub fn add_graph_node(graph: &mut Value, node_type: &str) -> Option<String> {
+        let x = next_graph_node_x(graph);
+        Self::add_graph_node_at(graph, node_type, x, 110.0)
+    }
+
+    pub fn add_graph_node_at(graph: &mut Value, node_type: &str, x: f64, y: f64) -> Option<String> {
         let nodes = graph.get_mut("nodes").and_then(Value::as_array_mut)?;
         let definition = Self::node_definition(node_type);
         let safe_type = definition
@@ -492,10 +586,7 @@ impl ProgrammingEnvironment {
             .unwrap_or_else(|| json!({"type": safe_type, "message": "New node", "next": null}));
         if let Some(map) = node.as_object_mut() {
             map.insert("id".to_string(), json!(id.clone()));
-            map.insert(
-                "position".to_string(),
-                json!({"x": 120.0 + (index as f64 * 36.0), "y": 110.0 + (index as f64 * 22.0)}),
-            );
+            map.insert("position".to_string(), json!({"x": x, "y": y}));
         }
         nodes.push(node);
         Some(id)
@@ -524,7 +615,7 @@ impl ProgramTemplate {
 
 fn graph_base(name: &str, nodes: Value, variables: Value) -> Value {
     let nodes = with_auto_node_layout(nodes);
-    json!({
+    crate::engine::visual_graph_serializer::VisualGraphSerializer::stamp(json!({
         "version": crate::engine::version::ENGINE_VERSION,
         "kind": "MiniForgeVisualGraph",
         "runtime": "rust_visual_graph",
@@ -535,7 +626,33 @@ fn graph_base(name: &str, nodes: Value, variables: Value) -> Value {
             "canvas": {"x": 0, "y": 0, "zoom": 1.0}
         },
         "nodes": nodes,
-    })
+    }))
+    .expect("built-in visual graph template must satisfy its schema")
+}
+
+fn quick_action(label: &str, description: &str, node_types: &[&str]) -> VisualGraphQuickAction {
+    VisualGraphQuickAction {
+        label: label.to_string(),
+        description: description.to_string(),
+        node_types: node_types
+            .iter()
+            .map(|node_type| (*node_type).to_string())
+            .collect(),
+    }
+}
+
+fn next_graph_node_x(graph: &Value) -> f64 {
+    let nodes = graph
+        .get("nodes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| node_position(node, index).0)
+        .fold(80.0, f64::max)
+        + 230.0
 }
 
 fn with_auto_node_layout(nodes: Value) -> Value {
@@ -1360,5 +1477,41 @@ fn graph_rts_production_economy() -> Value {
             {"id": "update", "type": "EventUpdate", "next": null}
         ]),
         json!({"Gold": 240.0, "Wood": 80.0}),
+    )
+}
+
+fn graph_massive_2d_spawn_director() -> Value {
+    graph_base(
+        "Massive2DSpawnDirector",
+        json!([
+            {"id": "start", "type": "EventStart", "next": "budget"},
+            {"id": "budget", "type": "SetVariable", "name": "entity_budget", "value": 2500, "next": "setup"},
+            {"id": "setup", "type": "ConfigureSpawner", "prefab": "Enemy", "interval": 1.5, "radius": 18.0, "max_alive": 120, "spawn_on_start": false, "next": "log"},
+            {"id": "log", "type": "Log", "message": "Massive 2D spawn director ready", "next": null},
+            {"id": "update", "type": "EventUpdate", "next": "budget_check"},
+            {"id": "budget_check", "type": "BranchVariable", "name": "entity_budget", "operator": ">", "value": 0, "true_next": "tick_spawn", "false_next": "throttle"},
+            {"id": "tick_spawn", "type": "AddVariable", "name": "spawn_pressure", "amount": 1, "next": null},
+            {"id": "throttle", "type": "Log", "message": "Spawn budget reached; throttle wave", "next": null}
+        ]),
+        json!({"entity_budget": 2500, "spawn_pressure": 0}),
+    )
+}
+
+fn graph_grand_strategy_monthly_tick() -> Value {
+    graph_base(
+        "GrandStrategyMonthlyTick",
+        json!([
+            {"id": "start", "type": "EventStart", "next": "set_month"},
+            {"id": "set_month", "type": "SetVariable", "name": "month", "value": 1, "next": "seed_treasury"},
+            {"id": "seed_treasury", "type": "EconomyAdd", "resource": "Gold", "amount": 50.0, "next": "log"},
+            {"id": "log", "type": "Log", "message": "Grand strategy tick ready", "next": null},
+            {"id": "update", "type": "EventUpdate", "next": "advance_month"},
+            {"id": "advance_month", "type": "AddVariable", "name": "month_progress", "amount": 1, "next": "month_ready"},
+            {"id": "month_ready", "type": "BranchVariable", "name": "month_progress", "operator": ">=", "value": 60, "true_next": "collect_tax", "false_next": null},
+            {"id": "collect_tax", "type": "EconomyAdd", "resource": "Gold", "amount": 12.0, "next": "research"},
+            {"id": "research", "type": "AddVariable", "name": "research_points", "amount": 1, "next": "reset"},
+            {"id": "reset", "type": "SetVariable", "name": "month_progress", "value": 0, "next": null}
+        ]),
+        json!({"month": 1, "month_progress": 0, "research_points": 0}),
     )
 }

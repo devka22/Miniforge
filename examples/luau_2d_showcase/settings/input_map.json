@@ -1,0 +1,9 @@
+{
+  "actions": {
+    "move_left": ["A", "Left"],
+    "move_right": ["D", "Right"],
+    "jump": ["Space"],
+    "fire": ["MouseLeft", "Ctrl"],
+    "run": ["Shift"]
+  }
+}

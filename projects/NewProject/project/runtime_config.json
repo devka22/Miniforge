@@ -1,12 +1,46 @@
 {
-    "game_name": "MiniForge Game",
-    "start_scene": "main.scene",
-    "window_width": 1100,
-    "window_height": 740,
-    "fullscreen": false,
-    "target_fps": 60,
-    "show_debug": false,
-    "show_fps": true,
-    "allow_console": true,
-    "allow_editor_hotkeys": true
+  "game_name": "MiniForge Game",
+  "start_scene": "main.scene",
+  "window_width": 1100,
+  "window_height": 740,
+  "fullscreen": false,
+  "target_fps": 60,
+  "show_debug": false,
+  "show_fps": true,
+  "allow_console": true,
+  "allow_editor_hotkeys": true,
+  "graphics": {
+    "view_frustum_culling": true,
+    "occlusion_culling": true,
+    "lod_enabled": true,
+    "backface_culling_3d": true,
+    "lod_near_pixels": 48,
+    "lod_far_pixels": 18,
+    "lod_cull_pixels": 3,
+    "occlusion_padding": 0,
+    "max_source_cores": 42,
+    "minimap_entity_budget": 58,
+    "profiles": {
+      "low": {
+        "max_source_cores": 18,
+        "minimap_entity_budget": 32,
+        "lod_far_pixels": 24
+      },
+      "medium": {
+        "max_source_cores": 42,
+        "minimap_entity_budget": 58,
+        "lod_far_pixels": 18
+      },
+      "high": {
+        "max_source_cores": 72,
+        "minimap_entity_budget": 84,
+        "lod_far_pixels": 14
+      },
+      "ultra": {
+        "max_source_cores": 128,
+        "minimap_entity_budget": 140,
+        "lod_far_pixels": 10
+      }
+    }
+  }
 }

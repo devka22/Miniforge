@@ -1,0 +1,9 @@
+{
+  "id": "automated_build",
+  "label": "Validate and Build Debug",
+  "entry": "tools/production_suite.py",
+  "menu_path": "Tools/Build/Validate and Build Debug",
+  "description": "Validate, rebuild the manifest and export a debug runtime in one action.",
+  "trusted": true,
+  "timeout_ms": 120000
+}

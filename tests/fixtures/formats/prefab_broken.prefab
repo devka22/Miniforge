@@ -1,0 +1,10 @@
+{
+  "format": "miniforge.prefab",
+  "schema_version": 1,
+  "engine_version": "0.9.3",
+  "prefab_name": "BrokenHero",
+  "entity": {
+    "name": "",
+    "components": []
+  }
+}

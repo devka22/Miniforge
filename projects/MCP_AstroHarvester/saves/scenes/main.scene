@@ -1,0 +1,1345 @@
+{
+  "version": "0.9.1.1",
+  "engine_version": "0.9.1.1",
+  "scene_name": "main",
+  "mode": "EDITOR",
+  "active_tool": "Select",
+  "tile_brush": 0,
+  "brush_size": 1,
+  "camera": {
+    "x": 120,
+    "y": 110,
+    "zoom": 1.08
+  },
+  "control_groups": {},
+  "grid": {
+    "width": 60,
+    "height": 40,
+    "tile_size": 32,
+    "chunk_size": 8
+  },
+  "tiles": [],
+  "tilemap_layers": [],
+  "settings": {
+    "genre": "topdown_rts_hybrid",
+    "win_condition": "Collect 250 Crystal and keep ForgeBase alive.",
+    "generated_by": "miniforge-mcp"
+  },
+  "entities": [
+    {
+      "type": "GameObject",
+      "id": 1,
+      "name": "GameRules",
+      "enabled": true,
+      "active": true,
+      "visible": false,
+      "locked": true,
+      "x": 0,
+      "y": 0,
+      "position": [
+        0,
+        0
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 3.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": null,
+      "tag": "Untagged",
+      "layer": "EditorOnly",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 0,
+          "y": 0,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            255,
+            255,
+            255
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "GameMode2D",
+          "enabled": true,
+          "default_pawn": "Pilot",
+          "start_scene": "saves/scenes/main.scene"
+        },
+        {
+          "component_type": "GameState2D",
+          "enabled": true,
+          "phase": "collect_crystals",
+          "score": {
+            "crystals": 0
+          }
+        },
+        {
+          "component_type": "RuntimeBudget2D",
+          "enabled": true,
+          "max_entities": 5000,
+          "max_visible_sprites": 2000
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "Unit",
+      "id": 10,
+      "name": "Pilot",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 6,
+      "y": 7,
+      "position": [
+        6,
+        7
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 4.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": "PilotController.rhai",
+      "tag": "Player",
+      "layer": "Units",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 6,
+          "y": 7,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            90,
+            190,
+            255
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "Health",
+          "enabled": true,
+          "max_health": 120,
+          "health": 120
+        },
+        {
+          "component_type": "Stats",
+          "enabled": true,
+          "attack": 14,
+          "agility": 8,
+          "defense": 2
+        },
+        {
+          "component_type": "Inventory",
+          "enabled": true,
+          "capacity": 16,
+          "currency": {
+            "Crystal": 0
+          }
+        },
+        {
+          "component_type": "Equipment",
+          "enabled": true
+        },
+        {
+          "component_type": "Ability",
+          "enabled": true,
+          "ability_id": "pulse_dash",
+          "display_name": "Pulse Dash",
+          "cooldown": 1.5,
+          "range": 4,
+          "power": 12
+        },
+        {
+          "component_type": "CharacterController2D",
+          "enabled": true,
+          "mode": "topdown",
+          "walk_speed": 5.5,
+          "run_speed": 7
+        },
+        {
+          "component_type": "NavAgent",
+          "enabled": true,
+          "speed": 4.5
+        },
+        {
+          "component_type": "Commandable",
+          "enabled": true,
+          "can_gather": true,
+          "can_build": false
+        },
+        {
+          "component_type": "Vision",
+          "enabled": true,
+          "radius": 8
+        },
+        {
+          "component_type": "Saveable",
+          "enabled": true,
+          "save_key": "pilot"
+        },
+        {
+          "component_type": "ParticleEmitter",
+          "enabled": true,
+          "looped": true,
+          "rate": 10,
+          "burst_count": 4
+        },
+        {
+          "component_type": "Material2D",
+          "enabled": true,
+          "material": "PilotGlow",
+          "shader": "sprite_lit_fog",
+          "emission": [
+            35,
+            95,
+            180
+          ]
+        },
+        {
+          "component_type": "CameraFollow",
+          "enabled": true,
+          "smoothness": 7,
+          "zoom": 1.1
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 20,
+      "name": "ForgeBase",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 4,
+      "y": 5,
+      "position": [
+        4,
+        5
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        2.4,
+        2
+      ],
+      "width": 2.4,
+      "height": 2,
+      "speed": 3.5,
+      "radius": 1.2,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": null,
+      "tag": "Building",
+      "layer": "Buildings",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 4,
+          "y": 5,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            130,
+            210,
+            255
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "Health",
+          "enabled": true,
+          "max_health": 450,
+          "health": 450
+        },
+        {
+          "component_type": "Team",
+          "enabled": true,
+          "team_id": 1,
+          "team_name": "Player",
+          "color": [
+            80,
+            160,
+            255
+          ]
+        },
+        {
+          "component_type": "EconomyWallet",
+          "enabled": true,
+          "resources": {
+            "Crystal": 75,
+            "Gold": 250,
+            "Wood": 120
+          }
+        },
+        {
+          "component_type": "ProductionRecipeBook",
+          "enabled": true,
+          "preferred_recipe": "Drone",
+          "recipes": [
+            {
+              "unit_type": "Drone",
+              "display_name": "Scout Drone",
+              "build_time": 3,
+              "cost": {
+                "Crystal": 25
+              }
+            },
+            {
+              "unit_type": "Turret",
+              "display_name": "Light Turret",
+              "build_time": 6,
+              "cost": {
+                "Crystal": 55,
+                "Gold": 40
+              }
+            }
+          ]
+        },
+        {
+          "component_type": "ProductionQueue",
+          "enabled": true,
+          "rally_x": 7,
+          "rally_y": 5,
+          "max_queue": 5
+        },
+        {
+          "component_type": "Buildable",
+          "enabled": true,
+          "display_name": "Forge Base",
+          "footprint_w": 3,
+          "footprint_h": 2
+        },
+        {
+          "component_type": "Commandable",
+          "enabled": true,
+          "can_move": false,
+          "can_produce": true
+        },
+        {
+          "component_type": "Vision",
+          "enabled": true,
+          "radius": 10
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 30,
+      "name": "CrystalNode_A",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 10,
+      "y": 6,
+      "position": [
+        10,
+        6
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 3.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": null,
+      "tag": "Resource",
+      "layer": "Ground",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 10,
+          "y": 6,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            80,
+            255,
+            210
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "ResourceNode",
+          "enabled": true,
+          "resource_type": "Crystal",
+          "amount": 500,
+          "max_amount": 500,
+          "gather_rate": 14
+        },
+        {
+          "component_type": "ObjectiveMarker",
+          "enabled": true,
+          "label": "Crystal",
+          "color": [
+            90,
+            255,
+            220
+          ]
+        },
+        {
+          "component_type": "Light2D",
+          "enabled": true,
+          "color": [
+            90,
+            255,
+            220
+          ],
+          "radius": 5,
+          "intensity": 1.35,
+          "flicker": true
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 31,
+      "name": "CrystalNode_B",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 14,
+      "y": 10,
+      "position": [
+        14,
+        10
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 3.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": null,
+      "tag": "Resource",
+      "layer": "Ground",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 14,
+          "y": 10,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            120,
+            255,
+            180
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "ResourceNode",
+          "enabled": true,
+          "resource_type": "Crystal",
+          "amount": 650,
+          "max_amount": 650,
+          "gather_rate": 10
+        },
+        {
+          "component_type": "ObjectiveMarker",
+          "enabled": true,
+          "label": "Rich Crystal",
+          "color": [
+            120,
+            255,
+            180
+          ]
+        },
+        {
+          "component_type": "Light2D",
+          "enabled": true,
+          "color": [
+            120,
+            255,
+            180
+          ],
+          "radius": 6,
+          "intensity": 1.15,
+          "flicker": true
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "Unit",
+      "id": 40,
+      "name": "EnemyDrone_A",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 17,
+      "y": 8,
+      "position": [
+        17,
+        8
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 4.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": "DronePatrol.rhai",
+      "tag": "Enemy",
+      "layer": "Units",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 17,
+          "y": 8,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            255,
+            92,
+            110
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "Health",
+          "enabled": true,
+          "max_health": 65,
+          "health": 65
+        },
+        {
+          "component_type": "Team",
+          "enabled": true,
+          "team_id": 2,
+          "team_name": "Enemy",
+          "color": [
+            255,
+            95,
+            95
+          ]
+        },
+        {
+          "component_type": "Stats",
+          "enabled": true,
+          "attack": 8,
+          "agility": 6
+        },
+        {
+          "component_type": "AIController",
+          "enabled": true,
+          "behavior": "patrol",
+          "home_x": 17,
+          "home_y": 8,
+          "detection_radius": 6
+        },
+        {
+          "component_type": "DamageDealer",
+          "enabled": true,
+          "damage": 8,
+          "target_tags": [
+            "Player"
+          ]
+        },
+        {
+          "component_type": "CombatTarget",
+          "enabled": true,
+          "target_tags": [
+            "Player"
+          ],
+          "aggro_radius": 7
+        },
+        {
+          "component_type": "ThreatSource",
+          "enabled": true,
+          "strength": 6,
+          "radius": 4
+        },
+        {
+          "component_type": "Vision",
+          "enabled": true,
+          "radius": 7
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "Unit",
+      "id": 41,
+      "name": "EnemyDrone_B",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 20,
+      "y": 12,
+      "position": [
+        20,
+        12
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 4.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": "DronePatrol.rhai",
+      "tag": "Enemy",
+      "layer": "Units",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 20,
+          "y": 12,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            255,
+            120,
+            92
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "Health",
+          "enabled": true,
+          "max_health": 80,
+          "health": 80
+        },
+        {
+          "component_type": "Team",
+          "enabled": true,
+          "team_id": 2,
+          "team_name": "Enemy",
+          "color": [
+            255,
+            95,
+            95
+          ]
+        },
+        {
+          "component_type": "Stats",
+          "enabled": true,
+          "attack": 10,
+          "defense": 1
+        },
+        {
+          "component_type": "AIController",
+          "enabled": true,
+          "behavior": "guard",
+          "home_x": 20,
+          "home_y": 12,
+          "detection_radius": 7.5
+        },
+        {
+          "component_type": "DamageDealer",
+          "enabled": true,
+          "damage": 10,
+          "target_tags": [
+            "Player"
+          ]
+        },
+        {
+          "component_type": "CombatTarget",
+          "enabled": true,
+          "target_tags": [
+            "Player"
+          ],
+          "aggro_radius": 8
+        },
+        {
+          "component_type": "ThreatSource",
+          "enabled": true,
+          "strength": 8,
+          "radius": 5
+        },
+        {
+          "component_type": "Vision",
+          "enabled": true,
+          "radius": 7
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 50,
+      "name": "NorthGateCheckpoint",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 22,
+      "y": 5,
+      "position": [
+        22,
+        5
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 3.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": null,
+      "tag": "Neutral",
+      "layer": "Ground",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 22,
+          "y": 5,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            255,
+            222,
+            120
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "Checkpoint",
+          "enabled": true,
+          "checkpoint_id": "north_gate",
+          "respawn_x": 6,
+          "respawn_y": 7,
+          "activation_radius": 1.5
+        },
+        {
+          "component_type": "ObjectiveMarker",
+          "enabled": true,
+          "label": "Gate",
+          "color": [
+            255,
+            222,
+            120
+          ]
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 100,
+      "name": "HUD_Status",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": true,
+      "x": 0,
+      "y": 0,
+      "position": [
+        0,
+        0
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 3.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": null,
+      "tag": "Untagged",
+      "layer": "UI",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 0,
+          "y": 0,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            255,
+            255,
+            255
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "UIElement",
+          "enabled": true,
+          "element_type": "Label",
+          "text": "Astro Harvester: WASD mueve, Space emite pulso, recolecta cristales.",
+          "x": 24,
+          "y": 24,
+          "width": 560,
+          "height": 34,
+          "color": [
+            20,
+            24,
+            32
+          ],
+          "text_color": [
+            235,
+            244,
+            255
+          ],
+          "opacity": 0.95,
+          "text_align": "left",
+          "padding": 8,
+          "border_radius": 7
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 101,
+      "name": "HUD_Objective",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": true,
+      "x": 0,
+      "y": 0,
+      "position": [
+        0,
+        0
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 3.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": null,
+      "tag": "Untagged",
+      "layer": "UI",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 0,
+          "y": 0,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            255,
+            255,
+            255
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "UIElement",
+          "enabled": true,
+          "element_type": "Label",
+          "text": "Objetivo: explora los nodos de cristal y defiende ForgeBase.",
+          "x": 24,
+          "y": 64,
+          "width": 520,
+          "height": 34,
+          "color": [
+            20,
+            24,
+            32
+          ],
+          "text_color": [
+            235,
+            244,
+            255
+          ],
+          "opacity": 0.95,
+          "text_align": "left",
+          "padding": 8,
+          "border_radius": 7
+        }
+      ],
+      "scripts": []
+    }
+  ],
+  "editor_view_settings": {},
+  "ui_canvases": []
+}

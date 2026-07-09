@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "engine_version": "0.9.3",
+  "saved_unix_ms": 1782699324483,
+  "project_name": "DefaultProject",
+  "current_scene": "main.scene",
+  "scene_dirty": false,
+  "scene_dirty_reason": "",
+  "active_document": null,
+  "active_document_project_relative": false,
+  "documents": [],
+  "ui": {
+    "show_console": true,
+    "show_grid": true,
+    "show_hierarchy": true,
+    "show_inspector": true,
+    "active_bottom_panel": "Graph",
+    "script_window_open": false,
+    "sprite_window_open": false,
+    "blueprint_picker_open": false
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "rendering": [
+    "single city backdrop texture for visual world art",
+    "tilemap kept as gameplay/collision data and fallback renderer",
+    "camera culling for world sprites and tile ranges",
+    "debug grid disabled unless MINIFORGE_RUNTIME_DEBUG_GRID=1",
+    "per-light shadow caster culling before ray fans",
+    "graphics presets cap shadow lights, light samples, light source cores, minimap dots and drawn entities",
+    "runtime F1 quality switching reads named profile budgets from runtime_config",
+    "minimap marker budget prioritizes police, contacts, pickups and nearby vehicles before drawing"
+  ],
+  "scripting": [
+    "Luau runtime clones the world snapshot once per event batch instead of once per script call",
+    "script handler detection skips fixed/update/event calls when a script does not implement that handler",
+    "ScriptSchedule component staggers NPC, traffic, police and prompt updates by priority and distance",
+    "runtime_config.script_scheduler caps update scripts per frame while letting high priority scripts bypass the cap"
+  ],
+  "content": [
+    "pixel-art atlas for characters, vehicles, props and roadblocks",
+    "invisible collision/shadow building bodies over painted city art",
+    "large beach/marina detail baked into backdrop instead of hundreds of active props",
+    "runtime UI widgets for minimap and wanted stars"
+  ],
+  "simulation": [
+    "city director publishes day phase, weather, rain, fog, traffic factor and headlights",
+    "NPC, police and traffic consume the same world state without renderer-specific coupling",
+    "save points use reusable Game.save_slot Luau API"
+  ],
+  "inspired_by": [
+    "streamed world art",
+    "HUD readability",
+    "data-driven dispatch layers",
+    "open-world time/weather loops"
+  ]
+}

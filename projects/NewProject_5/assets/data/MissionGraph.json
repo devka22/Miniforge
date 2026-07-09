@@ -1,0 +1,92 @@
+{
+  "missions": [
+    {
+      "id": "act1_rain_on_the_bridge",
+      "contact": "Mara_Contact",
+      "objectives": [
+        "meet_mara",
+        "collect_sobre_mara",
+        "escape_first_patrol"
+      ],
+      "unlocks": [
+        "act1_engine_for_a_ghost"
+      ]
+    },
+    {
+      "id": "act1_engine_for_a_ghost",
+      "contact": "Ivo_Contact",
+      "objectives": [
+        "meet_ivo",
+        "learn_vehicle_routes"
+      ],
+      "unlocks": [
+        "act2_the_blue_hour"
+      ]
+    },
+    {
+      "id": "act2_the_blue_hour",
+      "contact": "Valeria_Contact",
+      "objectives": [
+        "reach_civic_center",
+        "avoid_level_3_wanted"
+      ],
+      "unlocks": [
+        "act2_clean_signal"
+      ]
+    },
+    {
+      "id": "act2_clean_signal",
+      "contact": "Signal_Node",
+      "objectives": [
+        "disable_node",
+        "survive_dispatch"
+      ],
+      "unlocks": [
+        "act2_pier_21"
+      ]
+    },
+    {
+      "id": "act2_pier_21",
+      "contact": "Luz_Contact",
+      "objectives": [
+        "meet_luz",
+        "inspect_pier_21",
+        "identify_dark_yacht"
+      ],
+      "unlocks": [
+        "act2_marina_blackbox"
+      ]
+    },
+    {
+      "id": "act2_marina_blackbox",
+      "contact": "Luz_Contact",
+      "objectives": [
+        "recover_blackbox",
+        "leave_marina_without_level_4"
+      ],
+      "unlocks": [
+        "act3_rojas_wall"
+      ]
+    },
+    {
+      "id": "act3_rojas_wall",
+      "contact": "Ivo_Contact",
+      "objectives": [
+        "return_to_ivo",
+        "cross_roadblocks"
+      ],
+      "unlocks": [
+        "act3_open_file"
+      ]
+    },
+    {
+      "id": "act3_open_file",
+      "contact": "Valeria_Contact",
+      "objectives": [
+        "deliver_final_archive",
+        "keep_witnesses_alive"
+      ],
+      "unlocks": []
+    }
+  ]
+}

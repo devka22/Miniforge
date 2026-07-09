@@ -1,0 +1,31 @@
+{
+  "goods": {
+    "grain": {
+      "base_price": 1,
+      "category": "food"
+    },
+    "coal": {
+      "base_price": 2.2,
+      "category": "industrial"
+    },
+    "iron": {
+      "base_price": 2.6,
+      "category": "industrial"
+    },
+    "steel": {
+      "base_price": 5.4,
+      "category": "manufactured"
+    },
+    "canned_food": {
+      "base_price": 3.8,
+      "category": "military"
+    }
+  },
+  "update_order": [
+    "local_supply",
+    "pop_needs",
+    "factory_inputs",
+    "trade_routes",
+    "price_adjust"
+  ]
+}

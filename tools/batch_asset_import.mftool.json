@@ -1,0 +1,9 @@
+{
+  "id": "batch_asset_import",
+  "label": "Import Asset Drop (Batch)",
+  "entry": "tools/production_suite.py",
+  "menu_path": "Tools/Assets/Import Drop in Batch",
+  "description": "Import thousands of files from project/import_drop while preserving folders.",
+  "trusted": true,
+  "timeout_ms": 120000
+}

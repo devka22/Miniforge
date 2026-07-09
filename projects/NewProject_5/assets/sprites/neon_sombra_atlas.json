@@ -1,0 +1,90 @@
+{
+  "atlas": "assets/sprites/neon_sombra_atlas.png",
+  "city_backdrop": "assets/sprites/neon_sombra_city_backdrop.png",
+  "sprites": {
+    "Player": {
+      "x": 0,
+      "y": 0,
+      "width": 32,
+      "height": 32
+    },
+    "Pedestrian": {
+      "x": 32,
+      "y": 0,
+      "width": 32,
+      "height": 32
+    },
+    "Officer": {
+      "x": 64,
+      "y": 0,
+      "width": 32,
+      "height": 32
+    },
+    "Mara": {
+      "x": 96,
+      "y": 0,
+      "width": 32,
+      "height": 32
+    },
+    "Ivo": {
+      "x": 128,
+      "y": 0,
+      "width": 32,
+      "height": 32
+    },
+    "Valeria": {
+      "x": 160,
+      "y": 0,
+      "width": 32,
+      "height": 32
+    },
+    "Nodo de senal": {
+      "x": 192,
+      "y": 0,
+      "width": 32,
+      "height": 32
+    },
+    "Car": {
+      "x": 0,
+      "y": 40,
+      "width": 48,
+      "height": 32
+    },
+    "PoliceCar": {
+      "x": 48,
+      "y": 40,
+      "width": 48,
+      "height": 32
+    },
+    "Lamp": {
+      "x": 104,
+      "y": 40,
+      "width": 16,
+      "height": 24
+    },
+    "Pickup": {
+      "x": 128,
+      "y": 40,
+      "width": 16,
+      "height": 16
+    },
+    "Roadblock": {
+      "x": 152,
+      "y": 40,
+      "width": 64,
+      "height": 16
+    },
+    "SavePoint": {
+      "x": 220,
+      "y": 40,
+      "width": 24,
+      "height": 24
+    },
+    "Yacht": {
+      "x": 0,
+      "y": 76,
+      "width": 56,
+      "height": 24
+    }
+  }
+}

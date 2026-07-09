@@ -8,7 +8,7 @@ use crate::engine::miniforge_2d::validation::{
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ProblemKind2D {
-    RhaiScript,
+    LuauScript,
     VisualGraph,
     UnknownNode,
     BrokenLink,
@@ -104,7 +104,7 @@ impl ProblemsPanel2D {
 
 fn problem_from_issue(issue: &ValidationIssue2D) -> ProblemItem2D {
     let kind = match issue.code.as_str() {
-        "missing_script" => ProblemKind2D::RhaiScript,
+        "missing_script" => ProblemKind2D::LuauScript,
         "invalid_node_kind" => ProblemKind2D::UnknownNode,
         "edge_missing_from" | "edge_missing_to" | "missing_child" => ProblemKind2D::BrokenLink,
         "missing_asset" | "package_missing_asset" => ProblemKind2D::MissingAsset,

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::entities::game_object::GameObject;
 use crate::systems::rapier_physics_bridge::{RapierPhysicsBridge, RapierSceneReport};
+use crate::systems::spatial_index::{EntitySpatialIndex, entity_aabb};
 
 type Vec2 = (f64, f64);
 type RayShapeHit = (f64, Vec2, Vec2);
@@ -59,6 +60,39 @@ pub struct RaycastHit {
     pub distance: f64,
     pub layer: String,
     pub is_trigger: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PhysicsQueryFilter<'a> {
+    pub include_triggers: bool,
+    pub layers: Option<&'a [String]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoxCastQuery<'a> {
+    pub origin: (f64, f64),
+    pub half_extents: (f64, f64),
+    pub direction: (f64, f64),
+    pub max_distance: f64,
+    pub filter: PhysicsQueryFilter<'a>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CircleCastQuery<'a> {
+    pub origin: (f64, f64),
+    pub radius: f64,
+    pub direction: (f64, f64),
+    pub max_distance: f64,
+    pub filter: PhysicsQueryFilter<'a>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShapeCastQuery<'a> {
+    pub shape: ShapeCastKind,
+    pub origin: (f64, f64),
+    pub direction: (f64, f64),
+    pub max_distance: f64,
+    pub filter: PhysicsQueryFilter<'a>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,9 +190,7 @@ impl PhysicsSystem {
             .filter_map(|(index, entity)| {
                 if entity.enabled
                     && entity.visible
-                    && entity
-                        .get_component("Collider2D")
-                        .is_some_and(|collider| collider.enabled)
+                    && physics_shape_component(entity).is_some_and(|collider| collider.enabled)
                 {
                     Some(index)
                 } else {
@@ -170,31 +202,44 @@ impl PhysicsSystem {
         let mut current_pairs = BTreeMap::new();
         let mut current_contacts = BTreeMap::new();
         let mut current_names = BTreeMap::new();
+        let brute_force_pairs = colliders
+            .len()
+            .saturating_mul(colliders.len().saturating_sub(1))
+            / 2;
+        let mut broadphase_candidates = 0;
         for _ in 0..self.solver_iterations.max(1) {
-            for left_pos in 0..colliders.len() {
-                for right_pos in (left_pos + 1)..colliders.len() {
-                    let first_index = colliders[left_pos];
-                    let second_index = colliders[right_pos];
-                    let (first, second) = two_entities_mut(entities, first_index, second_index);
-                    if !self.layer_collision_enabled(first, second) {
-                        continue;
-                    }
-                    let Some(contact) = compute_contact(first, second) else {
-                        continue;
-                    };
-                    let trigger = collider_is_trigger(first) || collider_is_trigger(second);
-                    let pair_type = if trigger {
-                        PairType::Trigger
-                    } else {
-                        PairType::Collision
-                    };
-                    let key = pair_key(first.id, second.id);
-                    current_pairs.insert(key, pair_type);
-                    current_contacts.insert(key, contact);
-                    current_names.insert(key, ordered_pair_names(first, second));
-                    if !trigger {
-                        resolve_contact(first, second, contact);
-                    }
+            // Rebuild after each solver pass because contact resolution can move bodies.
+            // R-tree construction is O(n log n) and prevents the narrow phase from
+            // degenerating into O(n²) for sparse scenes.
+            let broadphase = EntitySpatialIndex::from_bounds(colliders.iter().map(|&index| {
+                let (min, max) = entity_aabb(&entities[index]);
+                (index, entities[index].id, min, max)
+            }));
+            let candidates = broadphase.overlapping_pairs();
+            broadphase_candidates = broadphase_candidates.max(candidates.len());
+            for (first_index, second_index) in candidates {
+                let (first, second) = two_entities_mut(entities, first_index, second_index);
+                if !self.layer_collision_enabled(first, second) {
+                    continue;
+                }
+                let Some(contact) = compute_contact(first, second) else {
+                    continue;
+                };
+                if one_way_contact_ignored(first, second, contact) {
+                    continue;
+                }
+                let trigger = collider_is_trigger(first) || collider_is_trigger(second);
+                let pair_type = if trigger {
+                    PairType::Trigger
+                } else {
+                    PairType::Collision
+                };
+                let key = pair_key(first.id, second.id);
+                current_pairs.insert(key, pair_type);
+                current_contacts.insert(key, contact);
+                current_names.insert(key, ordered_pair_names(first, second));
+                if !trigger {
+                    resolve_contact(first, second, contact);
                 }
             }
         }
@@ -214,6 +259,11 @@ impl PhysicsSystem {
             ("colliders".to_string(), colliders.len()),
             ("pairs".to_string(), current_pairs.len()),
             ("contacts".to_string(), current_pairs.len()),
+            ("broadphase_candidates".to_string(), broadphase_candidates),
+            (
+                "broadphase_rejected".to_string(),
+                brute_force_pairs.saturating_sub(broadphase_candidates),
+            ),
             ("triggers".to_string(), triggers),
             ("collisions".to_string(), collisions),
             (
@@ -249,16 +299,23 @@ impl PhysicsSystem {
         include_triggers: bool,
         layers: Option<&[String]>,
     ) -> Option<RaycastHit> {
-        self.raycast_all_filtered(
-            entities,
-            origin,
-            direction,
-            max_distance,
-            include_triggers,
-            layers,
-        )
-        .into_iter()
-        .next()
+        let dir = normalize(direction)?;
+        let max_distance = max_distance.max(0.0);
+        let mut nearest = None;
+        for entity in entities {
+            let Some(hit) =
+                raycast_entity_hit(entity, origin, dir, max_distance, include_triggers, layers)
+            else {
+                continue;
+            };
+            if nearest
+                .as_ref()
+                .is_none_or(|current: &RaycastHit| hit.distance < current.distance)
+            {
+                nearest = Some(hit);
+            }
+        }
+        nearest
     }
 
     pub fn raycast_all_filtered(
@@ -276,16 +333,151 @@ impl PhysicsSystem {
         let max_distance = max_distance.max(0.0);
         let mut hits = Vec::new();
         for entity in entities {
+            if let Some(hit) =
+                raycast_entity_hit(entity, origin, dir, max_distance, include_triggers, layers)
+            {
+                hits.push(hit);
+            }
+        }
+        hits.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        hits
+    }
+
+    pub fn box_cast_filtered(
+        &self,
+        entities: &[GameObject],
+        query: BoxCastQuery<'_>,
+    ) -> Option<RaycastHit> {
+        self.shape_cast_all_filtered(
+            entities,
+            ShapeCastQuery {
+                shape: ShapeCastKind::Box {
+                    half_extents: (query.half_extents.0.abs(), query.half_extents.1.abs()),
+                },
+                origin: query.origin,
+                direction: query.direction,
+                max_distance: query.max_distance,
+                filter: query.filter,
+            },
+        )
+        .into_iter()
+        .next()
+    }
+
+    pub fn circle_cast_filtered(
+        &self,
+        entities: &[GameObject],
+        query: CircleCastQuery<'_>,
+    ) -> Option<RaycastHit> {
+        self.shape_cast_all_filtered(
+            entities,
+            ShapeCastQuery {
+                shape: ShapeCastKind::Circle {
+                    radius: query.radius.abs(),
+                },
+                origin: query.origin,
+                direction: query.direction,
+                max_distance: query.max_distance,
+                filter: query.filter,
+            },
+        )
+        .into_iter()
+        .next()
+    }
+
+    pub fn shape_cast_all_filtered(
+        &self,
+        entities: &[GameObject],
+        query: ShapeCastQuery<'_>,
+    ) -> Vec<RaycastHit> {
+        let Some(dir) = normalize(query.direction) else {
+            return Vec::new();
+        };
+        let max_distance = query.max_distance.max(0.0);
+        let steps = ((max_distance / 0.25).ceil() as usize).clamp(1, 96);
+        let mut hits = Vec::new();
+        for entity in entities {
             if !entity.enabled || !entity.visible {
                 continue;
             }
-            let Some(collider) = entity.get_component("Collider2D") else {
+            let Some(collider) = physics_shape_component(entity) else {
                 continue;
             };
             if !collider.enabled {
                 continue;
             }
-            let is_trigger = collider.get_bool("is_trigger", false);
+            let is_trigger = collider_is_trigger(entity);
+            if is_trigger && !query.filter.include_triggers {
+                continue;
+            }
+            let layer = collision_layer(entity);
+            if query
+                .filter
+                .layers
+                .is_some_and(|items| !items.iter().any(|item| item == &layer))
+            {
+                continue;
+            }
+            let Some(target_shape) = collider_shape(entity) else {
+                continue;
+            };
+            for step in 0..=steps {
+                let distance = max_distance * step as f64 / steps as f64;
+                let center = (
+                    query.origin.0 + dir.0 * distance,
+                    query.origin.1 + dir.1 * distance,
+                );
+                let cast_shape = query.shape.shape_at(center);
+                if let Some(contact) = shape_contact(&cast_shape, &target_shape) {
+                    hits.push(RaycastHit {
+                        entity_id: entity.id,
+                        entity_name: entity.name.clone(),
+                        point: center,
+                        normal: contact.normal,
+                        distance,
+                        layer: layer.clone(),
+                        is_trigger,
+                    });
+                    break;
+                }
+            }
+        }
+        hits.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        hits
+    }
+
+    pub fn overlap_area_filtered(
+        &self,
+        entities: &[GameObject],
+        center: (f64, f64),
+        half_extents: (f64, f64),
+        include_triggers: bool,
+        layers: Option<&[String]>,
+    ) -> Vec<RaycastHit> {
+        let area = ShapeCastKind::Box {
+            half_extents: (half_extents.0.abs(), half_extents.1.abs()),
+        }
+        .shape_at(center);
+        let mut hits = Vec::new();
+        for entity in entities {
+            if !entity.enabled || !entity.visible {
+                continue;
+            }
+            let Some(collider) = physics_shape_component(entity) else {
+                continue;
+            };
+            if !collider.enabled {
+                continue;
+            }
+            let is_trigger = collider_is_trigger(entity);
             if is_trigger && !include_triggers {
                 continue;
             }
@@ -293,18 +485,17 @@ impl PhysicsSystem {
             if layers.is_some_and(|items| !items.iter().any(|item| item == &layer)) {
                 continue;
             }
-            let Some(shape) = collider_shape(entity) else {
+            let Some(target_shape) = collider_shape(entity) else {
                 continue;
             };
-            if let Some((distance, point, normal)) =
-                ray_shape_hit(origin, dir, max_distance, &shape)
-            {
+            if let Some(contact) = shape_contact(&area, &target_shape) {
+                let target_center = target_shape.center();
                 hits.push(RaycastHit {
                     entity_id: entity.id,
                     entity_name: entity.name.clone(),
-                    point,
-                    normal,
-                    distance,
+                    point: target_center,
+                    normal: contact.normal,
+                    distance: length((target_center.0 - center.0, target_center.1 - center.1)),
                     layer,
                     is_trigger,
                 });
@@ -466,12 +657,84 @@ impl PhysicsSystem {
     }
 }
 
+fn raycast_entity_hit(
+    entity: &GameObject,
+    origin: Vec2,
+    direction: Vec2,
+    max_distance: f64,
+    include_triggers: bool,
+    layers: Option<&[String]>,
+) -> Option<RaycastHit> {
+    if !entity.enabled || !entity.visible {
+        return None;
+    }
+    let collider = physics_shape_component(entity)?;
+    if !collider.enabled {
+        return None;
+    }
+    let is_trigger = collider_is_trigger(entity);
+    if is_trigger && !include_triggers {
+        return None;
+    }
+    let (min, max) = entity_aabb(entity);
+    if !ray_intersects_aabb(origin, direction, max_distance, min, max) {
+        return None;
+    }
+    let filtered_layer = if let Some(items) = layers {
+        let layer = collision_layer(entity);
+        if !items.iter().any(|item| item == &layer) {
+            return None;
+        }
+        Some(layer)
+    } else {
+        None
+    };
+    let shape = collider_shape(entity)?;
+    let (distance, point, normal) = ray_shape_hit(origin, direction, max_distance, &shape)?;
+    let layer = filtered_layer.unwrap_or_else(|| collision_layer(entity));
+    Some(RaycastHit {
+        entity_id: entity.id,
+        entity_name: entity.name.clone(),
+        point,
+        normal,
+        distance,
+        layer,
+        is_trigger,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ShapeCastKind {
+    Box { half_extents: (f64, f64) },
+    Circle { radius: f64 },
+}
+
+impl ShapeCastKind {
+    fn shape_at(self, center: (f64, f64)) -> ColliderShape {
+        match self {
+            Self::Box { half_extents } => ColliderShape::Polygon {
+                center,
+                points: rect_points(half_extents.0 * 2.0, half_extents.1 * 2.0)
+                    .into_iter()
+                    .map(|point| (center.0 + point.0, center.1 + point.1))
+                    .collect(),
+            },
+            Self::Circle { radius } => ColliderShape::Circle {
+                center,
+                radius: radius.max(0.001),
+            },
+        }
+    }
+}
+
 fn default_stats() -> BTreeMap<String, usize> {
     BTreeMap::from([
         ("bodies".to_string(), 0),
         ("colliders".to_string(), 0),
         ("pairs".to_string(), 0),
         ("contacts".to_string(), 0),
+        ("broadphase_candidates".to_string(), 0),
+        ("broadphase_rejected".to_string(), 0),
         ("triggers".to_string(), 0),
         ("collisions".to_string(), 0),
         ("entered".to_string(), 0),
@@ -486,8 +749,51 @@ fn compute_contact(first: &GameObject, second: &GameObject) -> Option<Contact> {
     shape_contact(&first_shape, &second_shape)
 }
 
+fn one_way_contact_ignored(first: &GameObject, second: &GameObject, contact: Contact) -> bool {
+    if let Some(normal) = one_way_normal(second) {
+        return dot(contact.normal, normal) < 0.35;
+    }
+    if let Some(normal) = one_way_normal(first) {
+        return dot((-contact.normal.0, -contact.normal.1), normal) < 0.35;
+    }
+    false
+}
+
+fn one_way_normal(entity: &GameObject) -> Option<(f64, f64)> {
+    if let Some(one_way) = entity
+        .get_component("OneWayPlatform2D")
+        .filter(|component| component.enabled && component.get_bool("enabled", true))
+    {
+        return normalize((
+            one_way.get_f64("normal_x", 0.0),
+            one_way.get_f64("normal_y", -1.0),
+        ))
+        .or(Some((0.0, -1.0)));
+    }
+    if let Some(static_body) = entity
+        .get_component("StaticBody2D")
+        .filter(|component| component.enabled && component.get_bool("one_way", false))
+    {
+        return normalize((
+            static_body.get_f64("one_way_normal_x", 0.0),
+            static_body.get_f64("one_way_normal_y", -1.0),
+        ))
+        .or(Some((0.0, -1.0)));
+    }
+    entity
+        .get_component("Collider2D")
+        .filter(|component| component.get_bool("one_way", false))
+        .and_then(|collider| {
+            normalize((
+                collider.get_f64("one_way_normal_x", 0.0),
+                collider.get_f64("one_way_normal_y", -1.0),
+            ))
+            .or(Some((0.0, -1.0)))
+        })
+}
+
 fn collider_shape(entity: &GameObject) -> Option<ColliderShape> {
-    let collider = entity.get_component("Collider2D")?;
+    let collider = physics_shape_component(entity)?;
     let center = (
         entity.x + collider.get_f64("offset_x", 0.0),
         entity.y + collider.get_f64("offset_y", 0.0),
@@ -787,6 +1093,39 @@ fn ray_segment_intersection(
     }
 }
 
+fn ray_intersects_aabb(
+    origin: Vec2,
+    direction: Vec2,
+    max_distance: f64,
+    min: [f64; 2],
+    max: [f64; 2],
+) -> bool {
+    let mut t_min: f64 = 0.0;
+    let mut t_max: f64 = max_distance.max(0.0);
+    for axis in 0..2 {
+        let origin_axis = if axis == 0 { origin.0 } else { origin.1 };
+        let direction_axis = if axis == 0 { direction.0 } else { direction.1 };
+        if direction_axis.abs() <= f64::EPSILON {
+            if origin_axis < min[axis] || origin_axis > max[axis] {
+                return false;
+            }
+            continue;
+        }
+        let inv_direction = 1.0 / direction_axis;
+        let mut enter = (min[axis] - origin_axis) * inv_direction;
+        let mut exit = (max[axis] - origin_axis) * inv_direction;
+        if enter > exit {
+            std::mem::swap(&mut enter, &mut exit);
+        }
+        t_min = t_min.max(enter);
+        t_max = t_max.min(exit);
+        if t_min > t_max {
+            return false;
+        }
+    }
+    true
+}
+
 fn parse_polygon_points(value: Option<&serde_json::Value>) -> Option<Vec<(f64, f64)>> {
     let points = value?
         .as_array()?
@@ -903,15 +1242,23 @@ fn inverse_mass(entity: &GameObject, kind: BodyKind) -> f64 {
 
 fn collider_is_trigger(entity: &GameObject) -> bool {
     entity
-        .get_component("Collider2D")
-        .is_some_and(|collider| collider.get_bool("is_trigger", false))
+        .get_component("Area2D")
+        .is_some_and(|area| area.enabled)
+        || entity
+            .get_component("Collider2D")
+            .is_some_and(|collider| collider.get_bool("is_trigger", false))
 }
 
 fn collision_layer(entity: &GameObject) -> String {
-    let Some(collider) = entity.get_component("Collider2D") else {
+    let Some(collider) = physics_shape_component(entity) else {
         return entity.layer.clone();
     };
-    let layer = collider.get_string("collision_layer", &entity.layer);
+    let layer = collider
+        .get("collision_layer")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| collider.get("layer").and_then(serde_json::Value::as_str))
+        .unwrap_or(&entity.layer)
+        .to_string();
     if layer == "Default" && entity.layer != "Default" {
         entity.layer.clone()
     } else {
@@ -920,15 +1267,29 @@ fn collision_layer(entity: &GameObject) -> String {
 }
 
 fn collider_mask_allows(entity: &GameObject, other_layer: &str) -> bool {
-    let Some(collider) = entity.get_component("Collider2D") else {
+    let Some(collider) = physics_shape_component(entity) else {
         return true;
     };
-    let mask = collider.get_string_list("collision_mask");
+    let mut mask = collider.get_string_list("collision_mask");
+    if mask.is_empty() {
+        mask = collider.get_string_list("overlap_mask");
+    }
     mask.is_empty()
         || mask.iter().any(|layer| {
             layer == "*"
                 || layer == other_layer
                 || (layer == "Default" && other_layer == entity.layer.as_str())
+        })
+}
+
+fn physics_shape_component(entity: &GameObject) -> Option<&crate::engine::component::Component> {
+    entity
+        .get_component("Collider2D")
+        .filter(|component| component.enabled)
+        .or_else(|| {
+            entity
+                .get_component("Area2D")
+                .filter(|component| component.enabled && component.get_bool("monitoring", true))
         })
 }
 

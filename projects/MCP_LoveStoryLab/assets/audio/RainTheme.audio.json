@@ -1,0 +1,16 @@
+{
+  "version": "0.9.3",
+  "kind": "MiniForgeAudioEvent",
+  "runtime": "kira",
+  "name": "RainTheme",
+  "bus": "Music",
+  "volume": 0.72,
+  "fade_seconds": 1.5,
+  "actions": [
+    {
+      "type": "play_music",
+      "cue": "RainTheme",
+      "loop": true
+    }
+  ]
+}

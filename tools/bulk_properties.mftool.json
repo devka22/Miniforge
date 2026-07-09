@@ -1,0 +1,9 @@
+{
+  "id": "bulk_properties",
+  "label": "Normalize Selected Properties",
+  "entry": "tools/production_suite.py",
+  "menu_path": "Tools/Scene/Normalize Selection",
+  "description": "Apply editor properties to the current selection as one undoable operation.",
+  "trusted": true,
+  "timeout_ms": 15000
+}

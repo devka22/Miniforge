@@ -1,0 +1,10 @@
+{
+  "id": "example_cpp",
+  "library": "build/libminiforge_example.dylib",
+  "enabled": true,
+  "required": false,
+  "abi_version": 1,
+  "category": "middleware",
+  "platforms": ["macos"],
+  "services": ["example.echo"]
+}

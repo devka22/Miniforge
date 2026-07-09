@@ -1,18 +1,25 @@
 {
-    "engine_name": "MiniForge",
-    "engine_alt_name": "MiniForge",
-    "engine_version": "0.8.0",
-    "config_version": 2,
-    "start_scene": "main.scene",
-    "autosave": true,
-    "autosave_interval_seconds": 60,
-    "safe_mode": true,
-    "pause_input_in_play": false,
-    "logs": {
-        "level": "info",
-        "file": "logs/miniforge.log",
-        "engine": "logs/engine.log",
-        "error": "logs/error.log"
-    },
-    "project_name": "NewProject"
+  "engine_name": "MiniForge",
+  "engine_alt_name": "MiniForge",
+  "engine_version": "0.8.0",
+  "config_version": 2,
+  "start_scene": "main.scene",
+  "autosave": true,
+  "autosave_interval_seconds": 60,
+  "safe_mode": true,
+  "pause_input_in_play": false,
+  "logs": {
+    "level": "info",
+    "file": "logs/miniforge.log",
+    "engine": "logs/engine.log",
+    "error": "logs/error.log"
+  },
+  "project_name": "NewProject",
+  "rendering": {
+    "view_frustum_culling": true,
+    "occlusion_culling": true,
+    "lod_enabled": true,
+    "backface_culling": true,
+    "backface_culling_3d": true
+  }
 }

@@ -1,0 +1,9 @@
+{
+  "format": "miniforge.editor-layout",
+  "schema_version": 1,
+  "engine_version": "0.9.3",
+  "workspace": "2D",
+  "panels": ["Scene", "WorldOutliner", "Details", "ContentBrowser", "Blueprint", "SpriteEditor", "Problems", "Profiler"],
+  "bottom_panel": "Blueprint",
+  "show_game_preview": true
+}

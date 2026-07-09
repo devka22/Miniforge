@@ -1,0 +1,19 @@
+{
+  "items": [
+    "Default",
+    "Ground",
+    "Player",
+    "NPC",
+    "Police",
+    "Vehicle",
+    "WorldStatic",
+    "Trigger",
+    "SavePoint",
+    "Collectible",
+    "Projectile",
+    "Effects",
+    "UI",
+    "IgnoreSelection",
+    "EditorOnly"
+  ]
+}

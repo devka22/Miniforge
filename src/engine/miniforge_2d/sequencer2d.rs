@@ -76,11 +76,14 @@ pub fn supported_track_types() -> Vec<&'static str> {
         "audio",
         "dialogue",
         "event",
+        "ui",
+        "material_parameter",
+        "particle",
         "fade",
         "screen_shake",
-        "ui",
         "spawn",
         "destroy",
+        "gameplay_tag",
     ]
 }
 

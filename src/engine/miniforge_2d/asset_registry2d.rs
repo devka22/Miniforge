@@ -31,7 +31,7 @@ pub fn supported_asset_types() -> Vec<&'static str> {
         "music",
         "scenes",
         "prefabs",
-        "rhai_scripts",
+        "luau_scripts",
         "visual_graphs",
         "materials",
         "ui_documents",

@@ -1,0 +1,8 @@
+{
+  "author": "",
+  "description": "MiniForge 0.9.3 Whole Engine Systems Update project",
+  "engine_version": "0.9.3",
+  "license": "GPL-3.0",
+  "project_name": "NewProject_2",
+  "start_scene": "main.scene"
+}

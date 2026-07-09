@@ -1,0 +1,434 @@
+{
+  "active_tool": "Rotate",
+  "brush_size": 1,
+  "camera": {
+    "x": 0.0,
+    "y": 0.0,
+    "zoom": 1.0
+  },
+  "control_groups": {},
+  "editor_view_settings": {},
+  "engine_version": "0.9.3",
+  "entities": [
+    {
+      "active": true,
+      "attack_move_target": null,
+      "command": "IDLE",
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "rotation": 0.0,
+          "scale_x": 1.0,
+          "scale_y": 1.0,
+          "x": 4.0,
+          "y": 4.0
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.5
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "flip_x": false,
+          "flip_y": false,
+          "material": "Default",
+          "material_path": null,
+          "sorting_order": 0,
+          "source_asset": null,
+          "sprite_guid": null,
+          "sprite_name": null,
+          "sprite_path": null,
+          "tint": [
+            255,
+            255,
+            255
+          ],
+          "visible": true
+        },
+        {
+          "collision_layer": "Default",
+          "collision_mask": [
+            "*"
+          ],
+          "component_type": "Collider2D",
+          "enabled": true,
+          "height": 1.2,
+          "is_trigger": false,
+          "material": {
+            "bounciness": 0.0,
+            "friction": 0.25
+          },
+          "offset_x": 0.0,
+          "offset_y": 0.0,
+          "points": [
+            [
+              -0.5,
+              -0.5
+            ],
+            [
+              0.5,
+              -0.5
+            ],
+            [
+              0.5,
+              0.5
+            ],
+            [
+              -0.5,
+              0.5
+            ]
+          ],
+          "radius": 0.45,
+          "shape": "rect",
+          "width": 0.85
+        },
+        {
+          "alive": true,
+          "armor": 0.0,
+          "component_type": "Health",
+          "enabled": true,
+          "health": 100.0,
+          "max_health": 100.0
+        },
+        {
+          "agility": 5.0,
+          "attack": 10.0,
+          "component_type": "Stats",
+          "critical_chance": 0.05,
+          "critical_multiplier": 1.5,
+          "defense": 0.0,
+          "enabled": true,
+          "experience": 0.0,
+          "experience_to_next": 100.0,
+          "intelligence": 5.0,
+          "level": 1,
+          "magic": 0.0,
+          "max_health_bonus": 0.0,
+          "move_speed_bonus": 0.0,
+          "regen_per_second": 0.0,
+          "resistance": 0.0,
+          "strength": 5.0,
+          "vitality": 5.0
+        },
+        {
+          "angular_drag": 0.05,
+          "angular_velocity": 0.0,
+          "body_type": "dynamic",
+          "bounciness": 0.0,
+          "component_type": "Rigidbody2D",
+          "continuous_collision": false,
+          "drag": 0.2,
+          "enabled": true,
+          "freeze_rotation": true,
+          "freeze_x": false,
+          "freeze_y": false,
+          "friction": 0.25,
+          "gravity_scale": 1.0,
+          "gravity_x": null,
+          "gravity_y": null,
+          "mass": 1.0,
+          "sleeping": false,
+          "use_gravity": false,
+          "velocity_x": 0.0,
+          "velocity_y": 0.0
+        },
+        {
+          "air_control": 0.6,
+          "component_type": "CharacterController2D",
+          "coyote_time": 0.12,
+          "coyote_timer": 0.0,
+          "dash_cooldown": 0.5,
+          "dash_cooldown_timer": 0.0,
+          "dash_duration": 0.12,
+          "dash_pressed": false,
+          "dash_speed": 13.0,
+          "dash_timer": 0.0,
+          "dashing": false,
+          "enabled": true,
+          "facing_x": 1.0,
+          "facing_y": 0.0,
+          "fall_death_y": 9999.0,
+          "grounded": false,
+          "input_enabled": true,
+          "input_x": 0.0,
+          "input_y": 0.0,
+          "jump_buffer_time": 0.12,
+          "jump_buffer_timer": 0.0,
+          "jump_cut_multiplier": 0.55,
+          "jump_force": 9.0,
+          "jump_held": false,
+          "jump_pressed": false,
+          "jumps_used": 0,
+          "max_jumps": 1,
+          "mode": "topdown",
+          "moving": false,
+          "run_pressed": false,
+          "run_speed": 7.25,
+          "walk_speed": 5.25
+        },
+        {
+          "component_type": "CameraFollow",
+          "dead_zone": 0.25,
+          "enabled": true,
+          "follow_x": true,
+          "follow_y": true,
+          "offset_x": 0.0,
+          "offset_y": 0.0,
+          "smoothness": 8.0,
+          "target_id": 4,
+          "viewport_height": 540.0,
+          "viewport_width": 960.0,
+          "zoom": 1.1,
+          "zoom_smoothness": 10.0
+        },
+        {
+          "capacity": 24,
+          "component_type": "Inventory",
+          "currency": {},
+          "enabled": true,
+          "items": [],
+          "locked": false,
+          "stack_limit": 99
+        },
+        {
+          "component_type": "Equipment",
+          "enabled": true,
+          "locked_slots": [],
+          "slots": {
+            "armor": null,
+            "tool": null,
+            "trinket": null,
+            "weapon": null
+          },
+          "stat_bonuses": {}
+        },
+        {
+          "ability_id": "dash",
+          "charges": 1,
+          "component_type": "Ability",
+          "cooldown": 0.8,
+          "current_charges": 1,
+          "display_name": "Dash",
+          "enabled": true,
+          "last_cast_time": -9999.0,
+          "mana_cost": 0.0,
+          "power": 10.0,
+          "range": 4.0,
+          "recharge_time": 0.0,
+          "tags": [],
+          "target_mode": "self",
+          "unlocked": true
+        },
+        {
+          "active_quest_id": null,
+          "completed_count": 0,
+          "component_type": "QuestLog",
+          "enabled": true,
+          "quests": []
+        },
+        {
+          "autosave": true,
+          "component_type": "Saveable",
+          "enabled": true,
+          "include_components": true,
+          "persistent": true,
+          "save_key": "player",
+          "version": 1
+        },
+        {
+          "component_type": "Cooldown",
+          "enabled": true,
+          "timers": {}
+        },
+        {
+          "component_type": "StatusEffects",
+          "effects": [],
+          "enabled": true
+        },
+        {
+          "action_graph": null,
+          "action_name": "interact",
+          "active": false,
+          "component_type": "Interaction",
+          "enabled": true,
+          "prompt": "Interact",
+          "radius": 1.35,
+          "requires_tag": "Player",
+          "single_use": false,
+          "used": false
+        },
+        {
+          "aggro_radius": 6.0,
+          "attack_radius": 1.35,
+          "component_type": "CombatTarget",
+          "enabled": true,
+          "lose_radius": 10.0,
+          "require_line_of_sight": false,
+          "target_id": null,
+          "target_tags": [
+            "Enemy"
+          ]
+        },
+        {
+          "auto_repath": true,
+          "avoid_obstacles": true,
+          "component_type": "NavAgent",
+          "destination_x": 0.0,
+          "destination_y": 0.0,
+          "enabled": true,
+          "has_destination": false,
+          "last_path_length": 0,
+          "path_smoothing": true,
+          "repath_interval": 0.25,
+          "repath_timer": 0.0,
+          "speed": 5.0,
+          "stopping_distance": 0.15
+        },
+        {
+          "component_type": "VisualScript",
+          "enabled": true,
+          "enabled_events": [
+            "start",
+            "update",
+            "collision"
+          ],
+          "graph_name": "PlayerFoundation",
+          "nodes": [
+            {
+              "id": "start",
+              "next": "log",
+              "type": "EventStart"
+            },
+            {
+              "id": "log",
+              "message": "VisualScript started",
+              "next": null,
+              "type": "Log"
+            }
+          ],
+          "run_in_editor": false,
+          "variables": {}
+        }
+      ],
+      "enabled": true,
+      "follow_target_id": null,
+      "gather_target_id": null,
+      "guard_target_id": null,
+      "height": 1.2,
+      "id": 4,
+      "is_prefab_instance": false,
+      "layer": "Units",
+      "local_x": 0.0,
+      "local_y": 0.0,
+      "locked": false,
+      "name": "Player",
+      "parent_id": null,
+      "path": [],
+      "patrol_index": 0,
+      "patrol_points": [],
+      "position": [
+        4.0,
+        4.0
+      ],
+      "prefab_guid": null,
+      "prefab_source": null,
+      "radius": 0.45,
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ],
+      "scale_x": 1.0,
+      "scale_y": 1.0,
+      "scene_name": "SceneCopy.scene",
+      "script": null,
+      "scripts": [],
+      "size": [
+        0.85,
+        1.2
+      ],
+      "speed": 3.5,
+      "sprite_guid": null,
+      "sprite_name": null,
+      "state": "IDLE",
+      "tag": "Player",
+      "type": "Player",
+      "visible": false,
+      "width": 0.85,
+      "x": 4.0,
+      "y": 4.0
+    }
+  ],
+  "grid": {
+    "chunk_size": 8,
+    "height": 40,
+    "tile_size": 32,
+    "width": 60
+  },
+  "mode": "EDITOR",
+  "scene_name": "SceneCopy",
+  "settings": {},
+  "tile_brush": 0,
+  "tilemap_layers": [],
+  "tiles": [],
+  "ui_canvases": [
+    {
+      "elements": [
+        {
+          "color": [
+            24,
+            28,
+            36,
+            220
+          ],
+          "id": "panel_status",
+          "kind": "panel",
+          "name": "Status",
+          "rect": {
+            "anchor": {
+              "max_x": 1.0,
+              "max_y": 1.0,
+              "min_x": 0.0,
+              "min_y": 1.0
+            },
+            "height": 56.0,
+            "offset_x": 0.0,
+            "offset_y": -40.0,
+            "pivot_x": 0.5,
+            "pivot_y": 1.0,
+            "width": 400.0
+          }
+        },
+        {
+          "font_size": 20.0,
+          "id": "label_hint",
+          "kind": "label",
+          "rect": {
+            "anchor": {
+              "max_x": 0.0,
+              "max_y": 0.0,
+              "min_x": 0.0,
+              "min_y": 0.0
+            },
+            "height": 36.0,
+            "offset_x": 24.0,
+            "offset_y": 24.0,
+            "pivot_x": 0.0,
+            "pivot_y": 0.0,
+            "width": 420.0
+          },
+          "text": "MiniForge UI Canvas"
+        }
+      ],
+      "id": "hud_main",
+      "name": "HUD",
+      "reference_height": 1080.0,
+      "reference_width": 1920.0
+    }
+  ],
+  "version": "0.9.3"
+}

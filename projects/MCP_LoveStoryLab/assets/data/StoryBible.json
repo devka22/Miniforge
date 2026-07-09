@@ -1,0 +1,38 @@
+{
+  "title": "Letters Under Rain",
+  "format": "2D interactive love story",
+  "theme": "Love as a choice made after fear, distance and memory.",
+  "cast": {
+    "Sol": {
+      "role": "player",
+      "wound": "left without explaining",
+      "need": "speak honestly"
+    },
+    "Mara": {
+      "role": "love_interest",
+      "wound": "waited for a letter that never arrived",
+      "need": "be chosen in the present"
+    },
+    "Tomas": {
+      "role": "friend",
+      "function": "keeps the cafe and the truth open"
+    }
+  },
+  "acts": [
+    {
+      "id": 1,
+      "name": "Station",
+      "goal": "reunion and first dialogue"
+    },
+    {
+      "id": 2,
+      "name": "Letter",
+      "goal": "recover context through object interaction"
+    },
+    {
+      "id": 3,
+      "name": "Bridge",
+      "goal": "branch ending by choice and affection score"
+    }
+  ]
+}

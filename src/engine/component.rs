@@ -51,7 +51,9 @@ impl Component {
         );
         map.insert("enabled".to_string(), Value::Bool(self.enabled));
         for (key, value) in &self.data {
-            map.insert(key.clone(), value.clone());
+            if !key.starts_with('_') {
+                map.insert(key.clone(), persistent_value(value));
+            }
         }
         Value::Object(map)
     }
@@ -625,6 +627,7 @@ impl Component {
         for quest in &mut quests {
             if quest.get("id").and_then(Value::as_str) == Some(quest_id)
                 && let Some(map) = quest.as_object_mut()
+                && map.get("state").and_then(Value::as_str) != Some("completed")
             {
                 map.insert("state".to_string(), json!("completed"));
                 changed = true;
@@ -851,6 +854,22 @@ impl Component {
     }
 }
 
+/// Runtime bookkeeping uses underscore-prefixed keys. Those values must never
+/// leak into scenes, prefabs or undo snapshots, including when nested in a
+/// component-owned object such as VisualScript variables.
+fn persistent_value(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(key, _)| !key.starts_with('_'))
+                .map(|(key, value)| (key.clone(), persistent_value(value)))
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(values.iter().map(persistent_value).collect()),
+        _ => value.clone(),
+    }
+}
+
 pub fn component_from_data(data: &Value) -> Option<Component> {
     let component_type = data.get("component_type")?.as_str()?;
     let mut component = default_component(component_type)?;
@@ -933,11 +952,17 @@ pub fn default_component(component_type: &str) -> Option<Component> {
         }),
         "SpriteRenderer" => json!({
             "sprite_name": null,
+            "sprite_path": null,
             "sprite_guid": null,
+            "source_asset": null,
+            "material": "Default",
+            "material_path": null,
             "visible": true,
             "sorting_order": 0,
             "flip_x": false,
             "flip_y": false,
+            "pivot_x": 0.5,
+            "pivot_y": 0.5,
             "tint": [255, 255, 255],
         }),
         "RTSMovement" => json!({
@@ -1004,12 +1029,28 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "body_type": "static",
             "friction": 0.4,
             "bounciness": 0.0,
+            "one_way": false,
+            "one_way_normal_x": 0.0,
+            "one_way_normal_y": -1.0,
         }),
         "KinematicBody2D" => json!({
             "body_type": "kinematic",
             "velocity_x": 0.0,
             "velocity_y": 0.0,
             "move_and_slide": true,
+        }),
+        "CharacterBody2D" => json!({
+            "mode": "platformer",
+            "velocity_x": 0.0,
+            "velocity_y": 0.0,
+            "max_speed": 7.0,
+            "acceleration": 40.0,
+            "deceleration": 50.0,
+            "floor_snap": 0.08,
+            "max_slope_degrees": 45.0,
+            "grounded": false,
+            "collision_layer": "Pawn",
+            "collision_mask": ["WorldStatic", "OneWayPlatform", "Trigger"],
         }),
         "Animator" => json!({
             "controller": "Default",
@@ -1031,13 +1072,165 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "triggers": [],
             "preview": true,
         }),
+        "AnimatedSprite" => json!({
+            "frames": "assets/animations/player.spriteframes",
+            "animation": "idle",
+            "playing": true,
+            "speed": 1.0,
+            "loop": true,
+            "flip_x": false,
+            "flip_y": false,
+            "frame": 0,
+            "frame_events": [],
+        }),
+        "AnimationPlayer" => json!({
+            "current": "Idle",
+            "playing": false,
+            "speed": 1.0,
+            "loop": false,
+            "parameters": {},
+            "states": ["Idle"],
+            "transitions": [],
+            "events": [],
+            "property_tracks": [],
+        }),
         "Camera2D" => json!({
             "active": false,
             "zoom": 1.0,
             "clear_color": [18, 20, 24, 255],
             "follow_target": null,
+            "smooth": true,
+            "smoothness": 8.0,
+            "limits": {"enabled": false, "min_x": 0.0, "min_y": 0.0, "max_x": 0.0, "max_y": 0.0},
+            "screen_shake": {"active": false, "duration": 0.0, "elapsed": 0.0, "amplitude": 0.0},
+            "pixel_perfect": false,
+            "pixels_per_unit": 16.0,
             "viewport_width": 1280.0,
             "viewport_height": 720.0,
+        }),
+        "Transform3D" => json!({
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0,
+            "rotation_x": 0.0,
+            "rotation_y": 0.0,
+            "rotation_z": 0.0,
+            "scale_x": 1.0,
+            "scale_y": 1.0,
+            "scale_z": 1.0,
+            "inherit_2d_transform": false,
+        }),
+        "MeshRenderer3D" => json!({
+            "mesh": "builtin:cube",
+            "material": "Default3D",
+            "visible": true,
+            "cast_shadows": false,
+            "receive_shadows": true,
+            "layer": "World3D",
+            "lod_group": "default",
+        }),
+        "Camera3D" => json!({
+            "active": false,
+            "projection": "perspective",
+            "x": 0.0,
+            "y": 4.0,
+            "z": 8.0,
+            "target_x": 0.0,
+            "target_y": 0.0,
+            "target_z": 0.0,
+            "up_x": 0.0,
+            "up_y": 1.0,
+            "up_z": 0.0,
+            "fov_y_degrees": 60.0,
+            "near": 0.05,
+            "far": 500.0,
+            "renders_2d_overlay": true,
+        }),
+        "Light3D" => json!({
+            "light_type": "directional",
+            "color": [255, 245, 225],
+            "intensity": 1.0,
+            "range": 64.0,
+            "direction_x": -0.4,
+            "direction_y": -1.0,
+            "direction_z": -0.3,
+            "casts_shadows": false,
+        }),
+        "Material3D" => json!({
+            "material": "Default3D",
+            "shader": "standard_lit_3d",
+            "albedo": [255, 255, 255, 255],
+            "albedo_texture": null,
+            "normal_map": null,
+            "metallic": 0.0,
+            "roughness": 0.75,
+            "cull_mode": "back",
+            "depth_write": true,
+        }),
+        "Billboard3D" => json!({
+            "sprite": null,
+            "face_camera": true,
+            "lock_y_axis": false,
+            "width": 1.0,
+            "height": 1.0,
+            "sorting_bias": 0,
+            "use_2d_animation": true,
+        }),
+        "HybridScene3D" => json!({
+            "enabled": false,
+            "render_2d_overlay": true,
+            "depth_buffer": true,
+            "physics_mode": "2d_gameplay",
+            "world_scale": 1.0,
+            "notes": "Preview 3D inicial; gameplay 2D sigue siendo la ruta estable.",
+        }),
+        "WorldPartition2D" => json!({
+            "cell_size": 64.0,
+            "load_radius_cells": 2,
+            "keepalive_radius_cells": 3,
+            "max_loaded_chunks": 49,
+            "chunk_folder": "saves/scenes/chunks",
+            "streaming_enabled": true,
+        }),
+        "StreamingChunk2D" => json!({
+            "cell_x": 0,
+            "cell_y": 0,
+            "scene_path": "saves/scenes/chunks/chunk_0_0.scene",
+            "priority": 0,
+            "loaded": false,
+            "entity_count": 0,
+            "last_touched_frame": 0,
+        }),
+        "RuntimeBudget2D" => json!({
+            "target_fps": 60,
+            "max_entities": 20000,
+            "max_visible_sprites": 8000,
+            "max_particles": 25000,
+            "max_draw_calls": 500,
+            "max_loaded_chunks": 49,
+            "max_script_ms": 4.0,
+            "max_physics_ms": 4.0,
+            "max_ui_ms": 2.0,
+            "max_memory_mb": 1024.0,
+        }),
+        "ObjectPool2D" => json!({
+            "buckets": [
+                {"prefab": "assets/prefabs/projectile.prefab", "warm": 128, "active": 0, "inactive": 128, "hard_limit": 1024}
+            ],
+            "enabled": true,
+        }),
+        "SpawnDirector2D" => json!({
+            "max_spawn_per_tick": 8,
+            "rules": [
+                {"prefab": "assets/prefabs/enemy.prefab", "tag": "Enemy", "min_distance_from_camera": 12.0, "max_distance_from_camera": 24.0, "max_alive": 80, "weight": 1.0, "cooldown_frames": 30, "last_spawn_frame": 0}
+            ],
+            "enabled": true,
+        }),
+        "SaveShard2D" => json!({
+            "shard_size_cells": 4,
+            "global_save_path": "saves/profile/global.json",
+            "dirty_cells": [],
+            "autosave_dirty_shards": true,
         }),
         "VisualScript" => json!({
             "graph_name": "NewGraph",
@@ -1050,11 +1243,20 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "enabled_events": ["start", "update", "collision"],
         }),
         "ScriptComponent" => json!({
-            "runtime": "rhai",
+            "runtime": "luau",
             "path": null,
+            "scripts": [],
             "public_variables": {},
             "hot_reload": true,
             "last_error": null,
+        }),
+        "ScriptSchedule" => json!({
+            "enabled": true,
+            "always_update": false,
+            "update_interval": 0.0,
+            "max_distance": 0.0,
+            "distant_update_interval": 0.75,
+            "priority": 0,
         }),
         "VisualGraphComponent" => json!({
             "runtime": "miniforge_visual_script_2d",
@@ -1070,6 +1272,30 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "sorting_order": 0,
             "collision_layer": "WorldStatic",
             "debug_grid": false,
+        }),
+        "Tilemap2D" => json!({
+            "width": 32,
+            "height": 18,
+            "tile_width": 16,
+            "tile_height": 16,
+            "chunk_width": 16,
+            "chunk_height": 16,
+            "layers": [
+                {"name": "Ground", "visible": true, "collision": false, "navigation": false, "tiles": []},
+                {"name": "Collision", "visible": false, "collision": true, "navigation": false, "tiles": []},
+                {"name": "Navigation", "visible": false, "collision": false, "navigation": true, "tiles": []}
+            ],
+            "autotiles": [],
+            "animated_tiles": [],
+            "dirty_chunks": [],
+        }),
+        "TilemapChunk2D" => json!({
+            "chunk_x": 0,
+            "chunk_y": 0,
+            "width": 16,
+            "height": 16,
+            "dirty": true,
+            "visible": true,
         }),
         "Tileset2D" => json!({
             "texture": "assets/tiles/demo_tiles.png",
@@ -1146,6 +1372,25 @@ pub fn default_component(component_type: &str) -> Option<Component> {
                 "friction": 0.25,
                 "bounciness": 0.0
             },
+        }),
+        "Area2D" => json!({
+            "monitoring": true,
+            "monitorable": true,
+            "shape": "rect",
+            "width": 1.0,
+            "height": 1.0,
+            "radius": 0.5,
+            "collision_layer": "Trigger",
+            "collision_mask": ["Pawn"],
+            "entered": [],
+            "exited": [],
+        }),
+        "OneWayPlatform2D" => json!({
+            "enabled": true,
+            "normal_x": 0.0,
+            "normal_y": -1.0,
+            "pass_through_from_below": true,
+            "surface_margin": 0.08,
         }),
         "Trigger2D" => json!({
             "shape": "rect",
@@ -1411,6 +1656,20 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "autosave": true,
         }),
         "Blackboard" => json!({"values": {}}),
+        "InputActions2D" => json!({
+            "actions": {
+                "move_left": ["A", "Left"],
+                "move_right": ["D", "Right"],
+                "move_up": ["W", "Up"],
+                "move_down": ["S", "Down"],
+                "jump": ["Space"],
+                "fire": ["MouseLeft", "Ctrl"]
+            }
+        }),
+        "EventBus2D" => json!({
+            "subscriptions": {},
+            "last_events": [],
+        }),
         "BehaviorTree2D" => json!({
             "tree": "assets/ai/basic_enemy.bt2d.json",
             "running": true,
@@ -1466,17 +1725,110 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "active": false,
         }),
         "Light2D" => json!({
+            "light_type": "point",
             "color": [255, 240, 200],
             "radius": 5.0,
             "intensity": 1.0,
+            "falloff": 1.0,
+            "angle": 360.0,
+            "direction": 0.0,
             "flicker": false,
             "flicker_speed": 6.0,
-            "casts_shadows": false,
+            "casts_shadows": true,
+            "shadow_softness": 0.35,
+            "shadow_bias": 0.01,
+        }),
+        "ShadowCaster2D" => json!({
+            "shape": "sprite_alpha",
+            "points": [],
+            "opacity": 0.8,
+            "two_sided": true,
+            "self_shadow": false,
+        }),
+        "NormalMap2D" => json!({
+            "normal_texture": null,
+            "strength": 1.0,
+            "flip_y": false,
+            "generate_from_height": false,
+            "height_scale": 1.0,
+        }),
+        "Water2D" => json!({
+            "shader": "water_2d",
+            "wave_strength": 0.15,
+            "wave_speed": 1.2,
+            "refraction": 0.08,
+            "foam_amount": 0.4,
+            "tint": [55, 145, 210, 190],
+            "normal_texture": null,
+        }),
+        "Distortion2D" => json!({
+            "mode": "heat",
+            "strength": 0.06,
+            "speed": 1.0,
+            "frequency": 2.5,
+            "mask_texture": null,
+        }),
+        "Fire2D" => json!({
+            "particle_template": "Fire2D",
+            "gpu_preferred": true,
+            "heat_distortion": true,
+            "emission": [255, 95, 20],
+            "intensity": 2.0,
+        }),
+        "Fog2D" => json!({
+            "mode": "height",
+            "color": [95, 115, 140, 150],
+            "density": 0.18,
+            "height_falloff": 0.35,
+            "noise_strength": 0.3,
+            "noise_speed": 0.08,
+        }),
+        "Outline2D" => json!({
+            "color": [20, 22, 28, 255],
+            "width": 1.0,
+            "mode": "alpha_edge",
+            "inside": false,
+        }),
+        "Bloom2D" => json!({
+            "threshold": 0.8,
+            "intensity": 0.7,
+            "radius": 4.0,
+            "quality": "balanced",
+        }),
+        "GpuParticles2D" => json!({
+            "template": "MagicAura2D",
+            "max_particles": 100000,
+            "simulation": "gpu_preferred",
+            "fallback": "cpu",
+            "local_space": false,
+        }),
+        "DamageEffect2D" => json!({
+            "flash_color": [255, 65, 65, 255],
+            "flash_duration": 0.12,
+            "shake_amplitude": 5.0,
+            "chromatic_aberration": 0.04,
+            "vignette": 0.3,
+        }),
+        "PixelArtShader2D" => json!({
+            "palette_mode": "indexed",
+            "palette_size": 16,
+            "dither": "bayer4x4",
+            "pixel_scale": 1.0,
+            "nearest_filter": true,
+            "snap_uv": true,
         }),
         "Material2D" => json!({
             "material": "Default",
+            "material_path": null,
             "shader": "sprite_default",
             "tint": [255, 255, 255, 255],
+            "texture": null,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "roughness_texture": null,
+            "metallic_texture": null,
+            "emissive_texture": null,
+            "texture_parameters": {},
             "lighting": false,
             "fog": false,
             "roughness": 0.5,
@@ -1558,6 +1910,111 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "capacity": 999999.0,
             "allow_negative": false,
         }),
+        "Province2D" => json!({
+            "province_id": "province",
+            "display_name": "Province",
+            "owner_tag": "Neutral",
+            "controller_tag": "Neutral",
+            "terrain": "plains",
+            "population": 100000.0,
+            "literacy": 0.15,
+            "infrastructure": 1.0,
+            "resource": "grain",
+            "factory_slots": 1,
+            "supply_limit": 10.0,
+            "neighbors": [],
+            "selected": false,
+        }),
+        "Nation2D" => json!({
+            "nation_tag": "NAT",
+            "display_name": "Nation",
+            "capital_province": null,
+            "government": "constitutional_monarchy",
+            "ruling_party": "liberal",
+            "prestige": 0.0,
+            "infamy": 0.0,
+            "tax_rate": 0.25,
+            "tariff_rate": 0.05,
+            "treasury": 1000.0,
+            "accepted_cultures": [],
+            "primary_culture": "core",
+            "national_focus": "industrialize",
+        }),
+        "PopulationPops2D" => json!({
+            "pops": [
+                {"type": "farmers", "size": 65000.0, "militancy": 0.05, "consciousness": 0.10, "wealth": 0.35},
+                {"type": "craftsmen", "size": 12000.0, "militancy": 0.08, "consciousness": 0.25, "wealth": 0.45}
+            ],
+            "migration_pull": 0.0,
+            "assimilation_rate": 0.01,
+            "growth_rate": 0.012,
+        }),
+        "Market2D" => json!({
+            "market_id": "local_market",
+            "goods": {
+                "grain": {"stockpile": 100.0, "price": 1.0, "demand": 80.0, "supply": 100.0},
+                "iron": {"stockpile": 30.0, "price": 2.0, "demand": 45.0, "supply": 30.0}
+            },
+            "tariffs_enabled": true,
+            "auto_price_update": true,
+        }),
+        "Factory2D" => json!({
+            "factory_id": "factory",
+            "good": "steel",
+            "level": 1,
+            "workers": 0.0,
+            "throughput": 1.0,
+            "inputs": {"coal": 1.0, "iron": 1.0},
+            "output": 1.0,
+            "subsidized": false,
+            "profit": 0.0,
+        }),
+        "Diplomacy2D" => json!({
+            "relations": {},
+            "alliances": [],
+            "rivals": [],
+            "truce_until": {},
+            "influence": {},
+            "sphere_leader": null,
+        }),
+        "ResearchTree2D" => json!({
+            "current_research": null,
+            "progress": 0.0,
+            "points_per_month": 1.0,
+            "unlocked": [],
+            "available": ["steam_power", "organized_factories", "professional_army"],
+        }),
+        "ArmyStack2D" => json!({
+            "army_id": "army",
+            "owner_tag": "NAT",
+            "province_id": null,
+            "regiments": [
+                {"type": "infantry", "strength": 3000.0, "organization": 1.0, "morale": 1.0}
+            ],
+            "general": null,
+            "movement_order": null,
+            "supply": 1.0,
+            "dig_in": 0.0,
+        }),
+        "WarGoal2D" => json!({
+            "war_id": null,
+            "attacker_tag": null,
+            "defender_tag": null,
+            "goal_type": "conquest",
+            "target_province": null,
+            "war_score": 0.0,
+            "active": false,
+        }),
+        "TradeRoute2D" => json!({
+            "route_id": "trade_route",
+            "from_market": null,
+            "to_market": null,
+            "good": "grain",
+            "volume": 0.0,
+            "capacity": 100.0,
+            "profit": 0.0,
+            "risk": 0.0,
+        }),
         "Timer" => json!({
             "name": "Timer",
             "duration": 1.0,
@@ -1595,19 +2052,40 @@ pub fn advanced_component_types() -> &'static [&'static str] {
         "AIController2D",
         "AssetIdentity2D",
         "TilemapRenderer2D",
+        "Tilemap2D",
+        "TilemapChunk2D",
         "Tileset2D",
         "FlipbookAnimation2D",
+        "AnimatedSprite",
+        "AnimationPlayer",
         "AnimationBlueprint2D",
         "Animator2D",
         "ScriptComponent",
+        "ScriptSchedule",
         "VisualGraphComponent",
         "AudioSource2D",
         "Camera2D",
+        "Transform3D",
+        "MeshRenderer3D",
+        "Camera3D",
+        "Light3D",
+        "Material3D",
+        "Billboard3D",
+        "HybridScene3D",
+        "WorldPartition2D",
+        "StreamingChunk2D",
+        "RuntimeBudget2D",
+        "ObjectPool2D",
+        "SpawnDirector2D",
+        "SaveShard2D",
         "WidgetCanvas2D",
         "Sequencer2D",
+        "Area2D",
+        "OneWayPlatform2D",
         "Trigger2D",
         "StaticBody2D",
         "KinematicBody2D",
+        "CharacterBody2D",
         "BehaviorTree2D",
         "Stats",
         "Inventory",
@@ -1634,15 +2112,38 @@ pub fn advanced_component_types() -> &'static [&'static str] {
         "CameraFollow",
         "Saveable",
         "Blackboard",
+        "InputActions2D",
+        "EventBus2D",
         "StateMachine",
         "QuestLog",
         "Dialogue",
+        "Province2D",
+        "Nation2D",
+        "PopulationPops2D",
+        "Market2D",
+        "Factory2D",
+        "Diplomacy2D",
+        "ResearchTree2D",
+        "ArmyStack2D",
+        "WarGoal2D",
+        "TradeRoute2D",
         "Cooldown",
         "StatusEffects",
         "CombatTarget",
         "LootTable",
         "CameraShake",
         "Light2D",
+        "ShadowCaster2D",
+        "NormalMap2D",
+        "Water2D",
+        "Distortion2D",
+        "Fire2D",
+        "Fog2D",
+        "Outline2D",
+        "Bloom2D",
+        "GpuParticles2D",
+        "DamageEffect2D",
+        "PixelArtShader2D",
         "Material2D",
         "ParticleEmitter",
         "ParallaxLayer",
@@ -1664,14 +2165,28 @@ pub fn advanced_component_category(component_type: &str) -> Option<&'static str>
         | "PlayerController2D" => "Gameplay",
         "AIController2D" | "BehaviorTree2D" => "AI",
         "AssetIdentity2D" => "Assets",
-        "TilemapRenderer2D" | "Tileset2D" | "FlipbookAnimation2D" => "Paper2D",
-        "AnimationBlueprint2D" | "Animator2D" => "Animation",
-        "ScriptComponent" | "VisualGraphComponent" => "Scripting",
+        "TilemapRenderer2D"
+        | "Tilemap2D"
+        | "TilemapChunk2D"
+        | "Tileset2D"
+        | "FlipbookAnimation2D" => "Paper2D",
+        "AnimationBlueprint2D" | "Animator2D" | "AnimatedSprite" | "AnimationPlayer" => "Animation",
+        "ScriptComponent" | "ScriptSchedule" | "VisualGraphComponent" => "Scripting",
         "AudioSource2D" => "Audio",
         "Camera2D" => "Camera",
+        "Transform3D" | "MeshRenderer3D" | "Material3D" | "Billboard3D" | "HybridScene3D" => {
+            "Rendering3D"
+        }
+        "Camera3D" => "Camera",
+        "Light3D" => "Lighting3D",
+        "WorldPartition2D" | "StreamingChunk2D" => "WorldStreaming",
+        "RuntimeBudget2D" => "Performance",
+        "ObjectPool2D" | "SpawnDirector2D" => "MassiveGameplay",
+        "SaveShard2D" => "Persistence",
         "WidgetCanvas2D" => "UI",
         "Sequencer2D" => "Cinematics",
-        "Trigger2D" | "StaticBody2D" | "KinematicBody2D" => "Physics",
+        "Area2D" | "OneWayPlatform2D" | "Trigger2D" | "StaticBody2D" | "KinematicBody2D"
+        | "CharacterBody2D" => "Physics",
         "Stats"
         | "Inventory"
         | "Equipment"
@@ -1700,10 +2215,15 @@ pub fn advanced_component_category(component_type: &str) -> Option<&'static str>
         "DamageDealer" | "StatusEffects" | "CombatTarget" => "Combat",
         "CameraFollow" | "CameraShake" => "Camera",
         "Saveable" | "DontDestroyOnLoad" => "Persistence",
-        "Blackboard" | "StateMachine" | "Timer" | "Tween" => "Scripting",
+        "Blackboard" | "InputActions2D" | "EventBus2D" | "StateMachine" | "Timer" | "Tween" => {
+            "Scripting"
+        }
         "QuestLog" | "Dialogue" => "Narrative",
-        "Light2D" | "Material2D" | "ParallaxLayer" => "Rendering",
-        "ParticleEmitter" => "Effects",
+        "Light2D" | "ShadowCaster2D" | "NormalMap2D" | "Material2D" | "ParallaxLayer" => {
+            "Rendering"
+        }
+        "Water2D" | "Distortion2D" | "Fire2D" | "Fog2D" | "Outline2D" | "Bloom2D"
+        | "GpuParticles2D" | "DamageEffect2D" | "PixelArtShader2D" | "ParticleEmitter" => "Effects",
         "TilemapCollider" => "Physics",
         "ObjectiveMarker" => "UI",
         _ => return None,

@@ -26,6 +26,7 @@ pub struct DeveloperConsole {
     pub frame: u64,
     pub error_count: usize,
     pub warning_count: usize,
+    pub log_write_error: Option<String>,
 }
 
 impl DeveloperConsole {
@@ -37,6 +38,7 @@ impl DeveloperConsole {
             frame: 0,
             error_count: 0,
             warning_count: 0,
+            log_write_error: None,
         }
     }
 
@@ -48,40 +50,28 @@ impl DeveloperConsole {
         let channel = channel.into();
         let message = message.into();
         let severity = ConsoleSeverity::from_channel(&channel);
-        if let Some(path) = &self.log_path {
-            let _ = Logger::new(path.clone()).log_level(
-                LogLevel::from_channel(&channel),
-                &channel,
-                &message,
-            );
-        }
+        self.persist(LogLevel::from_channel(&channel), &channel, &message);
         self.push_entry(channel, message, severity);
     }
 
     pub fn debug(&mut self, message: impl Into<String>, channel: impl Into<String>) {
         let channel = channel.into();
         let message = message.into();
-        if let Some(path) = &self.log_path {
-            let _ = Logger::new(path.clone()).debug(&channel, &message);
-        }
+        self.persist(LogLevel::Debug, &channel, &message);
         self.push_entry(channel, message, ConsoleSeverity::Debug);
     }
 
     pub fn warning(&mut self, message: impl Into<String>, channel: impl Into<String>) {
         let channel = channel.into();
         let message = message.into();
-        if let Some(path) = &self.log_path {
-            let _ = Logger::new(path.clone()).log_level(LogLevel::Warning, &channel, &message);
-        }
+        self.persist(LogLevel::Warning, &channel, &message);
         self.push_entry(channel, message, ConsoleSeverity::Warning);
     }
 
     pub fn error(&mut self, message: impl Into<String>, channel: impl Into<String>) {
         let channel = channel.into();
         let message = message.into();
-        if let Some(path) = &self.log_path {
-            let _ = Logger::new(path.clone()).error(&channel, &message);
-        }
+        self.persist(LogLevel::Error, &channel, &message);
         self.push_entry(channel, message, ConsoleSeverity::Error);
     }
 
@@ -150,6 +140,16 @@ impl DeveloperConsole {
             frame: self.frame,
         });
         self.truncate();
+    }
+
+    fn persist(&mut self, level: LogLevel, channel: &str, message: &str) {
+        let Some(path) = self.log_path.clone() else {
+            return;
+        };
+        match Logger::new(path).log_level(level, channel, message) {
+            Ok(()) => self.log_write_error = None,
+            Err(error) => self.log_write_error = Some(error.to_string()),
+        }
     }
 
     fn truncate(&mut self) {

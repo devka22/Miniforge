@@ -23,6 +23,15 @@ impl EngineUpgradeManifest {
             "Production editor inspector".to_string(),
             "Command Pattern undo redo".to_string(),
             "Tile brushes and scene gizmos".to_string(),
+            "0.9.3.4 whole-engine system readiness audit".to_string(),
+            "0.9.3.4 scheduler frame reports with budget warnings".to_string(),
+            "0.9.3.4 frame health frontend diagnostics".to_string(),
+            "0.9.3.4 input edge states and axis helpers".to_string(),
+            "0.9.3.4 render frame stats and visibility ratio".to_string(),
+            "0.9.3.4 runtime runner options and reports".to_string(),
+            "0.9.3.4 pathfinding quality reports".to_string(),
+            "0.9.3.4 standalone package launchers".to_string(),
+            "0.9.3.4 UI screen manager stack".to_string(),
         ];
         while improvements.len() < 120 {
             improvements.push(format!(

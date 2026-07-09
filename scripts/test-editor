@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BUILD_DIR="${MINIFORGE_QT_BUILD_DIR:-"$ROOT/build/editor-qt"}"
+CMAKE_BIN="${MINIFORGE_QT_CMAKE:-cmake}"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/miniforge-codex-target}"
+
+rustfmt --check "$ROOT/src/engine/editor_core.rs" "$ROOT/src/editor_ffi.rs"
+cargo check --locked --lib --features editor_ffi --message-format=short
+cargo test --locked editor_core
+cargo check --locked --no-default-features --features runtime --bin miniforge_runtime
+
+"$ROOT/scripts/configure-editor"
+"$CMAKE_BIN" --build "$BUILD_DIR" --target miniforge_editor_checks
+ctest --test-dir "$BUILD_DIR" --output-on-failure
+
+if command -v qmllint >/dev/null 2>&1; then
+    find "$ROOT/editor-qml" -name '*.qml' -print0 | xargs -0 qmllint
+else
+    echo "qmllint not found; skipping QML lint." >&2
+fi
+
+if [[ -x "$ROOT/editor-plugins/typescript/node_modules/.bin/tsc" ]]; then
+    (cd "$ROOT/editor-plugins/typescript" && npm run typecheck)
+else
+    echo "TypeScript dependencies not installed; skipping plugin typecheck." >&2
+    echo "Run 'npm install' in editor-plugins/typescript to enable it." >&2
+fi

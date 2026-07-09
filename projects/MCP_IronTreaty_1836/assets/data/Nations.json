@@ -1,0 +1,32 @@
+{
+  "playable": "ALB",
+  "nations": {
+    "ALB": {
+      "name": "Albian Union",
+      "capital": "albion",
+      "ideology": "liberal",
+      "goals": [
+        "industrialize",
+        "contain_boreal"
+      ]
+    },
+    "BOR": {
+      "name": "Boreal Empire",
+      "capital": "borgrad",
+      "ideology": "reactionary",
+      "goals": [
+        "expand_west",
+        "secure_coal"
+      ]
+    },
+    "CYR": {
+      "name": "Cyran Republic",
+      "capital": "cyrhaven",
+      "ideology": "republican",
+      "goals": [
+        "trade_power",
+        "neutrality"
+      ]
+    }
+  }
+}

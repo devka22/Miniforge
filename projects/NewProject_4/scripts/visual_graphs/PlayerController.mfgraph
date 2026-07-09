@@ -1,0 +1,25 @@
+{
+  "kind": "MiniForgeVisualGraph",
+  "name": "PlayerController",
+  "nodes": [
+    {
+      "id": "start",
+      "next": "log",
+      "type": "EventStart"
+    },
+    {
+      "id": "update",
+      "next": null,
+      "type": "EventUpdate"
+    },
+    {
+      "id": "log",
+      "message": "PlayerController started",
+      "next": null,
+      "type": "Log"
+    }
+  ],
+  "runtime": "rust_visual_graph",
+  "variables": {},
+  "version": "0.9.3"
+}

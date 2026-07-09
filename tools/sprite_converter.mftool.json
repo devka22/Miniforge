@@ -1,0 +1,9 @@
+{
+  "id": "sprite_converter",
+  "label": "Convert Sprites to PNG",
+  "entry": "tools/production_suite.py",
+  "menu_path": "Tools/Sprites/Convert to PNG",
+  "description": "Convert JPEG, WebP and BMP sprite sources to editor-ready PNG files.",
+  "trusted": true,
+  "timeout_ms": 120000
+}

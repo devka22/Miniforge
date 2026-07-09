@@ -1,0 +1,9 @@
+{
+  "id": "procedural_level",
+  "label": "Create Procedural 2D Level",
+  "entry": "tools/production_suite.py",
+  "menu_path": "Tools/World/Create Procedural Level",
+  "description": "Create a deterministic editable level with borders, lights and effect anchors.",
+  "trusted": true,
+  "timeout_ms": 30000
+}

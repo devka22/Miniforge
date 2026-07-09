@@ -1,0 +1,8 @@
+{
+  "author": "MiniForge",
+  "description": "Neon Sombra, juego 2D cenital de mundo abierto con historia, IA urbana y policia reactiva.",
+  "engine_version": "0.9.3.4",
+  "license": "GPL-3.0",
+  "project_name": "Neon Sombra",
+  "start_scene": "main.scene"
+}

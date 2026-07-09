@@ -29,7 +29,11 @@ impl GameplaySystem {
             return;
         }
 
-        let dt = dt.clamp(0.0, 0.05);
+        let dt = if dt.is_finite() {
+            dt.clamp(0.0, 0.05)
+        } else {
+            0.0
+        };
         self.now += dt;
         let snapshot = entities.clone();
         let mut pending_destroy = Vec::new();
@@ -53,7 +57,7 @@ impl GameplaySystem {
             }
         }
 
-        let mut damage_events = self.update_ai(entities, &mut pending_destroy);
+        let mut damage_events = self.update_ai(entities, &mut pending_destroy, dt);
 
         for request in spawn_requests {
             if entities
@@ -419,7 +423,12 @@ impl GameplaySystem {
         })
     }
 
-    fn update_ai(&mut self, entities: &mut [GameObject], pending_destroy: &mut Vec<u64>) -> usize {
+    fn update_ai(
+        &mut self,
+        entities: &mut [GameObject],
+        pending_destroy: &mut Vec<u64>,
+        dt: f64,
+    ) -> usize {
         let snapshot = entities.to_vec();
         let mut damage_actions = Vec::new();
 
@@ -514,7 +523,7 @@ impl GameplaySystem {
         }
         for entity in entities {
             if let Some(ai) = entity.get_component_mut("AIController") {
-                let timer = (ai.get_f64("think_timer", 0.0) - 0.016).max(0.0);
+                let timer = (ai.get_f64("think_timer", 0.0) - dt).max(0.0);
                 ai.set_f64("think_timer", timer);
             }
         }

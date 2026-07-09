@@ -1,0 +1,49 @@
+{
+  "title": "Neon Sombra",
+  "city": "Santa Aurelia",
+  "genre": "2D cenital de crimen, persecucion y conspiracion civica",
+  "themes": [
+    "corrupcion visible",
+    "memoria urbana",
+    "lealtad bajo presion"
+  ],
+  "protagonist": {
+    "name": "Nico Sombra",
+    "role": "mensajero de alto riesgo",
+    "wound": "su hermano fue culpado por una redada montada",
+    "want": "sacar a la luz el archivo de camaras adulteradas"
+  },
+  "acts": [
+    {
+      "id": "act1",
+      "name": "Lluvia sobre el puente",
+      "beats": [
+        "Mara entrega el primer mapa falso.",
+        "Ivo prepara una ruta de escape por Talleres Sur.",
+        "Rojas presenta una version oficial imposible."
+      ]
+    },
+    {
+      "id": "act2",
+      "name": "La hora azul",
+      "beats": [
+        "Valeria abre una carpeta judicial.",
+        "La red policial aprende a predecir rutas del jugador.",
+        "El nodo Signal_Node revela que alguien borra barrios completos del mapa.",
+        "Luz abre Pier 21 y revela yates que viajan sin luces.",
+        "La caja negra de la marina conecta a Rojas con rutas fuera de carretera."
+      ]
+    },
+    {
+      "id": "act3",
+      "name": "Ciudad cerrada",
+      "beats": [
+        "Rojas corta puentes y usa patrullas como muros moviles.",
+        "Ivo entrega un auto frio para atravesar el muro policial.",
+        "Valeria exige una entrega con cadena de custodia intacta.",
+        "Mara filtra la verdad en la radio pirata.",
+        "Nico elige entre exponer a todos o salvar a su hermano."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "variables": [
+    "affection",
+    "honesty",
+    "courage",
+    "memory_fragments"
+  ],
+  "choices": [
+    {
+      "id": "tell_truth",
+      "label": "Tell her the truth",
+      "effects": {
+        "affection": 15,
+        "honesty": 20,
+        "courage": 10
+      },
+      "ending_bias": "reconcile"
+    },
+    {
+      "id": "ask_dream",
+      "label": "Ask about her dream",
+      "effects": {
+        "affection": 10,
+        "honesty": 8,
+        "courage": 4
+      },
+      "ending_bias": "slow_burn"
+    },
+    {
+      "id": "stay_silent",
+      "label": "Stay silent",
+      "effects": {
+        "affection": -12,
+        "honesty": -10,
+        "courage": -6
+      },
+      "ending_bias": "farewell"
+    }
+  ],
+  "endings": [
+    {
+      "id": "reconcile",
+      "requirement": "affection >= 65 and honesty >= 55"
+    },
+    {
+      "id": "slow_burn",
+      "requirement": "affection >= 45"
+    },
+    {
+      "id": "farewell",
+      "requirement": "affection < 45"
+    }
+  ]
+}

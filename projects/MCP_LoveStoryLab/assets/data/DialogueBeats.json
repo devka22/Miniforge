@@ -1,0 +1,22 @@
+{
+  "beats": [
+    {
+      "id": "station_reunion",
+      "speaker": "Mara",
+      "line": "You still keep arriving before the rain stops.",
+      "emotion": "guarded"
+    },
+    {
+      "id": "letter_found",
+      "speaker": "Sol",
+      "line": "I wrote it and then trusted silence more than you.",
+      "emotion": "ashamed"
+    },
+    {
+      "id": "bridge_choice",
+      "speaker": "Mara",
+      "line": "Do you want a memory, or do you want tomorrow?",
+      "emotion": "hopeful"
+    }
+  ]
+}

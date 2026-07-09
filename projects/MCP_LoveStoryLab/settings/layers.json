@@ -1,0 +1,14 @@
+{
+  "items": [
+    "Default",
+    "Ground",
+    "Characters",
+    "Props",
+    "Triggers",
+    "UI",
+    "Effects",
+    "Audio",
+    "IgnoreSelection",
+    "EditorOnly"
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "active_tool": "Select",
+  "brush_size": 1,
+  "camera": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1.0
+  },
+  "control_groups": {},
+  "editor_view_settings": {},
+  "engine_version": "0.9.3",
+  "entities": [],
+  "grid": null,
+  "mode": "EDITOR",
+  "scene_name": "scene_2",
+  "settings": {},
+  "tile_brush": 0,
+  "tilemap_layers": [],
+  "tiles": [],
+  "ui_canvases": [],
+  "version": "0.9.3"
+}

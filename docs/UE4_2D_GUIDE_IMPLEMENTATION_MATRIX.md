@@ -30,4 +30,4 @@ This matrix maps `UE4_2D_EDITOR_UI_ARCHITECTURE_GUIDE.md` to the MiniForge2D mod
 | Ejemplos mínimos | `examples::minimal_examples()` and `examples/miniforge_2d/miniforge_2d_examples.json` |
 | Documentación interna | `docs/MINIFORGE_2D_ARCHITECTURE.md` |
 
-The implementation is data-first and compatible with the existing Rust + macroquad + Rhai runtime. UI-facing modules are state/controllers that the existing editor can render and wire into egui without replacing current systems.
+The implementation is data-first and compatible with the existing Rust + macroquad + Luau runtime. UI-facing modules are state/controllers that the existing editor can render and wire into egui without replacing current systems.

@@ -1,0 +1,33 @@
+{
+  "resources": {
+    "Crystal": {
+      "target": 250,
+      "node_respawn_seconds": 90
+    }
+  },
+  "player": {
+    "max_health": 120,
+    "pulse_damage": 12,
+    "dash_cooldown": 1.5
+  },
+  "enemies": {
+    "drone_health": 65,
+    "drone_damage": 8,
+    "detection_radius": 7
+  },
+  "production": {
+    "Drone": {
+      "build_time": 3,
+      "cost": {
+        "Crystal": 25
+      }
+    },
+    "Turret": {
+      "build_time": 6,
+      "cost": {
+        "Crystal": 55,
+        "Gold": 40
+      }
+    }
+  }
+}

@@ -1,26 +1,57 @@
-use std::env;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::{env, fs, io};
 
 use macroquad::prelude::*;
-use strsim::jaro_winkler;
 
 use crate::core::game::Game;
 use crate::engine::asset_database::AssetRecord;
+use crate::engine::asset_importers::SpriteSheetImporter;
 use crate::engine::asset_tools::AssetTools;
-use crate::engine::component::{advanced_component_category, advanced_component_types};
+use crate::engine::command_palette::CommandPalette;
+use crate::engine::component::{
+    advanced_component_category, advanced_component_types, default_component,
+};
 use crate::engine::content_drag::{DragPayload, DropOutcome};
+use crate::engine::crash_reporter::{CrashReporter, CrashReporterConfig};
+use crate::engine::document_manager::CloseDocumentChoice;
 use crate::engine::editor_command::{EditorCommandKind, EditorSnapshot};
+use crate::engine::editor_python::{
+    PythonAutomationHost, PythonBatchReport, PythonEditorContext, PythonEditorOperation,
+    batch_convert_sprites, batch_import_assets, generate_paged_sprite_atlases,
+};
+use crate::engine::editor_spatial_tools_2d::{
+    AlignMode2D, CameraFrame2D, EditorSpatialTools2D, SmartSnapGuide2D, SmartSnapSettings2D,
+};
+use crate::engine::editor_ui::{
+    EditorClipboard, EditorFileWatcher, EditorIcon, EditorSyntaxHighlighter, fuzzy_rank,
+    open_in_default_application,
+};
 use crate::engine::editor_workspace::WorkspaceMode;
 use crate::engine::engine_programming::{VisualGraphNodeView, VisualGraphView};
 use crate::engine::inspector_editor::{InspectorEditor, InspectorField};
+use crate::engine::miniforge_2d::paper2d::SpriteFrames2D;
 use crate::engine::project_launcher::{EguiProjectLauncher, LauncherTemplate};
+use crate::engine::project_templates::ProjectTemplates;
 use crate::engine::runtime_exporter::ExportProfile;
 use crate::engine::runtime_manifest_loader::RuntimeManifestLoader;
+use crate::engine::safe_mode::SafeModeSettings;
 use crate::engine::scene_view_tools::SceneViewTools;
-use crate::engine::sprite_editor::SpriteColor;
+use crate::engine::session_recovery::{
+    EditorSessionSnapshot, SessionRecoveryManager, SessionUiState,
+};
+use crate::engine::sprite_editor::{
+    SpriteAnimationClipDraft, SpriteAnimationPlaybackSample, SpriteColor,
+};
 use crate::engine::tile_brush::TileBrushMode;
-use crate::engine::ui_canvas::{UiCanvasElement, layout_element_pixels, ui_canvases_from_value};
+use crate::engine::ui::{Button as UiButton, EditorTool, MenuBar, Toolbar as EditorToolbar};
+use crate::engine::ui_canvas::{
+    UiCanvasElement, UiCanvasGizmoHandleKind, UiCanvasRoot, layout_element_pixels,
+    ui_canvases_from_value,
+};
+use crate::engine::vector_canvas_2d::{
+    VectorGeometry2D, VectorMesh2D, VectorPath2D, VectorPoint2D, VectorStyle2D, translation_gizmo,
+};
 use crate::entities::game_object::GameObject;
 use crate::systems::command_system::CommandSystem;
 use crate::systems::rts_system::RTSSystem;
@@ -31,7 +62,12 @@ struct Args {
     project: Option<PathBuf>,
     runtime: bool,
     no_launcher: bool,
+    force_launcher: bool,
     headless_once: bool,
+    create_project: Option<PathBuf>,
+    create_template: String,
+    force_create_project: bool,
+    safe_mode: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -43,33 +79,19 @@ struct RectSpec {
 }
 
 #[derive(Debug, Clone, Copy)]
+enum TextAlign {
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct Viewport {
     rect: RectSpec,
     tile: f32,
     zoom: f32,
     camera_x: f32,
     camera_y: f32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EditorTool {
-    Select,
-    Move,
-    Rotate,
-    Scale,
-    Paint,
-}
-
-impl EditorTool {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Select => "Select",
-            Self::Move => "Move",
-            Self::Rotate => "Rotate",
-            Self::Scale => "Scale",
-            Self::Paint => "Paint",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +129,18 @@ impl BottomTab {
             Self::Profiler => Self::Console,
         }
     }
+
+    fn from_label(label: &str) -> Self {
+        match label {
+            "Browser" => Self::Assets,
+            "Graph" => Self::Programming,
+            "Prefabs" => Self::Prefabs,
+            "Scenes" => Self::Scenes,
+            "Sprites" => Self::Sprites,
+            "Profiler" => Self::Profiler,
+            _ => Self::Console,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +162,27 @@ impl TopMenu {
             Self::Rts => "RTS",
         }
     }
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Create => "create",
+            Self::View => "view",
+            Self::Project => "project",
+            Self::Rts => "rts",
+        }
+    }
+
+    fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "file" => Some(Self::File),
+            "create" => Some(Self::Create),
+            "view" => Some(Self::View),
+            "project" => Some(Self::Project),
+            "rts" => Some(Self::Rts),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +190,8 @@ enum FloatingWindowKind {
     Script,
     Play,
     BlueprintPicker,
+    Sprite,
+    PythonTools,
 }
 
 #[derive(Debug, Clone)]
@@ -145,21 +202,46 @@ struct TextEditState {
     buffer: String,
 }
 
+#[derive(Debug, Clone)]
+struct EditorPreferences {
+    prefer_vscode: bool,
+    external_editor_command: String,
+    open_external_on_script: bool,
+    keyboard_layout_hint: String,
+}
+
+impl Default for EditorPreferences {
+    fn default() -> Self {
+        Self {
+            prefer_vscode: false,
+            external_editor_command: "code".to_string(),
+            open_external_on_script: false,
+            keyboard_layout_hint: "international".to_string(),
+        }
+    }
+}
+
 struct EditorState {
     paused: bool,
     show_console: bool,
     show_grid: bool,
     show_hierarchy: bool,
     show_inspector: bool,
-    command_palette: bool,
-    command_palette_search: String,
-    top_menu: Option<TopMenu>,
-    tool: EditorTool,
+    command_palette: CommandPalette,
+    menu_bar: MenuBar,
+    toolbar: EditorToolbar,
     bottom_tab: BottomTab,
     tile_brush: i32,
     tile_brush_mode: TileBrushMode,
     snap_to_grid: bool,
+    smart_snap: bool,
+    show_collisions: bool,
+    show_camera_frame: bool,
+    zoom_target: f64,
+    snap_guides: Vec<SmartSnapGuide2D>,
     drag_entity: Option<u64>,
+    drag_world_last: (f32, f32),
+    drag_collision_vertex: Option<(u64, usize)>,
     drag_entity_before: Option<EditorSnapshot>,
     paint_start: Option<(usize, usize)>,
     last_painted_cell: Option<(usize, usize)>,
@@ -182,21 +264,47 @@ struct EditorState {
     graph_node_search_active: bool,
     graph_template_search: String,
     graph_template_search_active: bool,
+    script_search: String,
+    script_search_active: bool,
     graph_drag_node: Option<String>,
     graph_drag_offset: (f32, f32),
+    graph_pan: (f32, f32),
+    graph_panning: bool,
+    graph_pan_last: (f32, f32),
+    scene_panning: bool,
+    scene_pan_last: (f32, f32),
+    scene_pan_moved: bool,
     hierarchy_scroll: f32,
     hierarchy_context_entity: Option<u64>,
     hierarchy_context_pos: (f32, f32),
     drag_ui_offset: (f32, f32),
+    selected_ui_canvas_id: Option<String>,
+    selected_ui_element_id: Option<String>,
+    drag_ui_canvas_element: bool,
+    drag_ui_canvas_handle: Option<UiCanvasGizmoHandleKind>,
+    drag_ui_canvas_before: Option<EditorSnapshot>,
+    drag_ui_canvas_last: (f32, f32),
     script_window_open: bool,
     script_window_rect: RectSpec,
+    pending_script_close: Option<PathBuf>,
     play_window_open: bool,
     play_window_rect: RectSpec,
     blueprint_picker_open: bool,
     blueprint_picker_rect: RectSpec,
+    sprite_window_open: bool,
+    sprite_window_rect: RectSpec,
+    python_tools_open: bool,
+    python_tools_rect: RectSpec,
+    preferences_open: bool,
+    editor_preferences: EditorPreferences,
     floating_drag: Option<(FloatingWindowKind, f32, f32)>,
+    launcher_overlay: Option<LauncherUiState>,
     external_play_child: Option<Child>,
     external_play_path: Option<PathBuf>,
+    phosphor_font: Option<Font>,
+    syntax_highlighter: EditorSyntaxHighlighter,
+    file_watcher: Option<EditorFileWatcher>,
+    session_recovery: Option<SessionRecoveryManager>,
 }
 
 impl Default for EditorState {
@@ -207,15 +315,25 @@ impl Default for EditorState {
             show_grid: true,
             show_hierarchy: true,
             show_inspector: true,
-            command_palette: false,
-            command_palette_search: String::new(),
-            top_menu: None,
-            tool: EditorTool::Select,
+            command_palette: CommandPalette::with_commands(
+                COMMAND_PALETTE_ITEMS
+                    .iter()
+                    .map(|(label, command)| format!("{label} {command}")),
+            ),
+            menu_bar: MenuBar::editor_default(),
+            toolbar: EditorToolbar::default(),
             bottom_tab: BottomTab::Console,
             tile_brush: 1,
             tile_brush_mode: TileBrushMode::Pencil,
             snap_to_grid: true,
+            smart_snap: true,
+            show_collisions: false,
+            show_camera_frame: false,
+            zoom_target: 1.0,
+            snap_guides: Vec::new(),
             drag_entity: None,
+            drag_world_last: (0.0, 0.0),
+            drag_collision_vertex: None,
             drag_entity_before: None,
             paint_start: None,
             last_painted_cell: None,
@@ -238,12 +356,26 @@ impl Default for EditorState {
             graph_node_search_active: false,
             graph_template_search: String::new(),
             graph_template_search_active: false,
+            script_search: String::new(),
+            script_search_active: false,
             graph_drag_node: None,
             graph_drag_offset: (0.0, 0.0),
+            graph_pan: (24.0, 24.0),
+            graph_panning: false,
+            graph_pan_last: (0.0, 0.0),
+            scene_panning: false,
+            scene_pan_last: (0.0, 0.0),
+            scene_pan_moved: false,
             hierarchy_scroll: 0.0,
             hierarchy_context_entity: None,
             hierarchy_context_pos: (0.0, 0.0),
             drag_ui_offset: (0.0, 0.0),
+            selected_ui_canvas_id: None,
+            selected_ui_element_id: None,
+            drag_ui_canvas_element: false,
+            drag_ui_canvas_handle: None,
+            drag_ui_canvas_before: None,
+            drag_ui_canvas_last: (0.0, 0.0),
             script_window_open: false,
             script_window_rect: RectSpec {
                 x: 86.0,
@@ -251,6 +383,7 @@ impl Default for EditorState {
                 w: 920.0,
                 h: 560.0,
             },
+            pending_script_close: None,
             play_window_open: false,
             play_window_rect: RectSpec {
                 x: 126.0,
@@ -265,9 +398,31 @@ impl Default for EditorState {
                 w: 760.0,
                 h: 520.0,
             },
+            sprite_window_open: false,
+            sprite_window_rect: RectSpec {
+                x: 96.0,
+                y: 72.0,
+                w: 1120.0,
+                h: 650.0,
+            },
+            python_tools_open: false,
+            python_tools_rect: RectSpec {
+                x: 210.0,
+                y: 110.0,
+                w: 780.0,
+                h: 560.0,
+            },
+            preferences_open: false,
+            editor_preferences: EditorPreferences::default(),
             floating_drag: None,
+            launcher_overlay: None,
             external_play_child: None,
             external_play_path: None,
+            phosphor_font: load_ttf_font_from_bytes(egui_phosphor::Variant::Regular.font_bytes())
+                .ok(),
+            syntax_highlighter: EditorSyntaxHighlighter::default(),
+            file_watcher: None,
+            session_recovery: None,
         }
     }
 }
@@ -282,6 +437,7 @@ enum LauncherTextField {
 struct LauncherUiState {
     launcher: EguiProjectLauncher,
     active_field: Option<LauncherTextField>,
+    close_requested: bool,
 }
 
 fn parse_args() -> Args {
@@ -297,13 +453,30 @@ fn parse_args() -> Args {
             }
             "--runtime" => parsed.runtime = true,
             "--no-launcher" => parsed.no_launcher = true,
+            "--launcher" => parsed.force_launcher = true,
             "--headless-once" => parsed.headless_once = true,
+            "--create-project" => {
+                if let Some(path) = args.next() {
+                    parsed.create_project = Some(PathBuf::from(path));
+                }
+            }
+            "--template" => {
+                if let Some(template) = args.next() {
+                    parsed.create_template = template;
+                }
+            }
+            "--force" | "--overwrite" => parsed.force_create_project = true,
+            "--safe-mode" => parsed.safe_mode = true,
             "--help" | "-h" => {
                 println!("MiniForge editor/runtime launcher");
                 println!("  --project <path>  Project path to open");
                 println!("  --runtime         Start in play/runtime mode");
+                println!("  --launcher        Force the project launcher");
                 println!("  --no-launcher     Open project directly");
                 println!("  --headless-once   Run one frame and exit, useful for CI");
+                println!("  --safe-mode       Disable scripts, graphs and native plugins");
+                println!("  --create-project <path> --template <name> [--force]");
+                println!("                    Create a project with a MiniForge template and exit");
                 std::process::exit(0);
             }
             _ => {}
@@ -338,15 +511,7 @@ pub fn runtime_player_window_conf() -> Conf {
 }
 
 async fn run_startup_launcher() -> Option<PathBuf> {
-    let workspace_root = env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("projects");
-    let mut state = LauncherUiState {
-        launcher: EguiProjectLauncher::new(&workspace_root),
-        active_field: None,
-    };
-    let _ = state.launcher.discover_recent_projects();
-
+    let mut state = new_launcher_state();
     loop {
         if is_key_pressed(KeyCode::Escape) {
             return None;
@@ -358,9 +523,25 @@ async fn run_startup_launcher() -> Option<PathBuf> {
         if let Some(path) = draw_launcher_ui(&mut state) {
             return Some(path);
         }
+        if state.close_requested {
+            return None;
+        }
 
         next_frame().await;
     }
+}
+
+fn new_launcher_state() -> LauncherUiState {
+    let workspace_root = env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("projects");
+    let mut state = LauncherUiState {
+        launcher: EguiProjectLauncher::new(&workspace_root),
+        active_field: None,
+        close_requested: false,
+    };
+    let _ = state.launcher.discover_recent_projects();
+    state
 }
 
 fn handle_launcher_text_input(state: &mut LauncherUiState) {
@@ -393,10 +574,10 @@ fn draw_launcher_background(sw: f32, sh: f32) {
             w: sw,
             h: sh,
         },
-        Color::from_rgba(18, 24, 34, 255),
-        Color::from_rgba(7, 9, 14, 255),
+        Color::from_rgba(15, 18, 24, 255),
+        Color::from_rgba(8, 10, 14, 255),
     );
-    let band_h = (sh * 0.36).max(230.0);
+    let band_h = (sh * 0.30).max(180.0);
     draw_gradient_rect(
         RectSpec {
             x: 0.0,
@@ -404,26 +585,15 @@ fn draw_launcher_background(sw: f32, sh: f32) {
             w: sw,
             h: band_h,
         },
-        Color::from_rgba(38, 49, 68, 255),
-        Color::from_rgba(17, 23, 34, 255),
+        Color::from_rgba(25, 32, 44, 255),
+        Color::from_rgba(14, 18, 26, 255),
     );
-    for i in 0..18 {
-        let y = i as f32 * 42.0;
-        draw_line(
-            0.0,
-            y,
-            sw,
-            y + sw * 0.08,
-            1.0,
-            Color::from_rgba(122, 172, 220, 18),
-        );
-    }
     draw_rectangle(
         0.0,
         band_h - 1.0,
         sw,
         1.0,
-        Color::from_rgba(111, 226, 196, 150),
+        Color::from_rgba(111, 226, 196, 95),
     );
 }
 
@@ -636,27 +806,27 @@ fn draw_launcher_ui(state: &mut LauncherUiState) -> Option<PathBuf> {
 
     draw_text("Notas del parche", right.x, right.y, 22.0, ui_text());
     let notes = state.launcher.patch_notes.clone();
-    let mut y = right.y + 34.0;
+    let mut chip_x = right.x;
+    let mut chip_y = right.y + 34.0;
     for (index, note) in notes.iter().enumerate() {
         let active = state.launcher.selected_patch_note == index;
-        if button(
-            right.x,
-            y - 18.0,
-            176.0,
-            25.0,
-            &format!("{} {}", note.version, note.title),
-            active,
-        ) {
+        let chip_w = (note.version.len() as f32 * 8.0 + 72.0).clamp(86.0, 132.0);
+        if chip_x + chip_w > right.x + right.w {
+            chip_x = right.x;
+            chip_y += 30.0;
+        }
+        if button(chip_x, chip_y - 18.0, chip_w, 25.0, &note.version, active) {
             state.launcher.selected_patch_note = index;
         }
-        y += 30.0;
+        chip_x += chip_w + 8.0;
     }
+    let notes_bottom = chip_y + 22.0;
     if let Some(note) = state.launcher.active_patch_note() {
         let card = RectSpec {
             x: right.x,
-            y: right.y + 112.0,
+            y: notes_bottom + 12.0,
             w: right.w,
-            h: right.h - 158.0,
+            h: (right.h * 0.36).clamp(160.0, 220.0),
         };
         draw_surface(card, false);
         draw_rectangle_lines(card.x, card.y, card.w, card.h, 1.0, ui_line_soft());
@@ -668,7 +838,7 @@ fn draw_launcher_ui(state: &mut LauncherUiState) -> Option<PathBuf> {
             ui_text(),
         );
         let mut ny = card.y + 62.0;
-        for highlight in note.highlights.iter().take(7) {
+        for highlight in note.highlights.iter().take(5) {
             draw_text(
                 &ellipsize(highlight, 58),
                 card.x + 18.0,
@@ -678,6 +848,15 @@ fn draw_launcher_ui(state: &mut LauncherUiState) -> Option<PathBuf> {
             );
             ny += 26.0;
         }
+        draw_launcher_backend_panel(
+            state,
+            RectSpec {
+                x: right.x,
+                y: card.y + card.h + 12.0,
+                w: right.w,
+                h: (panel.y + panel.h - 64.0) - (card.y + card.h + 12.0),
+            },
+        );
     }
 
     if !state.launcher.status.is_empty() {
@@ -697,6 +876,7 @@ fn draw_launcher_ui(state: &mut LauncherUiState) -> Option<PathBuf> {
         "Salir",
         false,
     ) {
+        state.close_requested = true;
         return None;
     }
     None
@@ -740,9 +920,188 @@ fn draw_launcher_text_field(
     }
 }
 
+fn draw_launcher_backend_panel(state: &mut LauncherUiState, rect: RectSpec) {
+    if rect.h < 120.0 {
+        return;
+    }
+    draw_surface(rect, false);
+    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, ui_line_soft());
+    draw_text("Backend", rect.x + 14.0, rect.y + 28.0, 18.0, ui_text());
+    if button(
+        rect.x + rect.w - 104.0,
+        rect.y + 10.0,
+        90.0,
+        26.0,
+        "Analizar",
+        false,
+    ) {
+        match state.launcher.refresh_typed_project_status() {
+            Ok(summary) => state.launcher.status = summary,
+            Err(error) => state.launcher.status = error.to_string(),
+        }
+    }
+
+    let mut y = rect.y + 58.0;
+    if let Some(plan) = state.launcher.backend_plan.as_ref() {
+        let score_color = if plan.system_audit.total_score >= 80 {
+            ui_accent_2()
+        } else if plan.system_audit.total_score >= 60 {
+            ui_warning()
+        } else {
+            Color::from_rgba(255, 126, 126, 255)
+        };
+        draw_text(
+            &format!("Readiness {}%", plan.system_audit.total_score),
+            rect.x + 14.0,
+            y,
+            18.0,
+            score_color,
+        );
+        draw_text(
+            &format!(
+                "Editor {}   Runtime {}   Export {}",
+                readiness_text(plan.editor_ready),
+                readiness_text(plan.runtime_ready),
+                readiness_text(plan.export_ready)
+            ),
+            rect.x + 14.0,
+            y + 24.0,
+            13.0,
+            ui_text_muted(),
+        );
+        y += 54.0;
+        for action in state.launcher.backend_actions.iter().take(4) {
+            draw_text(
+                &ellipsize(action, 58),
+                rect.x + 18.0,
+                y,
+                13.0,
+                ui_text_muted(),
+            );
+            y += 22.0;
+            if y > rect.y + rect.h - 44.0 {
+                break;
+            }
+        }
+    } else {
+        draw_text(
+            "Sin analisis todavia",
+            rect.x + 14.0,
+            y,
+            14.0,
+            ui_text_muted(),
+        );
+        draw_text(
+            &ellipsize(
+                &state.launcher.typed_or_default_path().display().to_string(),
+                56,
+            ),
+            rect.x + 14.0,
+            y + 24.0,
+            13.0,
+            ui_text_muted(),
+        );
+    }
+
+    let toggle_y = rect.y + rect.h - 32.0;
+    let validate_label = if state.launcher.settings.validate_on_open {
+        "Validar ON"
+    } else {
+        "Validar OFF"
+    };
+    if button(
+        rect.x + 14.0,
+        toggle_y,
+        104.0,
+        24.0,
+        validate_label,
+        state.launcher.settings.validate_on_open,
+    ) {
+        state.launcher.settings.validate_on_open = !state.launcher.settings.validate_on_open;
+        let _ = state.launcher.save_state();
+    }
+    let export_label = if state.launcher.settings.analyze_before_export {
+        "Preflight ON"
+    } else {
+        "Preflight OFF"
+    };
+    if button(
+        rect.x + 126.0,
+        toggle_y,
+        112.0,
+        24.0,
+        export_label,
+        state.launcher.settings.analyze_before_export,
+    ) {
+        state.launcher.settings.analyze_before_export =
+            !state.launcher.settings.analyze_before_export;
+        let _ = state.launcher.save_state();
+    }
+    let recent_label = if state.launcher.settings.remember_recent {
+        "Recientes ON"
+    } else {
+        "Recientes OFF"
+    };
+    if button(
+        rect.x + 246.0,
+        toggle_y,
+        116.0,
+        24.0,
+        recent_label,
+        state.launcher.settings.remember_recent,
+    ) {
+        state.launcher.settings.remember_recent = !state.launcher.settings.remember_recent;
+        let _ = state.launcher.save_state();
+    }
+}
+
+fn readiness_text(value: bool) -> &'static str {
+    if value { "OK" } else { "WATCH" }
+}
+
 pub async fn run_editor_async() {
     let args = parse_args();
-    let project_path = if let Some(path) = args.project.clone() {
+    if let Some(create_path) = args.create_project.clone() {
+        if create_path.exists() && !args.force_create_project {
+            eprintln!(
+                "El proyecto ya existe: {}. Usa --force para recrear plantillas encima.",
+                create_path.display()
+            );
+            return;
+        }
+        if let Err(error) = AssetTools::ensure_project_folders(&create_path).and_then(|_| {
+            ProjectTemplates::create(
+                &create_path,
+                if args.create_template.is_empty() {
+                    "empty"
+                } else {
+                    &args.create_template
+                },
+            )
+            .map(|created| {
+                println!(
+                    "{} proyecto creado en {} con template {} ({} archivos base)",
+                    crate::version_label(),
+                    create_path.display(),
+                    if args.create_template.is_empty() {
+                        "empty"
+                    } else {
+                        &args.create_template
+                    },
+                    created.len()
+                );
+            })
+        }) {
+            eprintln!("No se pudo crear el proyecto MiniForge: {error}");
+        }
+        return;
+    }
+    let project_path = if args.force_launcher && !args.runtime && !args.headless_once {
+        match run_startup_launcher().await {
+            Some(path) => path,
+            None => return,
+        }
+    } else if let Some(path) = args.project.clone() {
         path
     } else if args.no_launcher || args.runtime || args.headless_once {
         PathBuf::from("projects").join("DefaultProject")
@@ -757,8 +1116,21 @@ pub async fn run_editor_async() {
         eprintln!("No se pudo preparar el proyecto: {error}");
         return;
     }
+    CrashReporter::install(CrashReporterConfig::for_project(
+        &project_path,
+        if args.runtime {
+            "MiniForge Editor Runtime"
+        } else {
+            "MiniForge Editor"
+        },
+    ));
 
-    let mut game = match Game::from_project(&project_path, args.runtime) {
+    let safe_mode = if args.safe_mode {
+        SafeModeSettings::for_recovery("solicitado desde --safe-mode")
+    } else {
+        SafeModeSettings::default()
+    };
+    let mut game = match Game::from_project_with_safe_mode(&project_path, args.runtime, safe_mode) {
         Ok(game) => game,
         Err(error) => {
             eprintln!("No se pudo iniciar MiniForge Rust: {error}");
@@ -782,22 +1154,48 @@ pub async fn run_editor_async() {
         .log("Ctrl+P abre comandos. 1-5 cambia herramienta.", "EDITOR");
     let mut state = EditorState {
         tile_brush: game.tile_brush.max(1),
+        zoom_target: game.camera.zoom,
+        editor_preferences: load_editor_preferences(&game),
+        file_watcher: EditorFileWatcher::watch(&game.project_path).ok(),
         ..Default::default()
     };
+    if game.safe_mode.enabled {
+        state.script_window_open = false;
+        state.sprite_window_open = false;
+        state.blueprint_picker_open = false;
+        state.show_hierarchy = true;
+        state.show_inspector = true;
+        state.show_console = true;
+        game.console.warning(
+            game.safe_mode
+                .report()
+                .warnings
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "Safe Mode activo".to_string()),
+            "SAFE_MODE",
+        );
+    }
+    configure_session_recovery(&mut game, &mut state);
 
     loop {
         let dt = get_frame_time() as f64;
         let sw = screen_width();
         let sh = screen_height();
+        let launcher_overlay_open = state.launcher_overlay.is_some();
+        let preferences_open = state.preferences_open;
 
-        handle_text_edit_input(&mut game, &mut state);
-        if handle_shortcuts(&mut game, &mut state) {
-            break;
+        if !launcher_overlay_open && !preferences_open {
+            handle_text_edit_input(&mut game, &mut state);
+            if handle_shortcuts(&mut game, &mut state) {
+                break;
+            }
+            poll_external_play_window(&mut game, &mut state);
+            poll_editor_file_changes(&mut game, &mut state);
+
+            handle_camera_input(&mut game, dt, &mut state);
+            handle_character_input(&mut game);
         }
-        poll_external_play_window(&mut game, &mut state);
-
-        handle_camera_input(&mut game, dt, &state);
-        handle_character_input(&mut game);
 
         let layout = layout(
             sw,
@@ -814,9 +1212,11 @@ pub async fn run_editor_async() {
             camera_y: game.camera.y as f32,
         };
 
-        handle_scene_mouse(&mut game, &mut state, viewport);
+        if !launcher_overlay_open && !preferences_open {
+            handle_scene_mouse(&mut game, &mut state, viewport);
+        }
 
-        if !state.paused {
+        if !state.paused && !launcher_overlay_open {
             game.run_headless_once(dt);
         } else {
             game.diagnostics.update(dt);
@@ -839,11 +1239,207 @@ pub async fn run_editor_async() {
         draw_floating_play_window(&mut game, &mut state, sw, sh);
         draw_floating_script_window(&mut game, &mut state, sw, sh);
         draw_blueprint_picker_window(&mut game, &mut state, sw, sh);
-        if state.command_palette {
+        draw_floating_sprite_window(&mut game, &mut state, sw, sh);
+        draw_python_tools_window(&mut game, &mut state, sw, sh);
+        draw_top_menu_overlay(&mut game, &mut state, layout.top);
+        if state.command_palette.open {
             draw_command_palette(&mut game, &mut state, sw, sh);
         }
+        draw_preferences_window(&mut game, &mut state, sw, sh);
+        draw_script_close_prompt(&mut game, &mut state, sw, sh);
+        draw_launcher_overlay(&mut game, &mut state, sw, sh);
+
+        checkpoint_editor_session(&mut game, &mut state, false);
 
         next_frame().await;
+    }
+    finish_editor_session(&mut game, &mut state);
+}
+
+fn session_ui_state(state: &EditorState) -> SessionUiState {
+    SessionUiState {
+        show_console: state.show_console,
+        show_grid: state.show_grid,
+        show_hierarchy: state.show_hierarchy,
+        show_inspector: state.show_inspector,
+        active_bottom_panel: state.bottom_tab.label().to_string(),
+        script_window_open: state.script_window_open,
+        sprite_window_open: state.sprite_window_open,
+        blueprint_picker_open: state.blueprint_picker_open,
+    }
+}
+
+fn apply_recovered_ui(state: &mut EditorState, snapshot: &EditorSessionSnapshot) {
+    state.show_console = snapshot.ui.show_console;
+    state.show_grid = snapshot.ui.show_grid;
+    state.show_hierarchy = snapshot.ui.show_hierarchy;
+    state.show_inspector = snapshot.ui.show_inspector;
+    state.bottom_tab = BottomTab::from_label(&snapshot.ui.active_bottom_panel);
+    state.script_window_open = snapshot.ui.script_window_open;
+    state.sprite_window_open = snapshot.ui.sprite_window_open;
+    state.blueprint_picker_open = snapshot.ui.blueprint_picker_open;
+}
+
+fn configure_session_recovery(game: &mut Game, state: &mut EditorState) {
+    let recovery =
+        SessionRecoveryManager::new(&game.project_path, std::time::Duration::from_secs(10));
+    match recovery.load_pending() {
+        Ok(Some(snapshot)) => {
+            let report = recovery.restore_script_editor(&snapshot, &mut game.script_editor);
+            if !game.safe_mode.enabled {
+                apply_recovered_ui(state, &snapshot);
+            }
+            game.console.log(
+                format!(
+                    "Sesión recuperada: {} documentos, {} buffers sin guardar",
+                    report.restored_documents, report.restored_dirty_buffers
+                ),
+                "RECOVERY",
+            );
+            if snapshot.scene_dirty {
+                game.console.warning(
+                    format!(
+                        "La sesión anterior tenía cambios de escena pendientes: {}. Revisa el autosave antes de descartarlos.",
+                        snapshot.scene_dirty_reason
+                    ),
+                    "RECOVERY",
+                );
+            }
+            for path in report.missing_documents.iter().take(8) {
+                game.console.warning(
+                    format!(
+                        "Documento de recuperación no encontrado: {}",
+                        path.display()
+                    ),
+                    "RECOVERY",
+                );
+            }
+        }
+        Ok(None) => {}
+        Err(error) => game.console.error(
+            format!("No se pudo leer la sesión de recuperación: {error}"),
+            "RECOVERY",
+        ),
+    }
+    state.session_recovery = Some(recovery);
+    checkpoint_editor_session(game, state, true);
+}
+
+fn checkpoint_editor_session(game: &mut Game, state: &mut EditorState, force: bool) -> bool {
+    let ui = session_ui_state(state);
+    let current_scene = game.scene_manager.current_scene.clone();
+    let scene_dirty_reason = game.scene_dirty_reason.clone();
+    let Some(recovery) = state.session_recovery.as_mut() else {
+        return false;
+    };
+    if !force && !recovery.should_checkpoint() {
+        return false;
+    }
+    match recovery.checkpoint(
+        &current_scene,
+        game.scene_dirty,
+        &scene_dirty_reason,
+        &mut game.script_editor,
+        ui,
+    ) {
+        Ok(report) => {
+            if !report.omitted_buffers.is_empty() {
+                game.console.warning(
+                    format!(
+                        "{} buffers excedieron el límite de recovery",
+                        report.omitted_buffers.len()
+                    ),
+                    "RECOVERY",
+                );
+            }
+            true
+        }
+        Err(error) => {
+            game.console.error(
+                format!("No se pudo guardar la sesión de recuperación: {error}"),
+                "RECOVERY",
+            );
+            false
+        }
+    }
+}
+
+fn finish_editor_session(game: &mut Game, state: &mut EditorState) {
+    let has_unsaved_changes = game.scene_dirty || game.script_editor.has_dirty_documents();
+    if has_unsaved_changes {
+        if checkpoint_editor_session(game, state, true) {
+            game.console.log(
+                "Cambios pendientes conservados en recovery de sesión",
+                "RECOVERY",
+            );
+        }
+        return;
+    }
+    if let Some(recovery) = state.session_recovery.as_mut()
+        && let Err(error) = recovery.clear()
+    {
+        game.console.error(
+            format!("No se pudo limpiar la sesión cerrada: {error}"),
+            "RECOVERY",
+        );
+    }
+}
+
+fn draw_launcher_overlay(game: &mut Game, state: &mut EditorState, sw: f32, sh: f32) {
+    if state.launcher_overlay.is_none() {
+        return;
+    }
+
+    draw_rectangle(0.0, 0.0, sw, sh, Color::from_rgba(0, 0, 0, 178));
+
+    let mut selected_path = None;
+    let mut close_requested = false;
+    if let Some(launcher_state) = state.launcher_overlay.as_mut() {
+        if is_key_pressed(KeyCode::Escape) {
+            close_requested = true;
+        } else {
+            handle_launcher_text_input(launcher_state);
+            selected_path = draw_launcher_ui(launcher_state);
+            close_requested = launcher_state.close_requested;
+        }
+    }
+
+    if close_requested {
+        state.launcher_overlay = None;
+        return;
+    }
+
+    let Some(path) = selected_path else {
+        return;
+    };
+
+    CrashReporter::install(CrashReporterConfig::for_project(&path, "MiniForge Editor"));
+    let safe_mode = game.safe_mode.clone();
+    match AssetTools::ensure_project_folders(&path)
+        .and_then(|_| Game::from_project_with_safe_mode(&path, false, safe_mode))
+    {
+        Ok(mut loaded) => {
+            loaded.refresh_assets().ok();
+            loaded.console.log(
+                format!("Proyecto abierto desde Launcher: {}", path.display()),
+                "ENGINE",
+            );
+            finish_editor_session(game, state);
+            *game = loaded;
+            state.launcher_overlay = None;
+            state.editor_preferences = load_editor_preferences(game);
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Console;
+            state.active_text_field = None;
+            state.command_palette.close();
+            configure_session_recovery(game, state);
+        }
+        Err(error) => {
+            if let Some(launcher_state) = state.launcher_overlay.as_mut() {
+                launcher_state.launcher.status =
+                    format!("No se pudo abrir {}: {error}", path.display());
+            }
+        }
     }
 }
 
@@ -858,7 +1454,7 @@ struct Layout {
 }
 
 fn layout(sw: f32, sh: f32, show_left: bool, show_right: bool, show_console: bool) -> Layout {
-    let top_h = 92.0;
+    let top_h = 82.0;
     let status_h = 26.0;
     let console_h = if show_console {
         (sh * 0.30).clamp(190.0, 340.0)
@@ -916,7 +1512,7 @@ fn layout(sw: f32, sh: f32, show_left: bool, show_right: bool, show_console: boo
 }
 
 fn handle_text_edit_input(game: &mut Game, state: &mut EditorState) {
-    if state.command_palette {
+    if state.command_palette.open {
         handle_command_palette_input(game, state);
         return;
     }
@@ -936,6 +1532,10 @@ fn handle_text_edit_input(game: &mut Game, state: &mut EditorState) {
             &mut state.graph_template_search,
             &mut state.graph_template_search_active,
         );
+        return;
+    }
+    if state.script_search_active {
+        handle_text_buffer_input(&mut state.script_search, &mut state.script_search_active);
         return;
     }
     if state.code_editor_active {
@@ -979,21 +1579,25 @@ fn handle_text_edit_input(game: &mut Game, state: &mut EditorState) {
 
 fn handle_command_palette_input(game: &mut Game, state: &mut EditorState) {
     while let Some(character) = get_char_pressed() {
-        if !character.is_control() {
-            state.command_palette_search.push(character);
-        }
+        state.command_palette.push(character);
     }
     if is_key_pressed(KeyCode::Backspace) {
-        state.command_palette_search.pop();
+        state.command_palette.backspace();
     }
-    if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter) {
-        if let Some((_, command)) = filtered_palette_commands(&state.command_palette_search)
-            .into_iter()
-            .next()
-        {
-            run_palette_command(game, state, command);
-            state.command_palette = false;
-        }
+    if is_key_pressed(KeyCode::Down) {
+        state.command_palette.move_selection(1);
+    }
+    if is_key_pressed(KeyCode::Up) {
+        state.command_palette.move_selection(-1);
+    }
+    if (is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter))
+        && let Some((_, command)) = filtered_palette_commands(&state.command_palette.query)
+            .get(state.command_palette.selected_index)
+            .copied()
+    {
+        run_palette_command(game, state, command);
+        state.command_palette.record_execution(command);
+        state.command_palette.close();
     }
 }
 
@@ -1033,14 +1637,110 @@ fn handle_content_search_input(state: &mut EditorState) {
 
 fn handle_code_editor_input(game: &mut Game, state: &mut EditorState) {
     if game.script_editor.document.path.is_none() {
-        state.code_editor_active = false;
-        return;
+        match game.create_luau_script_asset("NewGameplayScript") {
+            Ok(path) => {
+                set_open_file_editor_state(state, &path);
+                game.console.log(
+                    "Script creado automaticamente para poder escribir.",
+                    "SCRIPT",
+                );
+            }
+            Err(error) => {
+                state.code_editor_active = false;
+                game.console.log(
+                    format!("No se pudo crear script editable: {error}"),
+                    "ERROR",
+                );
+                return;
+            }
+        }
     }
     if command_modifier_down() && is_key_pressed(KeyCode::S) {
         if let Err(error) = game.save_open_file() {
             game.console
                 .log(format!("Error guardando archivo abierto: {error}"), "ERROR");
         }
+        return;
+    }
+    if command_modifier_down() && is_key_pressed(KeyCode::C) {
+        if let Some(line) = game.script_editor.lines.get(state.code_cursor_line)
+            && let Err(error) = EditorClipboard::copy_text(line.clone())
+        {
+            game.console
+                .log(format!("No se pudo copiar: {error}"), "WARNING");
+        }
+        return;
+    }
+    if command_modifier_down() && is_key_pressed(KeyCode::X) {
+        if let Some(line) = game
+            .script_editor
+            .lines
+            .get(state.code_cursor_line)
+            .cloned()
+        {
+            match EditorClipboard::copy_text(line) {
+                Ok(()) => {
+                    let (line, column) = game.script_editor.delete_line(state.code_cursor_line);
+                    state.code_cursor_line = line;
+                    state.code_cursor_column = column;
+                }
+                Err(error) => game
+                    .console
+                    .log(format!("No se pudo cortar: {error}"), "WARNING"),
+            }
+        }
+        return;
+    }
+    if command_modifier_down() && is_key_pressed(KeyCode::V) {
+        match EditorClipboard::paste_text() {
+            Ok(text) => {
+                let (line, column) = game.script_editor.insert_text(
+                    state.code_cursor_line,
+                    state.code_cursor_column,
+                    &text.replace("\r\n", "\n"),
+                );
+                state.code_cursor_line = line;
+                state.code_cursor_column = column;
+                keep_code_cursor_visible(state, 12);
+            }
+            Err(error) => game
+                .console
+                .log(format!("No se pudo pegar: {error}"), "WARNING"),
+        }
+        return;
+    }
+    if command_modifier_down() && is_key_pressed(KeyCode::D) {
+        let (line, column) = game.script_editor.duplicate_line(state.code_cursor_line);
+        state.code_cursor_line = line;
+        state.code_cursor_column = column;
+        keep_code_cursor_visible(state, 12);
+        return;
+    }
+    if command_modifier_down() && is_key_pressed(KeyCode::Backspace) {
+        let (line, column) = game.script_editor.delete_line(state.code_cursor_line);
+        state.code_cursor_line = line;
+        state.code_cursor_column = column;
+        keep_code_cursor_visible(state, 12);
+        return;
+    }
+    if command_modifier_down() && (is_key_pressed(KeyCode::Slash) || is_key_pressed(KeyCode::Key7))
+    {
+        let (line, column) = game
+            .script_editor
+            .toggle_line_comment(state.code_cursor_line);
+        state.code_cursor_line = line;
+        state.code_cursor_column = column;
+        return;
+    }
+    if is_key_pressed(KeyCode::Tab) {
+        let (line, column) = if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift)
+        {
+            game.script_editor.outdent_line(state.code_cursor_line)
+        } else {
+            game.script_editor.indent_line(state.code_cursor_line)
+        };
+        state.code_cursor_line = line;
+        state.code_cursor_column = column;
         return;
     }
     if is_key_pressed(KeyCode::Escape) {
@@ -1072,6 +1772,13 @@ fn handle_code_editor_input(game: &mut Game, state: &mut EditorState) {
         state.code_cursor_line = line;
         state.code_cursor_column = column;
     }
+    if is_key_pressed(KeyCode::Delete) {
+        let (line, column) = game
+            .script_editor
+            .delete_forward(state.code_cursor_line, state.code_cursor_column);
+        state.code_cursor_line = line;
+        state.code_cursor_column = column;
+    }
     if is_key_pressed(KeyCode::Up) {
         state.code_cursor_line = state.code_cursor_line.saturating_sub(1);
         clamp_code_cursor(game, state);
@@ -1083,7 +1790,12 @@ fn handle_code_editor_input(game: &mut Game, state: &mut EditorState) {
     }
     if is_key_pressed(KeyCode::Left) {
         if state.code_cursor_column > 0 {
-            state.code_cursor_column -= 1;
+            if let Some(line) = game.script_editor.lines.get(state.code_cursor_line) {
+                state.code_cursor_column =
+                    previous_code_char_boundary(line, state.code_cursor_column);
+            } else {
+                state.code_cursor_column = state.code_cursor_column.saturating_sub(1);
+            }
         } else if state.code_cursor_line > 0 {
             state.code_cursor_line -= 1;
             state.code_cursor_column = game
@@ -1102,7 +1814,11 @@ fn handle_code_editor_input(game: &mut Game, state: &mut EditorState) {
             .map(String::len)
             .unwrap_or(0);
         if state.code_cursor_column < line_len {
-            state.code_cursor_column += 1;
+            if let Some(line) = game.script_editor.lines.get(state.code_cursor_line) {
+                state.code_cursor_column = next_code_char_boundary(line, state.code_cursor_column);
+            } else {
+                state.code_cursor_column += 1;
+            }
         } else if state.code_cursor_line + 1 < game.script_editor.lines.len() {
             state.code_cursor_line += 1;
             state.code_cursor_column = 0;
@@ -1118,6 +1834,17 @@ fn handle_code_editor_input(game: &mut Game, state: &mut EditorState) {
             .get(state.code_cursor_line)
             .map(String::len)
             .unwrap_or(0);
+    }
+    if is_key_pressed(KeyCode::PageUp) {
+        state.code_cursor_line = state.code_cursor_line.saturating_sub(12);
+        state.code_scroll_line = state.code_scroll_line.saturating_sub(12);
+        clamp_code_cursor(game, state);
+    }
+    if is_key_pressed(KeyCode::PageDown) {
+        state.code_cursor_line =
+            (state.code_cursor_line + 12).min(game.script_editor.lines.len().saturating_sub(1));
+        state.code_scroll_line = state.code_scroll_line.saturating_add(12);
+        clamp_code_cursor(game, state);
     }
     keep_code_cursor_visible(state, 12);
 }
@@ -1148,31 +1875,61 @@ fn keep_code_cursor_visible(state: &mut EditorState, margin: usize) {
 
 fn handle_shortcuts(game: &mut Game, state: &mut EditorState) -> bool {
     let command = command_modifier_down();
+    let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
 
     if state.active_text_field.is_some()
         || state.code_editor_active
         || state.content_search_active
         || state.graph_node_search_active
         || state.graph_template_search_active
+        || state.script_search_active
     {
         return false;
     }
 
+    if state.menu_bar.open_menu.is_some() {
+        if is_key_pressed(KeyCode::Escape) {
+            state.menu_bar.close();
+            return false;
+        }
+        if is_key_pressed(KeyCode::Down) {
+            state.menu_bar.move_focus(1);
+            return false;
+        }
+        if is_key_pressed(KeyCode::Up) {
+            state.menu_bar.move_focus(-1);
+            return false;
+        }
+        if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter) {
+            if let Some(command) = state.menu_bar.activate_focused() {
+                run_palette_command(game, state, &command);
+            }
+            return false;
+        }
+    }
+
     if is_key_pressed(KeyCode::Escape) {
-        if state.command_palette {
-            state.command_palette = false;
+        if state.command_palette.open {
+            state.command_palette.close();
+            return false;
+        }
+        if state.script_window_open {
+            request_close_script_tab(game, state, game.script_editor.document.path.clone());
+            return false;
+        }
+        if state.play_window_open {
+            state.play_window_open = false;
+            game.console
+                .log("Ventana Play cerrada; el editor sigue activo", "EDITOR");
             return false;
         }
         return true;
     }
     if command && is_key_pressed(KeyCode::P) {
-        state.command_palette = !state.command_palette;
-        if state.command_palette {
-            state.command_palette_search.clear();
-        }
+        state.command_palette.toggle();
         return false;
     }
-    if state.command_palette {
+    if state.command_palette.open {
         return false;
     }
 
@@ -1220,14 +1977,20 @@ fn handle_shortcuts(game: &mut Game, state: &mut EditorState) -> bool {
     if is_key_pressed(KeyCode::Key5) {
         set_tool(game, state, EditorTool::Paint);
     }
+    if is_key_pressed(KeyCode::Key6) {
+        set_tool(game, state, EditorTool::Pivot);
+    }
+    if is_key_pressed(KeyCode::Key7) {
+        set_tool(game, state, EditorTool::Collision);
+    }
     if is_key_pressed(KeyCode::Tab) {
         state.show_console = true;
         state.bottom_tab = state.bottom_tab.next();
     }
-    if is_key_pressed(KeyCode::L) && state.tool == EditorTool::Paint {
+    if is_key_pressed(KeyCode::L) && state.toolbar.active_tool() == EditorTool::Paint {
         game.cycle_tilemap_layer();
     }
-    if is_key_pressed(KeyCode::B) && state.tool == EditorTool::Paint && !command {
+    if is_key_pressed(KeyCode::B) && state.toolbar.active_tool() == EditorTool::Paint && !command {
         state.tile_brush_mode = state.tile_brush_mode.next();
         game.console.log(
             format!("Brush activo: {}", state.tile_brush_mode.label()),
@@ -1243,6 +2006,17 @@ fn handle_shortcuts(game: &mut Game, state: &mut EditorState) -> bool {
             ),
             "EDITOR",
         );
+    }
+    if is_key_pressed(KeyCode::F)
+        && let Some((entity_x, entity_y)) = game
+            .selected_units
+            .first()
+            .and_then(|id| game.get_entity_by_id(*id))
+            .map(|entity| (entity.x, entity.y))
+    {
+        game.camera.x = entity_x * game.grid.tile_size as f64 - 280.0;
+        game.camera.y = entity_y * game.grid.tile_size as f64 - 180.0;
+        game.camera.clamp_to_bounds();
     }
 
     if command {
@@ -1264,7 +2038,8 @@ fn handle_shortcuts(game: &mut Game, state: &mut EditorState) -> bool {
         if is_key_pressed(KeyCode::R) {
             refresh_assets(game);
         }
-        if is_key_pressed(KeyCode::G)
+        if !shift
+            && is_key_pressed(KeyCode::G)
             && let Ok(path) = game.create_program_asset("LogAndMove")
         {
             set_open_file_editor_state(state, &path);
@@ -1277,6 +2052,12 @@ fn handle_shortcuts(game: &mut Game, state: &mut EditorState) -> bool {
                 state.show_console = true;
                 state.bottom_tab = BottomTab::Prefabs;
             }
+        }
+        if shift && is_key_pressed(KeyCode::G) {
+            group_selected_entities(game);
+        }
+        if shift && is_key_pressed(KeyCode::U) {
+            ungroup_selected_entities(game);
         }
         if is_key_pressed(KeyCode::Z) {
             undo(game);
@@ -1296,8 +2077,8 @@ fn handle_shortcuts(game: &mut Game, state: &mut EditorState) -> bool {
     false
 }
 
-fn handle_camera_input(game: &mut Game, dt: f64, state: &EditorState) {
-    if state.command_palette {
+fn handle_camera_input(game: &mut Game, dt: f64, state: &mut EditorState) {
+    if state.command_palette.open {
         return;
     }
     let speed = 520.0 * dt / game.camera.zoom.max(0.1);
@@ -1319,11 +2100,15 @@ fn handle_camera_input(game: &mut Game, dt: f64, state: &EditorState) {
         game.camera.move_by(dx, dy);
     }
     if is_key_down(KeyCode::Q) {
-        game.camera.set_zoom(game.camera.zoom - 0.8 * dt);
+        state.zoom_target -= 1.4 * dt;
     }
     if is_key_down(KeyCode::E) {
-        game.camera.set_zoom(game.camera.zoom + 0.8 * dt);
+        state.zoom_target += 1.4 * dt;
     }
+    state.zoom_target = state.zoom_target.clamp(0.1, 8.0);
+    let blend = 1.0 - (-14.0 * dt).exp();
+    game.camera
+        .set_zoom(game.camera.zoom + (state.zoom_target - game.camera.zoom) * blend);
 }
 
 fn handle_character_input(game: &mut Game) {
@@ -1359,8 +2144,32 @@ fn handle_character_input(game: &mut Game) {
         ("Space", jump_held),
         ("Shift", run_pressed),
         ("X", dash_pressed),
+        ("E", is_key_down(KeyCode::E) || is_key_down(KeyCode::Enter)),
+        ("1", is_key_down(KeyCode::Key1)),
+        ("2", is_key_down(KeyCode::Key2)),
     ] {
         game.set_script_input_pressed(key, pressed);
+    }
+    for (key_code, key) in [
+        (KeyCode::Space, "Space"),
+        (KeyCode::E, "E"),
+        (KeyCode::Enter, "Enter"),
+        (KeyCode::Key1, "1"),
+        (KeyCode::Key2, "2"),
+        (KeyCode::X, "X"),
+    ] {
+        if is_key_pressed(key_code) {
+            game.dispatch_script_key_down(key);
+        }
+    }
+    if is_key_pressed(KeyCode::E) || is_key_pressed(KeyCode::Enter) {
+        let _ = game.interact();
+    }
+    if is_key_pressed(KeyCode::Key1) {
+        let _ = game.choose_dialogue(0);
+    }
+    if is_key_pressed(KeyCode::Key2) {
+        let _ = game.choose_dialogue(1);
     }
 }
 
@@ -1368,7 +2177,9 @@ fn handle_scene_mouse(game: &mut Game, state: &mut EditorState, viewport: Viewpo
     let (mx, my) = mouse_position();
     if pointer_over_floating_windows(state, mx, my) {
         if is_mouse_button_released(MouseButton::Left) {
+            finish_ui_canvas_drag(game, state);
             finish_gizmo_drag(game, state);
+            finish_collision_vertex_drag(game, state);
             state.drag_payload = None;
         }
         return;
@@ -1377,7 +2188,9 @@ fn handle_scene_mouse(game: &mut Game, state: &mut EditorState, viewport: Viewpo
         if is_mouse_button_released(MouseButton::Left) {
             if contains(viewport.rect, mx, my) {
                 let world = screen_to_world(viewport, mx, my);
-                match game.drop_asset_to_scene(&payload, world.0 as f64, world.1 as f64) {
+                let target =
+                    find_ui_entity_at(game, mx, my).or_else(|| find_entity_at(game, world));
+                match game.drop_asset_to_target(&payload, world.0 as f64, world.1 as f64, target) {
                     Ok(outcome) => log_drop_outcome(game, &payload.name, outcome),
                     Err(error) => game
                         .console
@@ -1389,15 +2202,29 @@ fn handle_scene_mouse(game: &mut Game, state: &mut EditorState, viewport: Viewpo
         return;
     }
 
-    if !contains(viewport.rect, mx, my) || state.command_palette {
+    if !contains(viewport.rect, mx, my) || state.command_palette.open {
         if is_mouse_button_released(MouseButton::Left) {
+            finish_ui_canvas_drag(game, state);
             finish_gizmo_drag(game, state);
+            finish_collision_vertex_drag(game, state);
+        }
+        if !is_mouse_button_down(MouseButton::Right) && !is_mouse_button_down(MouseButton::Middle) {
+            state.scene_panning = false;
         }
         return;
     }
 
+    if update_scene_view_pan(game, state, viewport) {
+        return;
+    }
+
     let world = screen_to_world(viewport, mx, my);
-    match state.tool {
+    if state.toolbar.active_tool() != EditorTool::Paint
+        && handle_ui_canvas_scene_mouse(game, state, viewport)
+    {
+        return;
+    }
+    match state.toolbar.active_tool() {
         EditorTool::Paint => {
             if is_mouse_button_pressed(MouseButton::Left) {
                 state.paint_start = world_to_cell(game, world);
@@ -1407,28 +2234,43 @@ fn handle_scene_mouse(game: &mut Game, state: &mut EditorState, viewport: Viewpo
                 paint_at(game, state, world);
             }
             if is_mouse_button_released(MouseButton::Left) {
-                if state.tile_brush_mode == TileBrushMode::Rectangle
-                    && let (Some(start), Some(end)) =
-                        (state.paint_start, world_to_cell(game, world))
-                    && game.paint_tile_brush(TileBrushMode::Rectangle, start, end, state.tile_brush)
+                if matches!(
+                    state.tile_brush_mode,
+                    TileBrushMode::Rectangle | TileBrushMode::Line
+                ) && let (Some(start), Some(end)) =
+                    (state.paint_start, world_to_cell(game, world))
+                    && game.paint_tile_brush(state.tile_brush_mode, start, end, state.tile_brush)
                 {
-                    game.console.log("Rect brush aplicado", "TILEMAP");
+                    game.console.log(
+                        format!("{} brush aplicado", state.tile_brush_mode.label()),
+                        "TILEMAP",
+                    );
                 }
                 state.paint_start = None;
                 state.last_painted_cell = None;
             }
         }
-        EditorTool::Move | EditorTool::Rotate | EditorTool::Scale => {
+        EditorTool::Move | EditorTool::Rotate | EditorTool::Scale | EditorTool::Pivot => {
             if is_mouse_button_pressed(MouseButton::Left) {
-                state.drag_entity = if state.tool == EditorTool::Move {
+                state.drag_entity = if state.toolbar.active_tool() == EditorTool::Move {
                     find_ui_entity_at(game, mx, my).or_else(|| find_entity_at(game, world))
                 } else {
                     find_entity_at(game, world)
                 };
                 if let Some(id) = state.drag_entity {
-                    game.select_entity(id);
+                    clear_ui_canvas_selection(state);
+                    if !game.selected_units.contains(&id) {
+                        let additive =
+                            is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+                        if additive {
+                            game.select_entity_additive(id);
+                        } else {
+                            game.select_entity(id);
+                        }
+                    }
                     state.drag_ui_offset = ui_drag_offset(game, id, mx, my);
                     state.drag_entity_before = Some(game.capture_editor_snapshot());
+                    state.drag_world_last = world;
                     game.console.log(format!("Moviendo entity #{id}"), "EDITOR");
                 }
             }
@@ -1438,15 +2280,87 @@ fn handle_scene_mouse(game: &mut Game, state: &mut EditorState, viewport: Viewpo
                 finish_gizmo_drag(game, state);
             }
         }
+        EditorTool::Collision => {
+            if is_mouse_button_pressed(MouseButton::Left) {
+                begin_collision_vertex_drag(game, state, world);
+            }
+            if is_mouse_button_down(MouseButton::Left) {
+                apply_collision_vertex_drag(game, state, world);
+            }
+            if is_mouse_button_released(MouseButton::Left) {
+                finish_collision_vertex_drag(game, state);
+            }
+        }
         EditorTool::Select => {
             if is_mouse_button_pressed(MouseButton::Left) {
-                select_at(game, world, (mx, my));
+                select_at(game, state, world, (mx, my));
             }
             if is_mouse_button_pressed(MouseButton::Right) {
                 command_selected_move(game, world);
             }
         }
     }
+}
+
+fn update_scene_view_pan(game: &mut Game, state: &mut EditorState, viewport: Viewport) -> bool {
+    let mouse = mouse_position();
+    let pan_button_down = is_mouse_button_down(MouseButton::Middle)
+        || is_mouse_button_down(MouseButton::Right)
+        || (is_key_down(KeyCode::Space) && is_mouse_button_down(MouseButton::Left));
+    let pan_button_pressed = is_mouse_button_pressed(MouseButton::Middle)
+        || is_mouse_button_pressed(MouseButton::Right)
+        || (is_key_down(KeyCode::Space) && is_mouse_button_pressed(MouseButton::Left));
+    let pan_button_released = is_mouse_button_released(MouseButton::Middle)
+        || is_mouse_button_released(MouseButton::Right)
+        || is_mouse_button_released(MouseButton::Left);
+
+    if pan_button_down && (contains(viewport.rect, mouse.0, mouse.1) || state.scene_panning) {
+        if pan_button_pressed || !state.scene_panning {
+            state.scene_pan_last = mouse;
+            state.scene_pan_moved = false;
+            state.scene_panning = true;
+            return true;
+        }
+        let dx = mouse.0 - state.scene_pan_last.0;
+        let dy = mouse.1 - state.scene_pan_last.1;
+        if dx.abs() > 0.01 || dy.abs() > 0.01 {
+            let zoom = game.camera.zoom.max(0.1);
+            game.camera
+                .move_by(-(dx as f64) / zoom, -(dy as f64) / zoom);
+            state.scene_pan_moved = true;
+        }
+        state.scene_pan_last = mouse;
+        return true;
+    }
+
+    if state.scene_panning {
+        let consumed = state.scene_pan_moved || pan_button_released;
+        state.scene_panning = false;
+        state.scene_pan_moved = false;
+        if consumed {
+            return true;
+        }
+    }
+
+    let (wheel_x, wheel_y) = mouse_wheel();
+    if wheel_x.abs() > f32::EPSILON || wheel_y.abs() > f32::EPSILON {
+        if command_modifier_down() {
+            state.zoom_target =
+                (state.zoom_target * (1.0 + (wheel_y as f64) * 0.12)).clamp(0.1, 8.0);
+        } else {
+            let zoom = game.camera.zoom.max(0.1);
+            let shift_pan = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+            let horizontal = if shift_pan { wheel_y } else { wheel_x };
+            let vertical = if shift_pan { 0.0 } else { wheel_y };
+            game.camera.move_by(
+                -(horizontal as f64) * 64.0 / zoom,
+                -(vertical as f64) * 64.0 / zoom,
+            );
+        }
+        return true;
+    }
+
+    false
 }
 
 fn paint_at(game: &mut Game, state: &mut EditorState, world: (f32, f32)) {
@@ -1461,7 +2375,10 @@ fn paint_at(game: &mut Game, state: &mut EditorState, world: (f32, f32)) {
         }
         return;
     }
-    if state.tile_brush_mode == TileBrushMode::Rectangle {
+    if matches!(
+        state.tile_brush_mode,
+        TileBrushMode::Rectangle | TileBrushMode::Line
+    ) {
         return;
     }
     if state.last_painted_cell == Some(cell) && !is_mouse_button_pressed(MouseButton::Left) {
@@ -1505,18 +2422,196 @@ fn world_to_cell(game: &Game, world: (f32, f32)) -> Option<(usize, usize)> {
     (x < game.tilemap_layers.width && y < game.tilemap_layers.height).then_some((x, y))
 }
 
-fn apply_gizmo_drag(game: &mut Game, state: &EditorState, world: (f32, f32)) {
+fn handle_ui_canvas_scene_mouse(
+    game: &mut Game,
+    state: &mut EditorState,
+    viewport: Viewport,
+) -> bool {
+    let (mx, my) = mouse_position();
+    let local = (mx - viewport.rect.x, my - viewport.rect.y);
+
+    if is_mouse_button_released(MouseButton::Left)
+        && (state.drag_ui_canvas_element || state.drag_ui_canvas_handle.is_some())
+    {
+        finish_ui_canvas_drag(game, state);
+        return true;
+    }
+
+    if is_mouse_button_down(MouseButton::Left)
+        && (state.drag_ui_canvas_element || state.drag_ui_canvas_handle.is_some())
+    {
+        apply_ui_canvas_drag(game, state, viewport, (mx, my));
+        return true;
+    }
+
+    if !is_mouse_button_pressed(MouseButton::Left) {
+        return false;
+    }
+
+    let roots = ui_canvases_from_value(&game.ui_canvases);
+    if roots.is_empty() {
+        return false;
+    }
+
+    if let Some((canvas_id, element_id, handle)) = hit_ui_canvas_handle(&roots, viewport, local) {
+        game.clear_selection();
+        state.selected_ui_canvas_id = Some(canvas_id);
+        state.selected_ui_element_id = Some(element_id);
+        state.drag_ui_canvas_handle = Some(handle);
+        state.drag_ui_canvas_element = false;
+        state.drag_ui_canvas_before = Some(game.capture_editor_snapshot());
+        state.drag_ui_canvas_last = (mx, my);
+        return true;
+    }
+
+    if let Some((canvas_id, element_id)) = hit_ui_canvas_element(&roots, viewport, local) {
+        game.clear_selection();
+        state.selected_ui_canvas_id = Some(canvas_id);
+        state.selected_ui_element_id = Some(element_id.clone());
+        state.drag_ui_canvas_handle = None;
+        state.drag_ui_canvas_element = state.toolbar.active_tool() == EditorTool::Move;
+        state.drag_ui_canvas_before = state
+            .drag_ui_canvas_element
+            .then(|| game.capture_editor_snapshot());
+        state.drag_ui_canvas_last = (mx, my);
+        game.console
+            .log(format!("UI Canvas seleccionado: {element_id}"), "UI");
+        return true;
+    }
+
+    false
+}
+
+fn apply_ui_canvas_drag(
+    game: &mut Game,
+    state: &mut EditorState,
+    viewport: Viewport,
+    mouse: (f32, f32),
+) {
+    let Some(canvas_id) = state.selected_ui_canvas_id.clone() else {
+        return;
+    };
+    let Some(element_id) = state.selected_ui_element_id.clone() else {
+        return;
+    };
+    let screen_dx = mouse.0 - state.drag_ui_canvas_last.0;
+    let screen_dy = mouse.1 - state.drag_ui_canvas_last.1;
+    if screen_dx.abs() < f32::EPSILON && screen_dy.abs() < f32::EPSILON {
+        return;
+    }
+
+    let mut roots = ui_canvases_from_value(&game.ui_canvases);
+    let Some(root) = roots.iter_mut().find(|root| root.id == canvas_id) else {
+        return;
+    };
+    let tools = SceneViewTools {
+        grid_snapping: state.snap_to_grid,
+        snap_size: 8.0,
+        tile_size: game.grid.tile_size as f64,
+        camera_zoom: game.camera.zoom,
+    };
+    let report = if let Some(handle) = state.drag_ui_canvas_handle {
+        tools.resize_ui_element_from_handle(
+            root,
+            &element_id,
+            handle,
+            viewport.rect.w,
+            viewport.rect.h,
+            screen_dx,
+            screen_dy,
+        )
+    } else if state.drag_ui_canvas_element {
+        tools.drag_ui_element(
+            root,
+            &element_id,
+            viewport.rect.w,
+            viewport.rect.h,
+            screen_dx,
+            screen_dy,
+        )
+    } else {
+        return;
+    };
+
+    if report.changed {
+        write_ui_canvas_roots(game, roots, "Edit UI Canvas");
+        state.drag_ui_canvas_last = mouse;
+    }
+}
+
+fn finish_ui_canvas_drag(game: &mut Game, state: &mut EditorState) {
+    let before = state.drag_ui_canvas_before.take();
+    let was_dragging = state.drag_ui_canvas_element || state.drag_ui_canvas_handle.is_some();
+    state.drag_ui_canvas_element = false;
+    state.drag_ui_canvas_handle = None;
+    if !was_dragging {
+        return;
+    }
+    if let Some(before) = before
+        && before.ui_canvases != game.ui_canvases
+    {
+        game.push_editor_command(
+            "Edit UI Canvas",
+            EditorCommandKind::SceneOperation {
+                name: "UI Canvas Gizmo".to_string(),
+            },
+            before,
+        );
+        game.console.log("UI Canvas actualizado", "UI");
+    }
+}
+
+fn hit_ui_canvas_handle(
+    roots: &[UiCanvasRoot],
+    viewport: Viewport,
+    local: (f32, f32),
+) -> Option<(String, String, UiCanvasGizmoHandleKind)> {
+    roots.iter().rev().find_map(|root| {
+        root.hit_test_gizmo_handle(viewport.rect.w, viewport.rect.h, local)
+            .map(|handle| (root.id.clone(), handle.element_id, handle.kind))
+    })
+}
+
+fn hit_ui_canvas_element(
+    roots: &[UiCanvasRoot],
+    viewport: Viewport,
+    local: (f32, f32),
+) -> Option<(String, String)> {
+    roots.iter().rev().find_map(|root| {
+        root.hit_test_element(viewport.rect.w, viewport.rect.h, local)
+            .map(|element| (root.id.clone(), element.id().to_string()))
+    })
+}
+
+fn write_ui_canvas_roots(game: &mut Game, roots: Vec<UiCanvasRoot>, reason: &str) {
+    game.ui_canvases = serde_json::to_value(&roots).unwrap_or_else(|_| json!([]));
+    game.mark_scene_dirty(reason);
+}
+
+fn clear_ui_canvas_selection(state: &mut EditorState) {
+    state.selected_ui_canvas_id = None;
+    state.selected_ui_element_id = None;
+    state.drag_ui_canvas_element = false;
+    state.drag_ui_canvas_handle = None;
+    state.drag_ui_canvas_before = None;
+}
+
+fn apply_gizmo_drag(game: &mut Game, state: &mut EditorState, world: (f32, f32)) {
     let Some(id) = state.drag_entity else {
         return;
     };
     let snap = state.snap_to_grid;
-    let tile_size = game.grid.tile_size as f64;
     let camera_zoom = game.camera.zoom;
     let (mx, my) = mouse_position();
-    if let Some(entity) = game.get_entity_by_id_mut(id) {
-        match state.tool {
-            EditorTool::Move => {
-                if let Some(ui) = entity.get_component_mut("UIElement") {
+    let Some(primary) = game.get_entity_by_id(id).cloned() else {
+        return;
+    };
+    match state.toolbar.active_tool() {
+        EditorTool::Move => {
+            if primary.get_component("UIElement").is_some() {
+                if let Some(entity) = game.get_entity_by_id_mut(id)
+                    && let Some(ui) = entity.get_component_mut("UIElement")
+                {
                     let mut next_x = mx - state.drag_ui_offset.0;
                     let mut next_y = my - state.drag_ui_offset.1;
                     if snap {
@@ -1525,23 +2620,46 @@ fn apply_gizmo_drag(game: &mut Game, state: &EditorState, world: (f32, f32)) {
                     }
                     ui.set_f64("x", next_x as f64);
                     ui.set_f64("y", next_y as f64);
-                } else {
-                    let tools = SceneViewTools {
-                        grid_snapping: snap,
-                        snap_size: if snap { 0.25 } else { 0.0001 },
-                        tile_size,
-                        camera_zoom,
-                    };
-                    tools.set_world_position(entity, world.0 as f64, world.1 as f64);
+                }
+            } else {
+                let settings = SmartSnapSettings2D {
+                    enabled: state.smart_snap,
+                    grid_enabled: snap,
+                    grid_step: 0.25,
+                    ..SmartSnapSettings2D::default()
+                };
+                let result = EditorSpatialTools2D::smart_snap(
+                    &primary,
+                    (world.0 as f64, world.1 as f64),
+                    &game.runtime_world.units,
+                    camera_zoom,
+                    &settings,
+                );
+                state.snap_guides = result.guides;
+                let delta = (result.point.0 - primary.x, result.point.1 - primary.y);
+                let selected = game.selected_units.clone();
+                for selected_id in selected {
+                    if let Some(entity) = game.get_entity_by_id_mut(selected_id)
+                        && !entity.locked
+                    {
+                        entity.x += delta.0;
+                        entity.y += delta.1;
+                        entity.path.clear();
+                        entity.sync_to_components();
+                    }
                 }
             }
-            EditorTool::Rotate => {
+        }
+        EditorTool::Rotate => {
+            if let Some(entity) = game.get_entity_by_id_mut(id) {
                 let dx = world.0 as f64 - entity.x;
                 let dy = world.1 as f64 - entity.y;
                 entity.rotation = dy.atan2(dx).to_degrees();
                 entity.sync_to_components();
             }
-            EditorTool::Scale => {
+        }
+        EditorTool::Scale => {
+            if let Some(entity) = game.get_entity_by_id_mut(id) {
                 let dx = world.0 as f64 - entity.x;
                 let dy = world.1 as f64 - entity.y;
                 let scale = (dx.hypot(dy) * 0.5).clamp(0.1, 12.0);
@@ -1549,10 +2667,21 @@ fn apply_gizmo_drag(game: &mut Game, state: &EditorState, world: (f32, f32)) {
                 entity.scale_y = scale;
                 entity.sync_to_components();
             }
-            EditorTool::Select | EditorTool::Paint => {}
         }
-        game.mark_scene_dirty(state.tool.label());
+        EditorTool::Pivot => {
+            if let Some(entity) = game.get_entity_by_id_mut(id) {
+                let local = world_to_entity_local(entity, (world.0 as f64, world.1 as f64));
+                let normalized = (
+                    local.0 / entity.width.max(0.0001) + 0.5,
+                    local.1 / entity.height.max(0.0001) + 0.5,
+                );
+                EditorSpatialTools2D::set_pivot(entity, normalized, false);
+            }
+        }
+        EditorTool::Select | EditorTool::Collision | EditorTool::Paint => {}
     }
+    state.drag_world_last = world;
+    game.mark_scene_dirty(state.toolbar.active_tool().label());
 }
 
 fn finish_gizmo_drag(game: &mut Game, state: &mut EditorState) {
@@ -1563,11 +2692,106 @@ fn finish_gizmo_drag(game: &mut Game, state: &mut EditorState) {
     if let Some(before) = state.drag_entity_before.take() {
         game.sync_world();
         game.push_editor_command(
-            format!("{} Entity", state.tool.label()),
+            format!("{} Entity", state.toolbar.active_tool().label()),
             EditorCommandKind::MoveEntity { entity_id: id },
             before,
         );
     }
+    state.snap_guides.clear();
+}
+
+fn begin_collision_vertex_drag(game: &mut Game, state: &mut EditorState, world: (f32, f32)) {
+    let Some(id) = find_entity_at(game, world) else {
+        return;
+    };
+    if game
+        .get_entity_by_id(id)
+        .is_some_and(|entity| entity.locked)
+    {
+        return;
+    }
+    game.select_entity(id);
+    let before = game.capture_editor_snapshot();
+    let local = game
+        .get_entity_by_id(id)
+        .map(|entity| world_to_entity_local(entity, (world.0 as f64, world.1 as f64)))
+        .unwrap_or_default();
+    if is_key_down(KeyCode::LeftAlt) || is_key_down(KeyCode::RightAlt) {
+        if let Some(entity) = game.get_entity_by_id_mut(id)
+            && EditorSpatialTools2D::add_collision_vertex(entity, local)
+        {
+            let index = EditorSpatialTools2D::collision_points(entity)
+                .len()
+                .saturating_sub(1);
+            state.drag_collision_vertex = Some((id, index));
+            state.drag_entity_before = Some(before);
+        }
+        return;
+    }
+    let Some(entity) = game.get_entity_by_id(id) else {
+        return;
+    };
+    let points = EditorSpatialTools2D::collision_points(entity);
+    let nearest = points
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| {
+            (left.0 - local.0)
+                .hypot(left.1 - local.1)
+                .partial_cmp(&(right.0 - local.0).hypot(right.1 - local.1))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .filter(|(_, point)| (point.0 - local.0).hypot(point.1 - local.1) <= 0.4)
+        .map(|(index, _)| index);
+    if let Some(index) = nearest {
+        state.drag_collision_vertex = Some((id, index));
+        state.drag_entity_before = Some(before);
+    }
+}
+
+fn apply_collision_vertex_drag(game: &mut Game, state: &mut EditorState, world: (f32, f32)) {
+    let Some((id, index)) = state.drag_collision_vertex else {
+        return;
+    };
+    let Some(entity) = game.get_entity_by_id_mut(id) else {
+        return;
+    };
+    let local = world_to_entity_local(entity, (world.0 as f64, world.1 as f64));
+    if EditorSpatialTools2D::move_collision_vertex(
+        entity,
+        index,
+        local,
+        state.snap_to_grid.then_some(0.125),
+    ) {
+        game.mark_scene_dirty("Edit Collision Shape");
+    }
+}
+
+fn finish_collision_vertex_drag(game: &mut Game, state: &mut EditorState) {
+    let Some((id, _)) = state.drag_collision_vertex.take() else {
+        return;
+    };
+    if let Some(before) = state.drag_entity_before.take() {
+        game.sync_world();
+        game.push_editor_command(
+            "Edit Collision Shape",
+            EditorCommandKind::SceneOperation {
+                name: format!("Collider2D #{id}"),
+            },
+            before,
+        );
+    }
+}
+
+fn world_to_entity_local(entity: &GameObject, world: (f64, f64)) -> (f64, f64) {
+    let translated = (world.0 - entity.x, world.1 - entity.y);
+    let radians = -entity.rotation.to_radians();
+    (
+        (translated.0 * radians.cos() - translated.1 * radians.sin())
+            / entity.scale_x.abs().max(0.0001),
+        (translated.0 * radians.sin() + translated.1 * radians.cos())
+            / entity.scale_y.abs().max(0.0001),
+    )
 }
 
 fn log_drop_outcome(game: &mut Game, asset_name: &str, outcome: DropOutcome) {
@@ -1578,29 +2802,647 @@ fn log_drop_outcome(game: &mut Game, asset_name: &str, outcome: DropOutcome) {
         DropOutcome::AppliedToEntity(id) => game
             .console
             .log(format!("{asset_name} aplicado a #{id}"), "ASSETS"),
+        DropOutcome::OpenScene(scene_name) => game
+            .console
+            .log(format!("{asset_name} abrio escena {scene_name}"), "ASSETS"),
         DropOutcome::Unsupported(reason) => game
             .console
             .log(format!("{asset_name}: {reason}"), "WARNING"),
     }
 }
 
-fn select_at(game: &mut Game, world: (f32, f32), screen: (f32, f32)) {
-    game.clear_selection();
+fn select_at(game: &mut Game, state: &mut EditorState, world: (f32, f32), screen: (f32, f32)) {
+    clear_ui_canvas_selection(state);
+    let additive = is_key_down(KeyCode::LeftShift)
+        || is_key_down(KeyCode::RightShift)
+        || command_modifier_down();
     if let Some(id) =
         find_ui_entity_at(game, screen.0, screen.1).or_else(|| find_entity_at(game, world))
     {
-        game.select_entity(id);
+        let group = game
+            .get_entity_by_id(id)
+            .and_then(|entity| entity.editor_group.clone());
+        if let Some(group) = group {
+            game.select_editor_group(&group, additive);
+        } else if additive {
+            game.toggle_entity_selection(id);
+        } else {
+            game.select_entity(id);
+        }
+        game.console.log(
+            format!("{} entidades seleccionadas", game.selected_units.len()),
+            "EDITOR",
+        );
+    } else if !additive {
+        game.clear_selection();
+    }
+}
+
+fn align_selected_entities(game: &mut Game, mode: AlignMode2D) {
+    let before = game.capture_editor_snapshot();
+    let changed = EditorSpatialTools2D::align(
+        &mut game.runtime_world.units,
+        &game.selected_units.clone(),
+        mode,
+    );
+    if changed.is_empty() {
         game.console
-            .log(format!("Seleccionado entity #{id}"), "EDITOR");
+            .log("Selecciona al menos dos objetos desbloqueados", "EDITOR");
+        return;
+    }
+    game.sync_world();
+    game.mark_scene_dirty("Align Selection");
+    game.push_editor_command(
+        format!("Align {mode:?}"),
+        EditorCommandKind::SceneOperation {
+            name: format!("Align {mode:?}"),
+        },
+        before,
+    );
+}
+
+fn group_selected_entities(game: &mut Game) {
+    if game.selected_units.len() < 2 {
+        game.console
+            .log("Selecciona al menos dos objetos para agrupar", "EDITOR");
+        return;
+    }
+    let before = game.capture_editor_snapshot();
+    let group_id = format!("group_{}", game.selected_units[0]);
+    for id in game.selected_units.clone() {
+        if let Some(entity) = game.get_entity_by_id_mut(id) {
+            entity.editor_group = Some(group_id.clone());
+        }
+    }
+    game.mark_scene_dirty("Group Selection");
+    game.push_editor_command(
+        "Group Selection",
+        EditorCommandKind::SceneOperation {
+            name: group_id.clone(),
+        },
+        before,
+    );
+    game.console
+        .log(format!("Grupo creado: {group_id}"), "EDITOR");
+}
+
+fn ungroup_selected_entities(game: &mut Game) {
+    let before = game.capture_editor_snapshot();
+    let mut changed = false;
+    for id in game.selected_units.clone() {
+        if let Some(entity) = game.get_entity_by_id_mut(id) {
+            changed |= entity.editor_group.take().is_some();
+        }
+    }
+    if !changed {
+        return;
+    }
+    game.mark_scene_dirty("Ungroup Selection");
+    game.push_editor_command(
+        "Ungroup Selection",
+        EditorCommandKind::SceneOperation {
+            name: "Ungroup".to_string(),
+        },
+        before,
+    );
+}
+
+fn toggle_selected_layer_lock(game: &mut Game) {
+    let Some(layer) = game
+        .selected_units
+        .first()
+        .and_then(|id| game.get_entity_by_id(*id))
+        .map(|entity| entity.layer.clone())
+    else {
+        return;
+    };
+    let before = game.capture_editor_snapshot();
+    let should_lock = game
+        .units
+        .iter()
+        .filter(|entity| entity.layer == layer)
+        .any(|entity| !entity.locked);
+    for entity in game
+        .runtime_world
+        .units
+        .iter_mut()
+        .filter(|entity| entity.layer == layer)
+    {
+        entity.locked = should_lock;
+    }
+    if should_lock {
+        game.clear_selection();
+    }
+    game.mark_scene_dirty("Toggle Layer Lock");
+    game.push_editor_command(
+        format!(
+            "{} layer {layer}",
+            if should_lock { "Lock" } else { "Unlock" }
+        ),
+        EditorCommandKind::SceneOperation {
+            name: format!("Layer Lock {layer}"),
+        },
+        before,
+    );
+}
+
+fn toggle_selected_layer_visibility(game: &mut Game) {
+    let Some(layer) = game
+        .selected_units
+        .first()
+        .and_then(|id| game.get_entity_by_id(*id))
+        .map(|entity| entity.layer.clone())
+    else {
+        return;
+    };
+    let before = game.capture_editor_snapshot();
+    let should_show = game
+        .units
+        .iter()
+        .filter(|entity| entity.layer == layer)
+        .any(|entity| !entity.visible);
+    for entity in game
+        .runtime_world
+        .units
+        .iter_mut()
+        .filter(|entity| entity.layer == layer)
+    {
+        entity.visible = should_show;
+    }
+    if !should_show {
+        game.clear_selection();
+    }
+    game.mark_scene_dirty("Toggle Layer Visibility");
+    game.push_editor_command(
+        format!(
+            "{} layer {layer}",
+            if should_show { "Show" } else { "Hide" }
+        ),
+        EditorCommandKind::SceneOperation {
+            name: format!("Layer Visibility {layer}"),
+        },
+        before,
+    );
+}
+
+fn move_selection_to_next_layer(game: &mut Game) {
+    if game.selected_units.is_empty() || game.tags_layers_manager.layers.is_empty() {
+        return;
+    }
+    let before = game.capture_editor_snapshot();
+    let layers = game.tags_layers_manager.layers.clone();
+    for id in game.selected_units.clone() {
+        if let Some(entity) = game.get_entity_by_id_mut(id) {
+            let current = layers
+                .iter()
+                .position(|layer| layer == &entity.layer)
+                .unwrap_or(0);
+            entity.layer = layers[(current + 1) % layers.len()].clone();
+        }
+    }
+    game.mark_scene_dirty("Move Selection Layer");
+    game.push_editor_command(
+        "Move Selection Layer",
+        EditorCommandKind::SceneOperation {
+            name: "Cycle Layer".to_string(),
+        },
+        before,
+    );
+}
+
+fn run_python_tool(game: &mut Game, state: &mut EditorState, tool_id: &str) {
+    let host = PythonAutomationHost::new(&game.project_path);
+    if let Err(error) = host.install_builtin_tools() {
+        game.console.log(format!("Python tools: {error}"), "ERROR");
+        return;
+    }
+    let manifest = match host
+        .discover()
+        .ok()
+        .and_then(|tools| tools.into_iter().find(|tool| tool.id == tool_id))
+    {
+        Some(manifest) => manifest,
+        None => {
+            game.console
+                .log(format!("Python tool no encontrado: {tool_id}"), "ERROR");
+            return;
+        }
+    };
+    let context = PythonEditorContext {
+        project_root: game.project_path.to_string_lossy().to_string(),
+        active_scene: Some(game.scene_manager.current_scene.clone()),
+        selected_entity_ids: game.selected_units.clone(),
+        assets: game.asset_database.assets.keys().cloned().collect(),
+        parameters: json!({
+            "engine_version": crate::DEVELOPMENT_VERSION,
+            "tool_id": tool_id,
+        }),
+    };
+    match host.run(&manifest, context) {
+        Ok(result) => {
+            let level = if result.success { "PYTHON" } else { "ERROR" };
+            game.console.log(result.message, level);
+            for operation in result.operations {
+                apply_python_editor_operation(game, state, operation);
+            }
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Console;
+        }
+        Err(error) => game
+            .console
+            .log(format!("Python automation: {error}"), "ERROR"),
+    }
+}
+
+fn apply_python_editor_operation(
+    game: &mut Game,
+    state: &mut EditorState,
+    operation: PythonEditorOperation,
+) {
+    match operation.operation.as_str() {
+        "log" => game
+            .console
+            .log(operation.value.as_str().unwrap_or_default(), "PYTHON"),
+        "select_entities" => {
+            let ids = operation
+                .value
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_u64)
+                .filter(|id| game.get_entity_by_id(*id).is_some())
+                .collect::<Vec<_>>();
+            game.selected_units = ids;
+        }
+        "set_editor_property" => apply_python_bulk_properties(game, &operation),
+        "open_document" => {
+            let path = game.project_path.join(&operation.target);
+            if path.exists() {
+                open_project_file_in_editor(game, state, path);
+            }
+        }
+        "request_reimport" | "refresh_assets" => {
+            refresh_assets(game);
+        }
+        "create_asset_descriptor" => {
+            let path = game.project_path.join(&operation.target);
+            if let Err(error) = AssetTools::write_json(path, &operation.value) {
+                game.console
+                    .log(format!("Python asset descriptor: {error}"), "ERROR");
+            } else {
+                refresh_assets(game);
+            }
+        }
+        "batch_import_assets" => {
+            let destination = operation
+                .value
+                .get("destination")
+                .and_then(Value::as_str)
+                .unwrap_or("assets/imported");
+            match batch_import_assets(&game.project_path, &operation.target, destination) {
+                Ok(report) => finish_python_batch(game, "Import", report),
+                Err(error) => game.console.log(format!("Import batch: {error}"), "ERROR"),
+            }
+            refresh_assets(game);
+        }
+        "convert_sprites" => {
+            let destination = operation
+                .value
+                .get("destination")
+                .and_then(Value::as_str)
+                .unwrap_or("assets/sprites/converted");
+            match batch_convert_sprites(&game.project_path, &operation.target, destination) {
+                Ok(report) => finish_python_batch(game, "Sprite conversion", report),
+                Err(error) => game
+                    .console
+                    .log(format!("Sprite conversion: {error}"), "ERROR"),
+            }
+            refresh_assets(game);
+        }
+        "generate_atlas" => {
+            let destination = operation
+                .value
+                .get("destination")
+                .and_then(Value::as_str)
+                .unwrap_or("assets/atlases");
+            let size = operation
+                .value
+                .get("size")
+                .and_then(Value::as_u64)
+                .unwrap_or(4096) as u32;
+            let extrude = operation
+                .value
+                .get("extrude")
+                .and_then(Value::as_u64)
+                .unwrap_or(1) as u32;
+            match generate_paged_sprite_atlases(
+                &game.project_path,
+                &operation.target,
+                destination,
+                size,
+                extrude,
+            ) {
+                Ok(report) => finish_python_batch(game, "Atlas", report),
+                Err(error) => game.console.log(format!("Atlas: {error}"), "ERROR"),
+            }
+            refresh_assets(game);
+        }
+        "create_procedural_level" => create_python_procedural_level(game, &operation),
+        "export_project_data" => export_python_project_data(game, &operation),
+        "automate_build" => automate_python_build(game),
+        "process_animations" => process_python_animations(game, &operation),
+        "generate_documentation" => generate_python_documentation(game, &operation),
+        other => game
+            .console
+            .log(format!("Python operation ignorada: {other}"), "WARNING"),
+    }
+}
+
+fn finish_python_batch(game: &mut Game, label: &str, report: PythonBatchReport) {
+    game.console.log(
+        format!(
+            "{label}: {} procesados, {} omitidos, {} salidas",
+            report.processed,
+            report.skipped,
+            report.output_files.len()
+        ),
+        "PYTHON",
+    );
+    for warning in report.warnings.into_iter().take(12) {
+        game.console.log(warning, "WARNING");
+    }
+}
+
+fn apply_python_bulk_properties(game: &mut Game, operation: &PythonEditorOperation) {
+    if operation.target != "selection" || game.selected_units.is_empty() {
+        game.console
+            .log("Bulk properties: no hay selección", "WARNING");
+        return;
+    }
+    let before = game.capture_editor_snapshot();
+    let ids = game.selected_units.clone();
+    let mut changed = 0usize;
+    for id in ids {
+        let Some(entity) = game.get_entity_by_id_mut(id) else {
+            continue;
+        };
+        if let Some(value) = operation.value.get("visible").and_then(Value::as_bool) {
+            entity.visible = value;
+        }
+        if let Some(value) = operation.value.get("locked").and_then(Value::as_bool) {
+            entity.locked = value;
+        }
+        if let Some(value) = operation.value.get("enabled").and_then(Value::as_bool) {
+            entity.enabled = value;
+        }
+        if let Some(value) = operation.value.get("tag").and_then(Value::as_str) {
+            entity.tag = value.to_string();
+        }
+        if let Some(value) = operation.value.get("layer").and_then(Value::as_str) {
+            entity.layer = value.to_string();
+        }
+        changed += 1;
+    }
+    game.sync_world();
+    game.mark_scene_dirty("Python Bulk Properties");
+    game.push_editor_command(
+        "Python Bulk Properties",
+        EditorCommandKind::SceneOperation {
+            name: "Python Bulk Properties".to_string(),
+        },
+        before,
+    );
+    game.console.log(
+        format!("Propiedades aplicadas a {changed} entidades"),
+        "PYTHON",
+    );
+}
+
+fn create_python_procedural_level(game: &mut Game, operation: &PythonEditorOperation) {
+    let width = operation
+        .value
+        .get("width")
+        .and_then(Value::as_u64)
+        .unwrap_or(24)
+        .clamp(4, 128) as usize;
+    let height = operation
+        .value
+        .get("height")
+        .and_then(Value::as_u64)
+        .unwrap_or(16)
+        .clamp(4, 128) as usize;
+    let spacing = operation
+        .value
+        .get("spacing")
+        .and_then(Value::as_f64)
+        .unwrap_or(2.0)
+        .clamp(0.25, 16.0);
+    let name = if operation.target.trim().is_empty() {
+        "PythonProcedural"
+    } else {
+        operation.target.as_str()
+    };
+    if let Err(error) = game.create_empty_scene(name) {
+        game.console
+            .log(format!("Nivel procedural: {error}"), "ERROR");
+        return;
+    }
+    for x in 0..width {
+        game.spawn_game_object("Boundary", x as f64 * spacing, 0.0);
+        game.spawn_game_object(
+            "Boundary",
+            x as f64 * spacing,
+            (height - 1) as f64 * spacing,
+        );
+    }
+    for y in 1..height.saturating_sub(1) {
+        game.spawn_game_object("Boundary", 0.0, y as f64 * spacing);
+        game.spawn_game_object("Boundary", (width - 1) as f64 * spacing, y as f64 * spacing);
+    }
+    let center = (width as f64 * spacing * 0.5, height as f64 * spacing * 0.5);
+    for (name, component, offset) in [
+        ("KeyLight2D", "Light2D", (-4.0, -2.0)),
+        ("WaterArea2D", "Water2D", (3.0, 1.0)),
+        ("FogVolume2D", "Fog2D", (0.0, 4.0)),
+        ("FireEmitter2D", "Fire2D", (5.0, -3.0)),
+    ] {
+        let id = game.spawn_game_object(name, center.0 + offset.0, center.1 + offset.1);
+        if let Some(component) = default_component(component)
+            && let Some(entity) = game.get_entity_by_id_mut(id)
+        {
+            entity.add_component(component);
+        }
+    }
+    game.sync_world();
+    if let Err(error) = game.save_scene() {
+        game.console
+            .log(format!("Guardar nivel procedural: {error}"), "ERROR");
+    } else {
+        game.console.log(
+            format!("Nivel procedural {name}: {width}x{height}"),
+            "PYTHON",
+        );
+    }
+}
+
+fn export_python_project_data(game: &mut Game, operation: &PythonEditorOperation) {
+    let target = if operation.target.trim().is_empty() {
+        ".miniforge/generated/exports"
+    } else {
+        operation.target.as_str()
+    };
+    let output = game.project_path.join(target);
+    let result: io::Result<()> = (|| {
+        fs::create_dir_all(&output)?;
+        let manifest = game.build_manifest()?;
+        AssetTools::write_json(output.join("manifest.json"), &manifest)?;
+        AssetTools::write_json(
+            output.join("scene.json"),
+            &json!({
+                "scene": game.scene_manager.current_scene,
+                "entities": game.runtime_world.units,
+                "ui_canvases": game.ui_canvases,
+            }),
+        )?;
+        let assets = game
+            .asset_database
+            .assets
+            .values()
+            .map(|asset| {
+                json!({
+                    "name": asset.name,
+                    "type": asset.asset_type,
+                    "path": asset.relative_path,
+                })
+            })
+            .collect::<Vec<_>>();
+        AssetTools::write_json(output.join("assets.json"), &json!(assets))?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => game
+            .console
+            .log(format!("Datos exportados: {}", output.display()), "PYTHON"),
+        Err(error) => game
+            .console
+            .log(format!("Exportar datos: {error}"), "ERROR"),
+    }
+}
+
+fn automate_python_build(game: &mut Game) {
+    if !game.validate_project() {
+        game.console
+            .log("Build detenido: valida los errores del proyecto", "ERROR");
+        return;
+    }
+    if let Err(error) = game
+        .build_manifest()
+        .and_then(|_| game.export_runtime(ExportProfile::Debug).map(|_| ()))
+    {
+        game.console
+            .log(format!("Build automático: {error}"), "ERROR");
+    } else {
+        game.console.log("Build debug automático listo", "PYTHON");
+    }
+}
+
+fn process_python_animations(game: &mut Game, operation: &PythonEditorOperation) {
+    let animations = game
+        .asset_database
+        .assets
+        .values()
+        .filter(|asset| {
+            asset.relative_path.contains("animations/")
+                || asset.asset_type.to_ascii_lowercase().contains("animation")
+                || asset.relative_path.ends_with(".spriteframes")
+        })
+        .map(|asset| {
+            json!({
+                "name": asset.name,
+                "type": asset.asset_type,
+                "path": asset.relative_path,
+                "status": "validated",
+            })
+        })
+        .collect::<Vec<_>>();
+    let output = game
+        .project_path
+        .join(".miniforge/generated/animations/animation_report.json");
+    let value = json!({
+        "requested": operation.value,
+        "count": animations.len(),
+        "animations": animations,
+    });
+    match AssetTools::write_json(&output, &value) {
+        Ok(()) => game.console.log(
+            format!("Animaciones procesadas: {}", value["count"]),
+            "PYTHON",
+        ),
+        Err(error) => game
+            .console
+            .log(format!("Procesar animaciones: {error}"), "ERROR"),
+    }
+}
+
+fn generate_python_documentation(game: &mut Game, operation: &PythonEditorOperation) {
+    let target = if operation.target.trim().is_empty() {
+        ".miniforge/generated/docs"
+    } else {
+        operation.target.as_str()
+    };
+    let output = game.project_path.join(target).join("PROJECT_AUTOMATION.md");
+    let mut asset_types = std::collections::BTreeMap::<String, usize>::new();
+    for asset in game.asset_database.assets.values() {
+        *asset_types.entry(asset.asset_type.clone()).or_default() += 1;
+    }
+    let tools = PythonAutomationHost::new(&game.project_path)
+        .discover()
+        .unwrap_or_default();
+    let mut markdown = format!(
+        "# MiniForge Project Automation\n\n- Scene: `{}`\n- Entities: {}\n- Assets: {}\n- Python tools: {}\n\n## Asset types\n\n",
+        game.scene_manager.current_scene,
+        game.runtime_world.units.len(),
+        game.asset_database.assets.len(),
+        tools.len(),
+    );
+    for (kind, count) in asset_types {
+        markdown.push_str(&format!("- {kind}: {count}\n"));
+    }
+    markdown.push_str("\n## Python editor tools\n\n");
+    for tool in tools {
+        markdown.push_str(&format!(
+            "- **{}** (`{}`): {}\n",
+            tool.label, tool.id, tool.description
+        ));
+    }
+    markdown.push_str("\n## 2D rendering effects\n\n");
+    for preset in crate::engine::render_2d::production_effect_presets_2d() {
+        markdown.push_str(&format!(
+            "- **{}**: component `{}`, shader `{}`\n",
+            preset.label, preset.component, preset.shader
+        ));
+    }
+    if let Some(parent) = output.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    match fs::write(&output, markdown) {
+        Ok(()) => game.console.log(
+            format!("Documentación generada: {}", output.display()),
+            "PYTHON",
+        ),
+        Err(error) => game
+            .console
+            .log(format!("Generar documentación: {error}"), "ERROR"),
     }
 }
 
 fn find_ui_entity_at(game: &Game, mx: f32, my: f32) -> Option<u64> {
-    game.units
+    game.runtime_world
+        .units
         .iter()
         .rev()
         .find(|entity| {
-            if !entity.enabled || !entity.visible {
+            if !entity.enabled || !entity.visible || entity.locked {
                 return false;
             }
             let Some(ui) = entity.get_component("UIElement") else {
@@ -1630,10 +3472,14 @@ fn ui_drag_offset(game: &Game, entity_id: u64, mx: f32, my: f32) -> (f32, f32) {
 }
 
 fn find_entity_at(game: &Game, world: (f32, f32)) -> Option<u64> {
-    game.units
+    game.runtime_world
+        .units
         .iter()
         .rev()
         .find(|entity| {
+            if !entity.enabled || !entity.visible || entity.locked {
+                return false;
+            }
             let half_w = (entity.width.max(entity.radius * 2.0) * 0.5) as f32;
             let half_h = (entity.height.max(entity.radius * 2.0) * 0.5) as f32;
             world.0 >= entity.x as f32 - half_w
@@ -1783,6 +3629,47 @@ fn poll_external_play_window(game: &mut Game, state: &mut EditorState) {
     }
 }
 
+fn poll_editor_file_changes(game: &mut Game, state: &mut EditorState) {
+    let changes = state
+        .file_watcher
+        .as_ref()
+        .map(EditorFileWatcher::drain)
+        .unwrap_or_default();
+    if changes.is_empty() {
+        return;
+    }
+
+    let changed_paths = changes
+        .iter()
+        .flat_map(|change| change.paths.iter())
+        .collect::<Vec<_>>();
+    let active_path = game.script_editor.document.path.clone();
+    if !game.script_editor.document.dirty
+        && active_path
+            .as_ref()
+            .is_some_and(|active| changed_paths.contains(&active))
+    {
+        if let Err(error) = game.reload_open_file() {
+            game.console
+                .log(format!("Hot reload de editor falló: {error}"), "WARNING");
+        } else {
+            game.console
+                .log("Script recargado por cambio externo", "SCRIPT");
+        }
+    }
+
+    if changed_paths.iter().any(|path| {
+        let text = path.to_string_lossy();
+        text.contains("/assets/") || text.contains("/scripts/") || text.contains("/saves/scenes/")
+    }) && let Err(error) = game.refresh_assets()
+    {
+        game.console.log(
+            format!("Actualización automática de assets falló: {error}"),
+            "WARNING",
+        );
+    }
+}
+
 fn sibling_runtime_binary() -> Option<PathBuf> {
     let current = env::current_exe().ok()?;
     let runtime_name = if cfg!(windows) {
@@ -1795,17 +3682,18 @@ fn sibling_runtime_binary() -> Option<PathBuf> {
 }
 
 fn set_tool(game: &mut Game, state: &mut EditorState, tool: EditorTool) {
-    state.tool = tool;
+    state.toolbar.activate(tool);
     game.active_tool = tool.label().to_string();
     game.console
         .log(format!("Herramienta activa: {}", tool.label()), "EDITOR");
 }
 
 fn draw_top_bar(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
+    sync_menu_state(game, state);
     draw_gradient_rect(
         rect,
-        Color::from_rgba(31, 39, 54, 255),
-        Color::from_rgba(14, 18, 27, 255),
+        Color::from_rgba(20, 25, 34, 255),
+        Color::from_rgba(13, 16, 22, 255),
     );
     draw_macos_chrome(rect);
     draw_rectangle(
@@ -1813,11 +3701,11 @@ fn draw_top_bar(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
         rect.y + 44.0,
         rect.w,
         1.0,
-        Color::from_rgba(82, 102, 132, 160),
+        Color::from_rgba(54, 66, 86, 150),
     );
-    draw_rectangle(rect.x, rect.y + rect.h - 1.0, rect.w, 1.0, ui_accent_2());
+    draw_rectangle(rect.x, rect.y + rect.h - 1.0, rect.w, 1.0, ui_line_soft());
     draw_text("MiniForge", rect.x + 82.0, rect.y + 25.0, 24.0, ui_text());
-    draw_top_menus(game, state, rect);
+    draw_top_menus(state, rect);
     draw_text(
         &ellipsize(
             &format!(
@@ -1835,145 +3723,136 @@ fn draw_top_bar(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
     );
 
     let mut x = rect.x + 16.0;
-    let y = rect.y + 56.0;
+    let y = rect.y + 55.0;
     let play_active = game.mode == "PLAY" || state.external_play_child.is_some();
     let play_label = if play_active { "Stop" } else { "Play" };
-    if button(x, y, 58.0, 24.0, play_label, play_active) {
+    if icon_button(
+        state.phosphor_font.as_ref(),
+        x,
+        y,
+        58.0,
+        24.0,
+        if play_active {
+            EditorIcon::Stop
+        } else {
+            EditorIcon::Play
+        },
+        play_label,
+        play_active,
+    ) {
         toggle_play_mode(game, state);
     }
-    x += 64.0;
-    if button(x, y, 58.0, 24.0, "Save", false) {
+    x += 66.0;
+    if icon_button(
+        state.phosphor_font.as_ref(),
+        x,
+        y,
+        58.0,
+        24.0,
+        EditorIcon::Save,
+        "Save",
+        false,
+    ) {
         save_project(game);
     }
     x += 66.0;
-    if button(x, y, 54.0, 24.0, "+Obj", false) {
-        let (sx, sy) = spawn_position(game);
-        let id = game.spawn_game_object("GameObject", sx, sy);
-        game.console
-            .log(format!("GameObject creado #{id}"), "SCENE");
+    if icon_button(
+        state.phosphor_font.as_ref(),
+        x,
+        y,
+        74.0,
+        24.0,
+        EditorIcon::NewEntity,
+        "Create",
+        false,
+    ) {
+        state.menu_bar.open(TopMenu::Create.id());
     }
-    x += 60.0;
-    if button(x, y, 56.0, 24.0, "+Unit", false) {
-        let (sx, sy) = spawn_position(game);
-        let id = game.spawn_unit("PlayerUnit", sx, sy);
-        game.console
-            .log(format!("Unidad avanzada creada #{id}"), "SCENE");
+    x += 82.0;
+    if button(x, y, 98.0, 24.0, "Foundations", false) {
+        game.prepare_complex_game_foundations();
+        state.show_console = true;
+        state.bottom_tab = BottomTab::Profiler;
     }
-    x += 62.0;
-    if button(x, y, 66.0, 24.0, "+Enemy", false) {
-        let (sx, sy) = spawn_position(game);
-        let id = game.spawn_enemy(sx + 2.0, sy);
-        game.console.log(format!("Enemy AI creado #{id}"), "SCENE");
-    }
-    x += 72.0;
-    if button(x, y, 58.0, 24.0, "+Gold", false) {
-        let (sx, sy) = spawn_position(game);
-        let id = game.spawn_resource(sx, sy + 2.0);
-        game.console
-            .log(format!("ResourceNode creado #{id}"), "SCENE");
-    }
-    x += 66.0;
-    if button(x, y, 58.0, 24.0, "+Base", false) {
-        let (sx, sy) = spawn_position(game);
-        let id = game.spawn_rts_building("CommandCenter", sx, sy, 1);
-        game.console.log(format!("Base RTS creada #{id}"), "RTS");
-    }
-    x += 66.0;
-    if button(x, y, 62.0, 24.0, "Top2D", false) {
-        game.create_topdown_starter();
-    }
-    x += 70.0;
-    if button(x, y, 62.0, 24.0, "Plat2D", false) {
-        game.create_platformer_starter();
-    }
-    x += 70.0;
-    if button(x, y, 78.0, 24.0, "RTS Demo", false) {
-        game.create_rts_skirmish();
-    }
-    x += 86.0;
-    if button(x, y, 72.0, 24.0, "Validate", false) {
-        game.validate_project();
-    }
-    x += 78.0;
-    if button(x, y, 66.0, 24.0, "Assets", false) {
+    x += 106.0;
+    if icon_button(
+        state.phosphor_font.as_ref(),
+        x,
+        y,
+        70.0,
+        24.0,
+        EditorIcon::Folder,
+        "Assets",
+        false,
+    ) {
         refresh_assets(game);
         state.show_console = true;
         state.bottom_tab = BottomTab::Assets;
     }
-    x += 72.0;
-    if button(x, y, 68.0, 24.0, "+Sprite", false) {
-        let (sx, sy) = spawn_position(game);
-        game.spawn_sprite_entity("Sprite", "sprite", sx, sy);
-    }
-    x += 76.0;
-    if button(x, y, 72.0, 24.0, "Manifest", false) {
-        build_manifest(game);
-    }
     x += 78.0;
-    if button(x, y, 66.0, 24.0, "+Graph", false)
-        && let Ok(path) = game.create_program_asset("LogAndMove")
-    {
-        set_open_file_editor_state(state, &path);
-        state.show_console = true;
-        state.bottom_tab = BottomTab::Programming;
+    if icon_button(
+        state.phosphor_font.as_ref(),
+        x,
+        y,
+        82.0,
+        24.0,
+        EditorIcon::Scene,
+        "Launcher",
+        false,
+    ) {
+        state.launcher_overlay = Some(new_launcher_state());
     }
-    x += 72.0;
-    if button(x, y, 76.0, 24.0, "Prefab", false) {
-        if let Err(error) = game.save_selected_as_prefab() {
-            game.console
-                .log(format!("Error guardando prefab: {error}"), "ERROR");
-        }
-        state.show_console = true;
-        state.bottom_tab = BottomTab::Prefabs;
-    }
-    x += 86.0;
+    x += 96.0;
 
-    for tool in [
-        EditorTool::Select,
-        EditorTool::Move,
-        EditorTool::Rotate,
-        EditorTool::Scale,
-        EditorTool::Paint,
-    ] {
-        let width = match tool {
-            EditorTool::Select => 62.0,
-            EditorTool::Move => 54.0,
-            EditorTool::Rotate => 62.0,
-            EditorTool::Scale => 58.0,
-            EditorTool::Paint => 58.0,
-        };
-        if button(x, y, width, 24.0, tool.label(), state.tool == tool) {
-            set_tool(game, state, tool);
+    let tools = state.toolbar.descriptors().to_vec();
+    for descriptor in tools {
+        let width = f32::from(descriptor.width_hint);
+        if button(
+            x,
+            y,
+            width,
+            24.0,
+            &descriptor.label,
+            state.toolbar.active_tool() == descriptor.tool,
+        ) {
+            set_tool(game, state, descriptor.tool);
         }
-        x += width + 6.0;
+        x += width + 5.0;
     }
-    if button(x, y, 30.0, 24.0, "-", false) {
-        state.tile_brush = (state.tile_brush - 1).max(0);
-        game.tile_brush = state.tile_brush;
+    if button(x, y, 54.0, 24.0, "Snap", state.snap_to_grid) {
+        state.snap_to_grid = !state.snap_to_grid;
     }
-    x += 34.0;
-    if button(x, y, 30.0, 24.0, "+", false) {
-        state.tile_brush = (state.tile_brush + 1).min(9);
-        game.tile_brush = state.tile_brush;
-    }
-    x += 38.0;
-    if button(x, y, 54.0, 24.0, "Layer", false) {
-        game.cycle_tilemap_layer();
-    }
-    x += 60.0;
+    x += 62.0;
     if button(
         x,
         y,
         74.0,
         24.0,
         state.tile_brush_mode.label(),
-        state.tool == EditorTool::Paint,
+        state.toolbar.active_tool() == EditorTool::Paint,
     ) {
         state.tile_brush_mode = state.tile_brush_mode.next();
     }
     x += 80.0;
-    if button(x, y, 54.0, 24.0, "Snap", state.snap_to_grid) {
-        state.snap_to_grid = !state.snap_to_grid;
+    if button(x, y, 54.0, 24.0, "Smart", state.smart_snap) {
+        state.smart_snap = !state.smart_snap;
+    }
+    x += 59.0;
+    if button(x, y, 46.0, 24.0, "Coll", state.show_collisions) {
+        state.show_collisions = !state.show_collisions;
+    }
+    x += 51.0;
+    if icon_button(
+        state.phosphor_font.as_ref(),
+        x,
+        y,
+        46.0,
+        24.0,
+        EditorIcon::Camera,
+        "Cam",
+        state.show_camera_frame,
+    ) {
+        state.show_camera_frame = !state.show_camera_frame;
     }
 
     let modes = [
@@ -2025,7 +3904,38 @@ fn draw_top_bar(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
     );
 }
 
-fn draw_top_menus(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
+fn sync_menu_state(game: &Game, state: &mut EditorState) {
+    state.menu_bar.set_item_checked(
+        "toggle_browser",
+        state.show_console && state.bottom_tab == BottomTab::Assets,
+    );
+    state
+        .menu_bar
+        .set_item_checked("toggle_hierarchy", state.show_hierarchy);
+    state
+        .menu_bar
+        .set_item_checked("toggle_inspector", state.show_inspector);
+    state
+        .menu_bar
+        .set_item_checked("toggle_smart_snap", state.smart_snap);
+    state
+        .menu_bar
+        .set_item_checked("toggle_collision_overlay", state.show_collisions);
+    state
+        .menu_bar
+        .set_item_checked("toggle_camera_frame", state.show_camera_frame);
+    let can_build = game.mode != "PLAY" && state.external_play_child.is_none();
+    for command in [
+        "export_debug",
+        "export_release",
+        "package_debug",
+        "package_release",
+    ] {
+        state.menu_bar.set_item_enabled(command, can_build);
+    }
+}
+
+fn draw_top_menus(state: &mut EditorState, rect: RectSpec) {
     let mut x = rect.x + 190.0;
     for menu in [
         TopMenu::File,
@@ -2045,74 +3955,96 @@ fn draw_top_menus(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
             width,
             22.0,
             menu.label(),
-            state.top_menu == Some(menu),
+            state.menu_bar.is_open(menu.id()),
         ) {
-            state.top_menu = if state.top_menu == Some(menu) {
-                None
-            } else {
-                Some(menu)
-            };
+            state.menu_bar.toggle(menu.id());
         }
         x += width + 5.0;
     }
-    if let Some(menu) = state.top_menu {
-        draw_menu_popover(game, state, menu, rect.x + 190.0, rect.y + 32.0);
+}
+
+fn draw_top_menu_overlay(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
+    let Some(menu) = state
+        .menu_bar
+        .open_menu
+        .as_deref()
+        .and_then(TopMenu::from_id)
+    else {
+        return;
+    };
+    let (x, width) = top_menu_anchor(rect, menu);
+    let y = rect.y + 32.0;
+    let bounds = menu_popover_rect(state.menu_bar.items(menu.id()), x, y, width);
+    if is_mouse_button_pressed(MouseButton::Left)
+        && !contains_mouse(bounds)
+        && mouse_position().1 > rect.y + 34.0
+    {
+        state.menu_bar.close();
+        return;
+    }
+    draw_menu_popover(game, state, menu, x, y, width);
+}
+
+fn top_menu_anchor(rect: RectSpec, target: TopMenu) -> (f32, f32) {
+    let mut x = rect.x + 190.0;
+    for menu in [
+        TopMenu::File,
+        TopMenu::Create,
+        TopMenu::View,
+        TopMenu::Project,
+        TopMenu::Rts,
+    ] {
+        let button_width = match menu {
+            TopMenu::Project => 62.0,
+            TopMenu::Create => 58.0,
+            _ => 48.0,
+        };
+        if menu == target {
+            return (x, menu_popover_width(menu).max(button_width));
+        }
+        x += button_width + 5.0;
+    }
+    (rect.x + 190.0, menu_popover_width(target))
+}
+
+fn menu_popover_width(menu: TopMenu) -> f32 {
+    match menu {
+        TopMenu::Project | TopMenu::Rts => 218.0,
+        TopMenu::View => 196.0,
+        _ => 184.0,
     }
 }
 
-fn draw_menu_popover(game: &mut Game, state: &mut EditorState, menu: TopMenu, x: f32, y: f32) {
-    let items: &[(&str, &str)] = match menu {
-        TopMenu::File => &[
-            ("Save Project", "save_project"),
-            ("Save Scene", "save"),
-            ("New Scene", "new_scene"),
-            ("Recover Autosave", "recover_autosave"),
-            ("Export Debug", "export_debug"),
-            ("Export Release", "export_release"),
-            ("Export Project Zip", "export_project_zip"),
-            ("Import Project Zip", "import_project_zip"),
-            ("Package Debug", "package_debug"),
-            ("Package Release", "package_release"),
-            ("Refresh Assets", "refresh"),
-        ],
-        TopMenu::Create => &[
-            ("GameObject", "spawn_object"),
-            ("Unit", "spawn_unit"),
-            ("Sprite Entity", "spawn_sprite"),
-            ("UI Canvas HUD", "ui_canvas_hud"),
-            ("UI Canvas Label", "ui_canvas_label"),
-            ("Sound Cue", "asset_sound"),
-            ("Material", "asset_material"),
-        ],
-        TopMenu::View => &[
-            ("Command Palette", "command_palette"),
-            ("Script Window", "script_window"),
-            ("Blueprint Picker", "blueprint_picker"),
-            ("Play Window", "play_window"),
-            ("Toggle Browser", "toggle_browser"),
-            ("Scene Browser", "scene_browser"),
-            ("Sprite Editor", "sprite_editor"),
-            ("Toggle Hierarchy", "toggle_hierarchy"),
-            ("Toggle Inspector", "toggle_inspector"),
-        ],
-        TopMenu::Project => &[
-            ("Validate", "validate"),
-            ("Build Manifest", "manifest"),
-            ("TopDown Starter", "starter_topdown"),
-            ("Platformer Starter", "starter_platformer"),
-            ("Inventory/Economy Graph", "create_graph_inventory"),
-            ("Quest/Ability Graph", "create_graph_quest"),
-        ],
-        TopMenu::Rts => &[
-            ("RTS Skirmish", "rts_skirmish"),
-            ("Command Center", "spawn_rts_base"),
-            ("Queue Worker", "queue_worker"),
-            ("Place Barracks", "place_barracks"),
-            ("RTS Production Graph", "create_graph_rts_economy"),
-        ],
-    };
-    let width = 184.0;
-    let height = items.len() as f32 * 24.0 + 12.0;
+fn menu_popover_rect(
+    items: &[crate::engine::ui::MenuItem],
+    x: f32,
+    y: f32,
+    width: f32,
+) -> RectSpec {
+    RectSpec {
+        x,
+        y,
+        w: width,
+        h: menu_popover_height(items),
+    }
+}
+
+fn menu_popover_height(items: &[crate::engine::ui::MenuItem]) -> f32 {
+    items.len() as f32 * 24.0
+        + items.iter().filter(|item| item.separator_before).count() as f32 * 5.0
+        + 12.0
+}
+
+fn draw_menu_popover(
+    game: &mut Game,
+    state: &mut EditorState,
+    menu: TopMenu,
+    x: f32,
+    y: f32,
+    width: f32,
+) {
+    let items = state.menu_bar.items(menu.id()).to_vec();
+    let height = menu_popover_height(&items);
     draw_surface(
         RectSpec {
             x,
@@ -2123,17 +4055,25 @@ fn draw_menu_popover(game: &mut Game, state: &mut EditorState, menu: TopMenu, x:
         true,
     );
     let mut row_y = y + 26.0;
-    for (label, command) in items {
+    for (index, item) in items.iter().enumerate() {
+        if item.separator_before {
+            draw_rectangle(x + 10.0, row_y - 20.0, width - 20.0, 1.0, ui_line_soft());
+            row_y += 5.0;
+        }
         let row = RectSpec {
             x: x + 6.0,
             y: row_y - 18.0,
             w: width - 12.0,
             h: 22.0,
         };
-        let hovered = contains_mouse(row);
+        let hovered = item.enabled && contains_mouse(row);
+        let focused = state.menu_bar.focused_item == Some(index);
+        if hovered {
+            state.menu_bar.focused_item = Some(index);
+        }
         draw_rect(
             row,
-            if hovered {
+            if hovered || focused {
                 Color::from_rgba(47, 63, 86, 255)
             } else {
                 Color::from_rgba(24, 31, 44, 255)
@@ -2144,12 +4084,47 @@ fn draw_menu_popover(game: &mut Game, state: &mut EditorState, menu: TopMenu, x:
             row.y,
             2.0,
             row.h,
-            if hovered { ui_accent() } else { ui_line_soft() },
+            if hovered || focused {
+                ui_accent()
+            } else {
+                ui_line_soft()
+            },
         );
-        draw_text(label, row.x + 8.0, row_y, 14.0, ui_text());
-        if hovered && is_mouse_button_pressed(MouseButton::Left) {
-            run_palette_command(game, state, command);
-            state.top_menu = None;
+        draw_text_fit(
+            &format!("{}{}", if item.checked { "✓ " } else { "" }, item.label),
+            RectSpec {
+                x: row.x + 8.0,
+                y: row.y + 1.0,
+                w: row.w - 64.0,
+                h: row.h - 2.0,
+            },
+            14,
+            if item.enabled {
+                ui_text()
+            } else {
+                ui_text_muted()
+            },
+            TextAlign::Left,
+        );
+        if let Some(shortcut) = &item.shortcut {
+            draw_text_fit(
+                shortcut,
+                RectSpec {
+                    x: row.x + row.w - 58.0,
+                    y: row.y + 1.0,
+                    w: 50.0,
+                    h: row.h - 2.0,
+                },
+                11,
+                ui_text_muted(),
+                TextAlign::Right,
+            );
+        }
+        if hovered
+            && is_mouse_button_pressed(MouseButton::Left)
+            && let Some(command) = state.menu_bar.activate(menu.id(), index)
+        {
+            run_palette_command(game, state, &command);
         }
         row_y += 24.0;
     }
@@ -2182,6 +4157,59 @@ fn draw_hierarchy(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
         12.0,
         ui_text_muted(),
     );
+    let visible_count = game
+        .runtime_world
+        .units
+        .iter()
+        .filter(|entity| entity.visible)
+        .count();
+    let locked_count = game
+        .runtime_world
+        .units
+        .iter()
+        .filter(|entity| entity.locked)
+        .count();
+    let prefab_count = game
+        .units
+        .iter()
+        .filter(|entity| entity.is_prefab_instance)
+        .count();
+    draw_text(
+        &format!(
+            "{} objs | {} visibles | {} locked | {} prefabs",
+            game.runtime_world.units.len(),
+            visible_count,
+            locked_count,
+            prefab_count
+        ),
+        rect.x + 14.0,
+        rect.y + 88.0,
+        12.0,
+        ui_text_muted(),
+    );
+    let quick_y = rect.y + 96.0;
+    if button(rect.x + 14.0, quick_y, 66.0, 21.0, "Show All", false) {
+        for entity in &mut game.runtime_world.units {
+            entity.visible = true;
+        }
+        game.sync_world();
+        game.mark_scene_dirty("Show All");
+    }
+    if button(rect.x + 86.0, quick_y, 68.0, 21.0, "Unlock", false) {
+        for entity in &mut game.runtime_world.units {
+            entity.locked = false;
+        }
+        game.mark_scene_dirty("Unlock All");
+    }
+    if button(rect.x + 160.0, quick_y, 58.0, 21.0, "Focus", false)
+        && let Some(id) = selected_id(game)
+        && let Some((entity_x, entity_y)) =
+            game.get_entity_by_id(id).map(|entity| (entity.x, entity.y))
+    {
+        game.camera.x = entity_x * game.grid.tile_size as f64 - 280.0;
+        game.camera.y = entity_y * game.grid.tile_size as f64 - 180.0;
+        game.camera.clamp_to_bounds();
+    }
     if button(
         rect.x + rect.w - 72.0,
         rect.y + 9.0,
@@ -2195,12 +4223,12 @@ fn draw_hierarchy(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
 
     let list_rect = RectSpec {
         x: rect.x + 8.0,
-        y: rect.y + 82.0,
+        y: rect.y + 126.0,
         w: rect.w - 16.0,
-        h: (rect.h - 94.0).max(0.0),
+        h: (rect.h - 138.0).max(0.0),
     };
     let row_h = 27.0;
-    let content_h = game.units.len() as f32 * row_h;
+    let content_h = game.runtime_world.units.len() as f32 * row_h;
     let max_scroll = (content_h - list_rect.h).max(0.0);
     if contains_mouse(list_rect) {
         let (_, wheel_y) = mouse_wheel();
@@ -2212,23 +4240,46 @@ fn draw_hierarchy(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
     state.hierarchy_scroll = state.hierarchy_scroll.clamp(0.0, max_scroll);
     let first_row = (state.hierarchy_scroll / row_h).floor().max(0.0) as usize;
     let visible_rows = (list_rect.h / row_h).ceil().max(1.0) as usize + 2;
-    let rows: Vec<(u64, String, String, bool)> = game
+    struct HierarchyRow {
+        id: u64,
+        name: String,
+        tag: String,
+        selected: bool,
+        visible: bool,
+        locked: bool,
+        component_count: usize,
+        depth: usize,
+    }
+
+    let rows: Vec<HierarchyRow> = game
         .units
         .iter()
         .skip(first_row)
         .take(visible_rows)
-        .map(|entity| {
-            (
-                entity.id,
-                entity.name.clone(),
-                entity.tag.clone(),
-                game.selected_units.contains(&entity.id),
-            )
+        .map(|entity| HierarchyRow {
+            id: entity.id,
+            name: entity.name.clone(),
+            tag: entity.tag.clone(),
+            selected: game.selected_units.contains(&entity.id),
+            visible: entity.visible,
+            locked: entity.locked,
+            component_count: entity.components.len(),
+            depth: entity_depth_in_units(&game.runtime_world.units, entity.id),
         })
         .collect();
 
     let mut y = list_rect.y + 19.0 - (state.hierarchy_scroll % row_h);
-    for (id, name, tag, selected) in rows {
+    for HierarchyRow {
+        id,
+        name,
+        tag,
+        selected,
+        visible,
+        locked,
+        component_count,
+        depth,
+    } in rows
+    {
         let row = RectSpec {
             x: list_rect.x,
             y: y - 17.0,
@@ -2249,20 +4300,55 @@ fn draw_hierarchy(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
         };
         draw_rect(row, color);
         draw_rectangle(row.x, row.y, 3.0, row.h, entity_type_accent(&tag));
+        let indent = (depth as f32 * 12.0).min(54.0);
+        if depth > 0 {
+            draw_line(
+                row.x + 10.0 + indent,
+                row.y + 5.0,
+                row.x + 10.0 + indent,
+                row.y + row.h - 5.0,
+                1.0,
+                ui_line_soft(),
+            );
+        }
         draw_text(
             &ellipsize(&format!("{name}  #{id}"), 25),
-            rect.x + 16.0,
+            rect.x + 16.0 + indent,
             y,
             16.0,
-            ui_text(),
+            if visible { ui_text() } else { ui_text_muted() },
         );
         draw_text(
-            &ellipsize(&tag, 11),
-            rect.x + rect.w - 80.0,
+            &ellipsize(&format!("{tag} [{component_count}]"), 14),
+            rect.x + rect.w - 112.0,
             y,
             13.0,
             ui_text_muted(),
         );
+        if button(
+            row.x + row.w - 54.0,
+            row.y + 2.0,
+            23.0,
+            19.0,
+            if visible { "V" } else { "H" },
+            visible,
+        ) && let Some(entity) = game.get_entity_by_id_mut(id)
+        {
+            entity.visible = !entity.visible;
+            game.mark_scene_dirty("Toggle Visibility");
+        }
+        if button(
+            row.x + row.w - 27.0,
+            row.y + 2.0,
+            23.0,
+            19.0,
+            if locked { "L" } else { "-" },
+            locked,
+        ) && let Some(entity) = game.get_entity_by_id_mut(id)
+        {
+            entity.locked = !entity.locked;
+            game.mark_scene_dirty("Toggle Lock");
+        }
         if hovered && is_mouse_button_pressed(MouseButton::Left) {
             game.select_entity(id);
             game.console
@@ -2313,9 +4399,9 @@ fn draw_hierarchy_context_menu(game: &mut Game, state: &mut EditorState) {
         y: state
             .hierarchy_context_pos
             .1
-            .clamp(8.0, (screen_height() - 172.0).max(8.0)),
+            .clamp(8.0, (screen_height() - 236.0).max(8.0)),
         w: 146.0,
-        h: 164.0,
+        h: 228.0,
     };
     draw_rect(panel, Color::from_rgba(26, 31, 42, 252));
     draw_rectangle_lines(
@@ -2336,6 +4422,9 @@ fn draw_hierarchy_context_menu(game: &mut Game, state: &mut EditorState) {
     let mut y = panel.y + 32.0;
     for (label, action) in [
         ("Select", "select"),
+        ("Focus", "focus"),
+        ("Hide/Show", "toggle_visible"),
+        ("Lock/Unlock", "toggle_lock"),
         ("Move Up", "move_up"),
         ("Move Down", "move_down"),
         ("Parent Sel", "parent_selected"),
@@ -2346,6 +4435,28 @@ fn draw_hierarchy_context_menu(game: &mut Game, state: &mut EditorState) {
             match action {
                 "select" => {
                     game.select_entity(entity_id);
+                }
+                "focus" => {
+                    if let Some((entity_x, entity_y)) = game
+                        .get_entity_by_id(entity_id)
+                        .map(|entity| (entity.x, entity.y))
+                    {
+                        game.camera.x = entity_x * game.grid.tile_size as f64 - 280.0;
+                        game.camera.y = entity_y * game.grid.tile_size as f64 - 180.0;
+                        game.camera.clamp_to_bounds();
+                    }
+                }
+                "toggle_visible" => {
+                    if let Some(entity) = game.get_entity_by_id_mut(entity_id) {
+                        entity.visible = !entity.visible;
+                        game.mark_scene_dirty("Toggle Visibility");
+                    }
+                }
+                "toggle_lock" => {
+                    if let Some(entity) = game.get_entity_by_id_mut(entity_id) {
+                        entity.locked = !entity.locked;
+                        game.mark_scene_dirty("Toggle Lock");
+                    }
                 }
                 "move_up" => {
                     game.move_entity_in_hierarchy(entity_id, -1);
@@ -2384,13 +4495,79 @@ fn draw_hierarchy_context_menu(game: &mut Game, state: &mut EditorState) {
 fn draw_inspector_scene_ui_canvas(game: &mut Game, rect: RectSpec) {
     let mut y = rect.y + 58.0;
     draw_text(
-        "Sin entidad seleccionada — UI Canvas",
+        "Scene Inspector",
         rect.x + 14.0,
         y,
         16.0,
         Color::from_rgba(200, 210, 230, 255),
     );
     y += 26.0;
+    let visible_count = game
+        .runtime_world
+        .units
+        .iter()
+        .filter(|entity| entity.visible)
+        .count();
+    let locked_count = game
+        .runtime_world
+        .units
+        .iter()
+        .filter(|entity| entity.locked)
+        .count();
+    let script_count: usize = game
+        .units
+        .iter()
+        .map(|entity| entity.scripts.len() + usize::from(entity.script.is_some()))
+        .sum();
+    draw_text(
+        &format!(
+            "{} entities | {} visible | {} locked | {} scripts",
+            game.runtime_world.units.len(),
+            visible_count,
+            locked_count,
+            script_count
+        ),
+        rect.x + 14.0,
+        y,
+        13.0,
+        Color::from_rgba(160, 172, 196, 255),
+    );
+    y += 24.0;
+    if button(rect.x + 14.0, y, 78.0, 24.0, "Validate", false) {
+        if game.validate_project() {
+            game.console.log("Proyecto y escena validos", "VALIDATE");
+        } else {
+            game.console
+                .log("Validacion con errores o warnings", "WARNING");
+        }
+    }
+    if button(rect.x + 100.0, y, 74.0, 24.0, "Save", false) {
+        save_scene(game);
+    }
+    if button(rect.x + 182.0, y, 84.0, 24.0, "Manifest", false) {
+        match game.build_manifest() {
+            Ok(manifest) => game.console.log(
+                format!(
+                    "Manifest listo: {} assets, {} scenes",
+                    manifest
+                        .get("assets")
+                        .and_then(Value::as_array)
+                        .map(Vec::len)
+                        .unwrap_or(0),
+                    manifest
+                        .get("scenes")
+                        .and_then(Value::as_array)
+                        .map(Vec::len)
+                        .unwrap_or(0)
+                ),
+                "BUILD",
+            ),
+            Err(error) => game
+                .console
+                .log(format!("Manifest fallo: {error}"), "ERROR"),
+        }
+    }
+    y += 34.0;
     let roots = ui_canvases_from_value(&game.ui_canvases);
     let el_total: usize = roots.iter().map(|c| c.elements.len()).sum();
     draw_text(
@@ -2457,12 +4634,34 @@ fn draw_inspector_scene_ui_canvas(game: &mut Game, rect: RectSpec) {
                 }
                 UiCanvasElement::Button { label, .. } => {
                     draw_rectangle(px, py, ew, eh, Color::from_rgba(68, 126, 196, 255));
-                    draw_text(label, px + 8.0, py + eh * 0.62, 14.0, WHITE);
+                    draw_text_fit(
+                        label,
+                        RectSpec {
+                            x: px + 6.0,
+                            y: py + 3.0,
+                            w: (ew - 12.0).max(1.0),
+                            h: (eh - 6.0).max(1.0),
+                        },
+                        14,
+                        WHITE,
+                        TextAlign::Center,
+                    );
                 }
                 UiCanvasElement::Label {
                     text, font_size, ..
                 } => {
-                    draw_text(text, px, py + *font_size, *font_size, WHITE);
+                    draw_text_fit(
+                        text,
+                        RectSpec {
+                            x: px,
+                            y: py,
+                            w: ew.max(1.0),
+                            h: eh.max(*font_size + 2.0),
+                        },
+                        (*font_size).round().clamp(8.0, 64.0) as u16,
+                        WHITE,
+                        TextAlign::Left,
+                    );
                 }
                 UiCanvasElement::Image { .. } => {
                     draw_rectangle_lines(px, py, ew, eh, 1.0, Color::from_rgba(200, 200, 220, 200));
@@ -2516,12 +4715,91 @@ fn draw_inspector(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
         if let Some(path) = first_entity_script_path(&entity) {
             open_project_file_in_editor(game, state, path);
         } else if let Ok(path) =
-            game.create_rhai_script_asset(&format!("{}_Controller", entity.name))
+            game.create_luau_script_asset(&format!("{}_Controller", entity.name))
         {
             set_open_file_editor_state(state, &path);
         }
     }
     y += 34.0;
+    if button(rect.x + 14.0, y, 96.0, 23.0, "Reset Xform", false) {
+        let before = game.capture_editor_snapshot();
+        if let Some(entity) = game.get_entity_by_id_mut(id) {
+            InspectorEditor::reset_transform(entity);
+            game.sync_world();
+            game.mark_scene_dirty("Reset Transform");
+            game.push_editor_command(
+                "Reset Transform",
+                EditorCommandKind::SceneOperation {
+                    name: "Reset Transform".to_string(),
+                },
+                before,
+            );
+        }
+    }
+    if button(
+        rect.x + 118.0,
+        y,
+        72.0,
+        23.0,
+        if entity.visible { "Visible" } else { "Hidden" },
+        entity.visible,
+    ) {
+        edit_field(
+            game,
+            id,
+            &InspectorField {
+                target: "Identity".to_string(),
+                key: "visible".to_string(),
+                value: json!(entity.visible),
+                value_type: "bool".to_string(),
+                editable: true,
+            },
+            json!(!entity.visible),
+        );
+    }
+    if button(
+        rect.x + 198.0,
+        y,
+        66.0,
+        23.0,
+        if entity.locked { "Locked" } else { "Lock" },
+        entity.locked,
+    ) {
+        edit_field(
+            game,
+            id,
+            &InspectorField {
+                target: "Identity".to_string(),
+                key: "locked".to_string(),
+                value: json!(entity.locked),
+                value_type: "bool".to_string(),
+                editable: true,
+            },
+            json!(!entity.locked),
+        );
+    }
+    if button(
+        rect.x + 272.0,
+        y,
+        66.0,
+        23.0,
+        if entity.enabled { "Enabled" } else { "Off" },
+        entity.enabled,
+    ) {
+        edit_field(
+            game,
+            id,
+            &InspectorField {
+                target: "Identity".to_string(),
+                key: "enabled".to_string(),
+                value: json!(entity.enabled),
+                value_type: "bool".to_string(),
+                editable: true,
+            },
+            json!(!entity.enabled),
+        );
+    }
+    y += 35.0;
 
     draw_text("Transform", rect.x + 14.0, y, 18.0, ui_text());
     y += 22.0;
@@ -2674,7 +4952,7 @@ fn draw_inspector(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
 
     draw_text("Components", rect.x + 14.0, y, 18.0, ui_text());
     y += 24.0;
-    for component in entity.components.iter().take(10) {
+    for component in &entity.components {
         if y > rect.y + rect.h - 38.0 {
             break;
         }
@@ -2700,7 +4978,16 @@ fn draw_inspector(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
             game.console.log(error, "WARNING");
         }
         y += 27.0;
-        for (key, value) in component.data.iter().take(4) {
+        let enabled_field = InspectorField {
+            target: component.component_type.clone(),
+            key: "enabled".to_string(),
+            value: json!(component.enabled),
+            value_type: "bool".to_string(),
+            editable: true,
+        };
+        draw_inspector_field(game, state, id, &enabled_field, rect, y);
+        y += 27.0;
+        for (key, value) in &component.data {
             if y > rect.y + rect.h - 30.0 {
                 break;
             }
@@ -2987,8 +5274,11 @@ fn draw_scene(game: &Game, state: &EditorState, viewport: Viewport) {
     if state.show_grid {
         draw_grid(game, viewport);
     }
+    if state.show_camera_frame {
+        draw_scene_camera_frame(viewport);
+    }
 
-    for entity in &game.units {
+    for entity in &game.runtime_world.units {
         if !entity.enabled || !entity.visible {
             continue;
         }
@@ -2998,6 +5288,7 @@ fn draw_scene(game: &Game, state: &EditorState, viewport: Viewport) {
     draw_scene_gizmos(game, state, viewport);
     draw_paint_cursor(game, state, viewport);
     draw_drag_preview(state);
+    draw_scene_ui_canvases(game, Some(state), viewport);
     draw_ui_elements(game);
     draw_ui_selection_gizmos(game);
     draw_scene_hud(game, state, viewport);
@@ -3018,16 +5309,58 @@ fn draw_world_player(game: &Game, viewport: Viewport) {
         Color::from_rgba(11, 15, 23, 255),
     );
     draw_tiles(game, viewport);
-    for entity in &game.units {
+    for entity in &game.runtime_world.units {
         if !entity.enabled || !entity.visible {
             continue;
         }
         draw_entity(entity, viewport, false);
     }
+    draw_scene_ui_canvases(game, None, viewport);
     draw_ui_elements(game);
 }
 
 fn draw_scene_gizmos(game: &Game, state: &EditorState, viewport: Viewport) {
+    if state.show_collisions || state.toolbar.active_tool() == EditorTool::Collision {
+        for entity in game
+            .units
+            .iter()
+            .filter(|entity| entity.enabled && entity.visible)
+        {
+            let selected = game.selected_units.contains(&entity.id);
+            let path = EditorSpatialTools2D::collision_path(
+                entity,
+                VectorStyle2D {
+                    fill: selected.then_some([52, 211, 153, 28]),
+                    stroke: Some(if selected {
+                        [87, 244, 177, 255]
+                    } else {
+                        [52, 211, 153, 135]
+                    }),
+                    stroke_width: if selected { 0.065 } else { 0.035 },
+                    tolerance: 0.02,
+                    ..VectorStyle2D::default()
+                },
+            );
+            if let Ok(geometry) = path.tessellate() {
+                draw_vector_geometry_world(&geometry, viewport);
+            }
+            if selected && state.toolbar.active_tool() == EditorTool::Collision {
+                for point in EditorSpatialTools2D::collision_points(entity) {
+                    let world = entity_local_to_world(entity, point);
+                    let screen = world_to_screen(viewport, world.0 as f32, world.1 as f32);
+                    draw_circle(screen.0, screen.1, 5.0, Color::from_rgba(20, 28, 38, 255));
+                    draw_circle_lines(
+                        screen.0,
+                        screen.1,
+                        5.5,
+                        2.0,
+                        Color::from_rgba(111, 255, 196, 255),
+                    );
+                }
+            }
+        }
+    }
+
     for id in &game.selected_units {
         let Some(entity) = game.get_entity_by_id(*id) else {
             continue;
@@ -3037,40 +5370,49 @@ fn draw_scene_gizmos(game: &Game, state: &EditorState, viewport: Viewport) {
         let (max_x, max_y) = world_to_screen(viewport, bounds.max_x as f32, bounds.max_y as f32);
         let w = max_x - min_x;
         let h = max_y - min_y;
-        draw_rectangle_lines(min_x, min_y, w, h, 2.0, Color::from_rgba(94, 196, 255, 255));
+        let selection = VectorPath2D::rounded_rectangle(
+            VectorPoint2D::new(min_x, min_y),
+            VectorPoint2D::new(max_x, max_y),
+            4.0,
+            VectorStyle2D {
+                fill: Some([70, 160, 255, 18]),
+                stroke: Some([94, 196, 255, 255]),
+                stroke_width: 2.0,
+                tolerance: 0.1,
+                ..VectorStyle2D::default()
+            },
+        );
+        if let Ok(geometry) = selection.tessellate() {
+            draw_vector_geometry_screen(&geometry);
+        }
         let (cx, cy) = world_to_screen(viewport, entity.x as f32, entity.y as f32);
         if matches!(
-            state.tool,
-            EditorTool::Move | EditorTool::Rotate | EditorTool::Scale
+            state.toolbar.active_tool(),
+            EditorTool::Move | EditorTool::Rotate | EditorTool::Scale | EditorTool::Pivot
         ) {
-            draw_line(
-                cx,
-                cy,
-                cx + 46.0,
-                cy,
-                3.0,
-                Color::from_rgba(255, 105, 105, 255),
-            );
-            draw_line(
-                cx,
-                cy,
-                cx,
-                cy - 46.0,
-                3.0,
-                Color::from_rgba(120, 225, 145, 255),
-            );
+            for path in translation_gizmo(VectorPoint2D::new(cx, cy), 42.0) {
+                if let Ok(geometry) = path.tessellate() {
+                    draw_vector_geometry_screen(&geometry);
+                }
+            }
             draw_circle(cx, cy, 5.0, Color::from_rgba(245, 245, 255, 255));
         }
-        if state.tool == EditorTool::Rotate {
-            draw_circle_lines(
-                cx,
-                cy,
+        if state.toolbar.active_tool() == EditorTool::Rotate {
+            let ring = VectorPath2D::circle(
+                VectorPoint2D::new(cx, cy),
                 w.max(h).max(28.0) * 0.65,
-                2.0,
-                Color::from_rgba(255, 212, 120, 255),
+                VectorStyle2D {
+                    fill: None,
+                    stroke: Some([255, 212, 120, 255]),
+                    stroke_width: 2.0,
+                    ..VectorStyle2D::default()
+                },
             );
+            if let Ok(geometry) = ring.tessellate() {
+                draw_vector_geometry_screen(&geometry);
+            }
         }
-        if state.tool == EditorTool::Scale {
+        if state.toolbar.active_tool() == EditorTool::Scale {
             draw_rectangle(
                 max_x - 6.0,
                 max_y - 6.0,
@@ -3079,7 +5421,132 @@ fn draw_scene_gizmos(game: &Game, state: &EditorState, viewport: Viewport) {
                 Color::from_rgba(185, 145, 255, 255),
             );
         }
+        if state.toolbar.active_tool() == EditorTool::Pivot {
+            let pivot = EditorSpatialTools2D::pivot(entity);
+            let local = (
+                (pivot.0 - 0.5) * entity.width,
+                (pivot.1 - 0.5) * entity.height,
+            );
+            let world = entity_local_to_world(entity, local);
+            let (px, py) = world_to_screen(viewport, world.0 as f32, world.1 as f32);
+            draw_line(px - 9.0, py, px + 9.0, py, 2.0, WHITE);
+            draw_line(px, py - 9.0, px, py + 9.0, 2.0, WHITE);
+            draw_circle_lines(px, py, 6.0, 2.0, Color::from_rgba(255, 210, 96, 255));
+        }
     }
+
+    for guide in &state.snap_guides {
+        match guide.axis {
+            crate::engine::editor_spatial_tools_2d::SnapAxis2D::X => {
+                let x = world_to_screen(viewport, guide.value as f32, 0.0).0;
+                draw_line(
+                    x,
+                    viewport.rect.y,
+                    x,
+                    viewport.rect.y + viewport.rect.h,
+                    1.5,
+                    Color::from_rgba(255, 204, 92, 210),
+                );
+            }
+            crate::engine::editor_spatial_tools_2d::SnapAxis2D::Y => {
+                let y = world_to_screen(viewport, 0.0, guide.value as f32).1;
+                draw_line(
+                    viewport.rect.x,
+                    y,
+                    viewport.rect.x + viewport.rect.w,
+                    y,
+                    1.5,
+                    Color::from_rgba(255, 204, 92, 210),
+                );
+            }
+        }
+    }
+}
+
+fn draw_scene_camera_frame(viewport: Viewport) {
+    let camera = CameraFrame2D::default();
+    let frame = camera.fit_inside((
+        viewport.rect.x + 18.0,
+        viewport.rect.y + 18.0,
+        viewport.rect.w - 36.0,
+        viewport.rect.h - 36.0,
+    ));
+    let safe = camera.safe_rect(frame);
+    for (rect, color, width) in [
+        (frame, [255, 255, 255, 175], 1.5),
+        (safe, [255, 204, 92, 125], 1.0),
+    ] {
+        let path = VectorPath2D::rounded_rectangle(
+            VectorPoint2D::new(rect.0, rect.1),
+            VectorPoint2D::new(rect.0 + rect.2, rect.1 + rect.3),
+            5.0,
+            VectorStyle2D {
+                fill: None,
+                stroke: Some(color),
+                stroke_width: width,
+                ..VectorStyle2D::default()
+            },
+        );
+        if let Ok(geometry) = path.tessellate() {
+            draw_vector_geometry_screen(&geometry);
+        }
+    }
+    draw_text(
+        "CAMERA 16:9",
+        frame.0 + 8.0,
+        frame.1 + 18.0,
+        13.0,
+        Color::from_rgba(235, 240, 250, 190),
+    );
+}
+
+fn draw_vector_geometry_screen(geometry: &VectorGeometry2D) {
+    if let Some(fill) = &geometry.fill {
+        draw_vector_mesh(fill, |point| point);
+    }
+    if let Some(stroke) = &geometry.stroke {
+        draw_vector_mesh(stroke, |point| point);
+    }
+}
+
+fn draw_vector_geometry_world(geometry: &VectorGeometry2D, viewport: Viewport) {
+    if let Some(fill) = &geometry.fill {
+        draw_vector_mesh(fill, |point| {
+            let screen = world_to_screen(viewport, point[0], point[1]);
+            [screen.0, screen.1]
+        });
+    }
+    if let Some(stroke) = &geometry.stroke {
+        draw_vector_mesh(stroke, |point| {
+            let screen = world_to_screen(viewport, point[0], point[1]);
+            [screen.0, screen.1]
+        });
+    }
+}
+
+fn draw_vector_mesh(mesh: &VectorMesh2D, transform: impl Fn([f32; 2]) -> [f32; 2]) {
+    let color = Color::from_rgba(mesh.color[0], mesh.color[1], mesh.color[2], mesh.color[3]);
+    for triangle in mesh.indices.chunks_exact(3) {
+        let a = transform(mesh.vertices[triangle[0] as usize]);
+        let b = transform(mesh.vertices[triangle[1] as usize]);
+        let c = transform(mesh.vertices[triangle[2] as usize]);
+        draw_triangle(
+            Vec2::new(a[0], a[1]),
+            Vec2::new(b[0], b[1]),
+            Vec2::new(c[0], c[1]),
+            color,
+        );
+    }
+}
+
+fn entity_local_to_world(entity: &GameObject, local: (f64, f64)) -> (f64, f64) {
+    let x = local.0 * entity.scale_x;
+    let y = local.1 * entity.scale_y;
+    let radians = entity.rotation.to_radians();
+    (
+        entity.x + x * radians.cos() - y * radians.sin(),
+        entity.y + x * radians.sin() + y * radians.cos(),
+    )
 }
 
 fn draw_drag_preview(state: &EditorState) {
@@ -3103,7 +5570,7 @@ fn draw_drag_preview(state: &EditorState) {
         Color::from_rgba(130, 170, 220, 255),
     );
     draw_text(
-        &ellipsize(&format!("Drop {}", payload.name), 24),
+        &ellipsize(&payload.drop_hint(), 28),
         mx + 24.0,
         my + 38.0,
         16.0,
@@ -3266,7 +5733,7 @@ fn draw_component_badges(entity: &GameObject, x: f32, y: f32) {
 }
 
 fn draw_paint_cursor(game: &Game, state: &EditorState, viewport: Viewport) {
-    if state.tool != EditorTool::Paint {
+    if state.toolbar.active_tool() != EditorTool::Paint {
         return;
     }
     let (mx, my) = mouse_position();
@@ -3284,11 +5751,14 @@ fn draw_paint_cursor(game: &Game, state: &EditorState, viewport: Viewport) {
         TileBrushMode::Eraser => Color::from_rgba(255, 130, 130, 255),
         TileBrushMode::Fill => Color::from_rgba(120, 210, 255, 255),
         TileBrushMode::Rectangle => Color::from_rgba(185, 145, 255, 255),
+        TileBrushMode::Line => Color::from_rgba(255, 205, 90, 255),
         TileBrushMode::Collision => Color::from_rgba(255, 170, 90, 255),
     };
     draw_rectangle_lines(sx, sy, tile * size, tile * size, 2.0, color);
-    if state.tile_brush_mode == TileBrushMode::Rectangle
-        && let Some(start) = state.paint_start
+    if matches!(
+        state.tile_brush_mode,
+        TileBrushMode::Rectangle | TileBrushMode::Line
+    ) && let Some(start) = state.paint_start
         && let Some(end) = world_to_cell(game, world)
     {
         let min_x = start.0.min(end.0) as f32;
@@ -3297,12 +5767,181 @@ fn draw_paint_cursor(game: &Game, state: &EditorState, viewport: Viewport) {
         let max_y = start.1.max(end.1) as f32 + 1.0;
         let (rx, ry) = world_to_screen(viewport, min_x, min_y);
         let (rw, rh) = world_to_screen(viewport, max_x, max_y);
-        draw_rectangle_lines(rx, ry, rw - rx, rh - ry, 2.0, color);
+        if state.tile_brush_mode == TileBrushMode::Line {
+            let (start_x, start_y) =
+                world_to_screen(viewport, start.0 as f32 + 0.5, start.1 as f32 + 0.5);
+            let (end_x, end_y) = world_to_screen(viewport, end.0 as f32 + 0.5, end.1 as f32 + 0.5);
+            draw_line(start_x, start_y, end_x, end_y, 3.0, color);
+        } else {
+            draw_rectangle_lines(rx, ry, rw - rx, rh - ry, 2.0, color);
+        }
+    }
+}
+
+fn draw_scene_ui_canvases(game: &Game, state: Option<&EditorState>, viewport: Viewport) {
+    let roots = ui_canvases_from_value(&game.ui_canvases);
+    if roots.is_empty() {
+        return;
+    }
+    for root in &roots {
+        for element in &root.elements {
+            let (x, y, w, h) =
+                layout_element_pixels(root, element.rect(), viewport.rect.w, viewport.rect.h);
+            draw_ui_canvas_element(
+                element,
+                viewport.rect.x + x,
+                viewport.rect.y + y,
+                w,
+                h,
+                0.88,
+            );
+        }
+    }
+
+    let Some(state) = state else {
+        return;
+    };
+    let Some(canvas_id) = state.selected_ui_canvas_id.as_deref() else {
+        return;
+    };
+    let Some(element_id) = state.selected_ui_element_id.as_deref() else {
+        return;
+    };
+    let Some(root) = roots.iter().find(|root| root.id == canvas_id) else {
+        return;
+    };
+    let Some(gizmo) = root.gizmo_for_element(element_id, viewport.rect.w, viewport.rect.h) else {
+        return;
+    };
+
+    let gx = viewport.rect.x + gizmo.x;
+    let gy = viewport.rect.y + gizmo.y;
+    draw_rectangle_lines(
+        gx - 2.0,
+        gy - 2.0,
+        gizmo.width + 4.0,
+        gizmo.height + 4.0,
+        2.0,
+        Color::from_rgba(255, 214, 92, 255),
+    );
+    for handle in gizmo.handles {
+        let hx = viewport.rect.x + handle.x;
+        let hy = viewport.rect.y + handle.y;
+        draw_rectangle(
+            hx,
+            hy,
+            handle.width,
+            handle.height,
+            Color::from_rgba(18, 22, 30, 245),
+        );
+        draw_rectangle_lines(
+            hx,
+            hy,
+            handle.width,
+            handle.height,
+            1.5,
+            Color::from_rgba(255, 214, 92, 255),
+        );
+    }
+    draw_rectangle(
+        gx,
+        (gy - 22.0).max(viewport.rect.y + 4.0),
+        172.0,
+        18.0,
+        Color::from_rgba(18, 22, 30, 225),
+    );
+    draw_text(
+        &ellipsize(&format!("{} / {}", root.name, gizmo.element_id), 22),
+        gx + 6.0,
+        (gy - 8.0).max(viewport.rect.y + 18.0),
+        12.0,
+        Color::from_rgba(245, 248, 255, 255),
+    );
+}
+
+fn draw_ui_canvas_element(element: &UiCanvasElement, x: f32, y: f32, w: f32, h: f32, alpha: f32) {
+    let a = (255.0 * alpha.clamp(0.0, 1.0)) as u8;
+    match element {
+        UiCanvasElement::Panel { color, .. } => {
+            draw_rectangle(
+                x,
+                y,
+                w,
+                h,
+                Color::from_rgba(
+                    color[0],
+                    color[1],
+                    color[2],
+                    ((color[3] as f32) * alpha) as u8,
+                ),
+            );
+            draw_rectangle_lines(x, y, w, h, 1.0, Color::from_rgba(120, 138, 168, a));
+        }
+        UiCanvasElement::Button { label, .. } => {
+            draw_rectangle(
+                x,
+                y,
+                w,
+                h,
+                Color::from_rgba(58, 116, 188, (230.0 * alpha) as u8),
+            );
+            draw_rectangle_lines(x, y, w, h, 1.0, Color::from_rgba(190, 220, 255, a));
+            draw_text_fit(
+                label,
+                RectSpec {
+                    x: x + 8.0,
+                    y: y + 4.0,
+                    w: (w - 16.0).max(1.0),
+                    h: (h - 8.0).max(1.0),
+                },
+                14,
+                Color::from_rgba(245, 248, 255, a),
+                TextAlign::Center,
+            );
+        }
+        UiCanvasElement::Label {
+            text, font_size, ..
+        } => {
+            draw_text_fit(
+                text,
+                RectSpec {
+                    x,
+                    y,
+                    w: w.max(1.0),
+                    h: h.max(*font_size + 2.0),
+                },
+                (*font_size).round().clamp(8.0, 64.0) as u16,
+                Color::from_rgba(245, 248, 255, a),
+                TextAlign::Left,
+            );
+        }
+        UiCanvasElement::Image { sprite_path, .. } => {
+            draw_rectangle(
+                x,
+                y,
+                w,
+                h,
+                Color::from_rgba(36, 42, 56, (160.0 * alpha) as u8),
+            );
+            draw_rectangle_lines(x, y, w, h, 1.0, Color::from_rgba(190, 205, 230, a));
+            draw_text_fit(
+                sprite_path,
+                RectSpec {
+                    x: x + 6.0,
+                    y: y + 4.0,
+                    w: (w - 12.0).max(1.0),
+                    h: (h - 8.0).max(1.0),
+                },
+                12,
+                Color::from_rgba(205, 216, 235, a),
+                TextAlign::Center,
+            );
+        }
     }
 }
 
 fn draw_ui_elements(game: &Game) {
-    for entity in &game.units {
+    for entity in &game.runtime_world.units {
         let Some(ui) = entity.get_component("UIElement") else {
             continue;
         };
@@ -3319,12 +5958,21 @@ fn draw_ui_elements(game: &Game) {
         };
         draw_rectangle(x, y, w, h, base);
         draw_rectangle_lines(x, y, w, h, 1.0, Color::from_rgba(40, 44, 54, 255));
-        draw_text(
-            &ellipsize(&text, 24),
-            x + 8.0,
-            y + h * 0.65,
-            18.0,
+        draw_text_fit(
+            &text,
+            RectSpec {
+                x: x + 8.0,
+                y: y + 4.0,
+                w: (w - 16.0).max(1.0),
+                h: (h - 8.0).max(1.0),
+            },
+            18,
             Color::from_rgba(25, 28, 35, 255),
+            if kind == "Button" {
+                TextAlign::Center
+            } else {
+                TextAlign::Left
+            },
         );
     }
 }
@@ -3361,18 +6009,18 @@ fn draw_scene_hud(game: &Game, state: &EditorState, viewport: Viewport) {
         String::new()
     };
     let text = format!(
-        "{} | Tool {} | Brush {} {} | Tile {} | Layer {} | Snap {} | Scene {}{}",
+        "{} | {} selected | Tool {} | Layer {} | Grid {} | Smart {} | Zoom {:.0}% | Scene {}{}",
         game.editor_workspace.active_mode.label(),
-        state.tool.label(),
-        game.brush_size,
-        state.tile_brush_mode.label(),
-        state.tile_brush,
+        game.selected_units.len(),
+        state.toolbar.active_tool().label(),
         layer,
         if state.snap_to_grid { "on" } else { "off" },
+        if state.smart_snap { "on" } else { "off" },
+        game.camera.zoom * 100.0,
         if game.scene_dirty { "dirty" } else { "clean" },
         play_bit
     );
-    let w = measure_text(&text, None, 16, 1.0).width + 22.0;
+    let w = (measure_text(&text, None, 16, 1.0).width + 22.0).min(viewport.rect.w - 24.0);
     draw_rectangle(
         viewport.rect.x + 12.0,
         viewport.rect.y + 12.0,
@@ -3381,11 +6029,18 @@ fn draw_scene_hud(game: &Game, state: &EditorState, viewport: Viewport) {
         Color::from_rgba(14, 17, 22, 205),
     );
     draw_text(
-        &text,
+        &ellipsize(&text, 110),
         viewport.rect.x + 23.0,
         viewport.rect.y + 32.0,
         16.0,
         Color::from_rgba(226, 232, 244, 255),
+    );
+    draw_text(
+        "Shift/Cmd click multi-select | F frame | Space/MMB pan | Cmd+wheel smooth zoom | 1-7 tools",
+        viewport.rect.x + 14.0,
+        viewport.rect.y + viewport.rect.h - 14.0,
+        12.0,
+        Color::from_rgba(164, 178, 202, 210),
     );
 }
 
@@ -3527,16 +6182,13 @@ fn draw_assets_panel(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
         ),
     );
     if button(rect.x + 14.0, rect.y + 31.0, 74.0, 22.0, "+ Add", false) {
-        if let Ok(path) = game.create_rhai_script_asset("NewGameplayScript") {
+        if let Ok(path) = game.create_luau_script_asset("NewGameplayScript") {
             set_open_file_editor_state(state, &path);
         }
         state.bottom_tab = BottomTab::Programming;
     }
-    if button(rect.x + 96.0, rect.y + 31.0, 78.0, 22.0, "Import", false) {
-        game.console.log(
-            "Import: usa create/import asset desde Browser o arrastra archivos al proyecto.",
-            "ASSETS",
-        );
+    if button(rect.x + 96.0, rect.y + 31.0, 78.0, 22.0, "Import 2D", false) {
+        import_2d_asset_dialog(game, state);
     }
     if button(rect.x + 182.0, rect.y + 31.0, 72.0, 22.0, "Save All", false) {
         save_project(game);
@@ -3668,7 +6320,6 @@ fn draw_assets_panel(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
     }
 
     let source_prefix = source_prefix(&state.content_source);
-    let search_lower = state.content_search.to_ascii_lowercase();
     let mut assets = game
         .asset_database
         .assets
@@ -3680,25 +6331,32 @@ fn draw_assets_panel(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
                 .as_deref()
                 .is_none_or(|filter| asset.asset_type == filter)
         })
-        .filter(|asset| {
-            search_lower.is_empty()
-                || asset.name.to_ascii_lowercase().contains(&search_lower)
-                || asset
-                    .relative_path
-                    .to_ascii_lowercase()
-                    .contains(&search_lower)
-                || asset
-                    .asset_type
-                    .to_ascii_lowercase()
-                    .contains(&search_lower)
-        })
         .cloned()
         .collect::<Vec<_>>();
-    assets.sort_by(|a, b| {
-        a.asset_type
-            .cmp(&b.asset_type)
-            .then_with(|| a.relative_path.cmp(&b.relative_path))
-    });
+    if state.content_search.trim().is_empty() {
+        assets.sort_by(|a, b| {
+            a.asset_type
+                .cmp(&b.asset_type)
+                .then_with(|| a.relative_path.cmp(&b.relative_path))
+        });
+    } else {
+        let searchable = assets
+            .iter()
+            .map(|asset| {
+                format!(
+                    "{} {} {} {}",
+                    asset.name,
+                    asset.relative_path,
+                    asset.asset_type,
+                    asset.labels.join(" ")
+                )
+            })
+            .collect::<Vec<_>>();
+        assets = fuzzy_rank(&state.content_search, &searchable, searchable.len())
+            .into_iter()
+            .map(|result| assets[result.index].clone())
+            .collect();
+    }
 
     let asset_view = RectSpec {
         x: browser_panel.x + 10.0,
@@ -3726,6 +6384,243 @@ fn draw_assets_panel(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
         );
     }
     draw_asset_preview(game, state, preview_panel);
+}
+
+#[derive(Debug, Clone)]
+struct Imported2DAsset {
+    image_path: PathBuf,
+    sprite_manifest: PathBuf,
+    sheet_manifest: Option<PathBuf>,
+    frames_manifest: Option<PathBuf>,
+    frame_count: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpriteGridGuess {
+    cell_width: u32,
+    cell_height: u32,
+    columns: u32,
+    rows: u32,
+}
+
+fn import_2d_asset_dialog(game: &mut Game, state: &mut EditorState) {
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("Importar asset 2D")
+        .add_filter(
+            "Assets 2D",
+            &["png", "jpg", "jpeg", "webp", "aseprite", "spriteframes"],
+        )
+        .add_filter("Imagenes", &["png", "jpg", "jpeg", "webp"])
+        .pick_file()
+    else {
+        game.console.log("Import 2D cancelado", "ASSETS");
+        return;
+    };
+
+    match import_2d_asset(game, &path) {
+        Ok(imported) => {
+            let sprite_path = relative_project_path(game, &imported.sprite_manifest);
+            state.selected_asset_path = Some(sprite_path.clone());
+            state.content_source = "Sprites".to_string();
+            state.content_type_filter = Some("Sprite".to_string());
+            state.content_scroll = 0.0;
+            state.bottom_tab = BottomTab::Assets;
+            refresh_assets(game);
+            let mut details = format!(
+                "Import 2D listo: {} -> {}",
+                imported
+                    .image_path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("asset"),
+                sprite_path
+            );
+            if let Some(sheet) = imported.sheet_manifest.as_ref() {
+                details.push_str(&format!(" | sheet {}", relative_project_path(game, sheet)));
+            }
+            if let Some(frames) = imported.frames_manifest.as_ref() {
+                details.push_str(&format!(
+                    " | anim {} frames {}",
+                    imported.frame_count,
+                    relative_project_path(game, frames)
+                ));
+            }
+            game.console.log(details, "ASSETS");
+        }
+        Err(error) => game
+            .console
+            .log(format!("Import 2D fallo: {error}"), "ERROR"),
+    }
+}
+
+fn import_2d_asset(game: &mut Game, source_path: &Path) -> io::Result<Imported2DAsset> {
+    let extension = source_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let supported = matches!(
+        extension.as_str(),
+        "png" | "jpg" | "jpeg" | "webp" | "aseprite"
+    );
+    if !supported {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selecciona PNG, JPG, WEBP o ASEPRITE para importar sprites 2D",
+        ));
+    }
+
+    let target_folder = AssetTools::create_special_folder(&game.project_path, "sprites")?;
+    let image_path = AssetTools::safe_copy_to_folder(source_path, target_folder)?;
+    let sprite_name = image_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("Sprite")
+        .to_string();
+    let source_ref = relative_project_path(game, &image_path);
+    let sprite_manifest = game.create_sprite_import_asset(&sprite_name, &source_ref)?;
+
+    let mut sheet_manifest = None;
+    let mut frames_manifest = None;
+    let mut frame_count = 1usize;
+
+    if SpriteSheetImporter::supports_image(&image_path)
+        && let Ok(grid) = infer_sprite_grid(&image_path)
+    {
+        let sheet = SpriteSheetImporter::build_metadata(
+            &image_path,
+            grid.cell_width,
+            grid.cell_height,
+            0,
+            0,
+        )?;
+        frame_count = sheet.slices.len().max(1);
+        let sheet_path = SpriteSheetImporter::write_sidecar(&image_path, &sheet)?;
+        sheet_manifest = Some(sheet_path.clone());
+
+        if frame_count > 1 {
+            let animation_folder = game.project_path.join("assets").join("animations");
+            fs::create_dir_all(&animation_folder)?;
+            let animation_path =
+                AssetTools::unique_path(&animation_folder, &format!("{sprite_name}.spriteframes"));
+            let frames = SpriteFrames2D::grid_slice(
+                sprite_name.clone(),
+                source_ref.clone(),
+                grid.columns,
+                grid.rows,
+                grid.cell_width,
+                grid.cell_height,
+                8.0,
+            );
+            let frames_value = serde_json::to_value(frames).map_err(io::Error::other)?;
+            AssetTools::write_json(&animation_path, &frames_value)?;
+            frames_manifest = Some(animation_path.clone());
+            patch_sprite_import_links(
+                game,
+                &sprite_manifest,
+                Some(&sheet_path),
+                Some(&animation_path),
+                frame_count,
+            )?;
+        } else {
+            patch_sprite_import_links(
+                game,
+                &sprite_manifest,
+                Some(&sheet_path),
+                None,
+                frame_count,
+            )?;
+        }
+    }
+
+    Ok(Imported2DAsset {
+        image_path,
+        sprite_manifest,
+        sheet_manifest,
+        frames_manifest,
+        frame_count,
+    })
+}
+
+fn patch_sprite_import_links(
+    game: &Game,
+    sprite_manifest: &Path,
+    sheet_manifest: Option<&Path>,
+    frames_manifest: Option<&Path>,
+    frame_count: usize,
+) -> io::Result<()> {
+    let mut sprite = AssetTools::read_json(sprite_manifest)?;
+    if let Some(sheet) = sheet_manifest {
+        sprite["atlas"] = json!(relative_project_path(game, sheet));
+    }
+    if let Some(frames) = frames_manifest {
+        sprite["animations"] = json!([{
+            "name": "default",
+            "asset": relative_project_path(game, frames),
+            "fps": 8.0,
+            "frames": frame_count
+        }]);
+    }
+    AssetTools::write_json(sprite_manifest, &sprite)
+}
+
+fn infer_sprite_grid(path: &Path) -> io::Result<SpriteGridGuess> {
+    let reader = image::ImageReader::open(path)
+        .map_err(io::Error::other)?
+        .with_guessed_format()
+        .map_err(io::Error::other)?;
+    let (width, height) = reader.into_dimensions().map_err(io::Error::other)?;
+    if width == 0 || height == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "la imagen no tiene dimensiones validas",
+        ));
+    }
+
+    let horizontal_frames = width / height.max(1);
+    if width % height == 0 && (2..=64).contains(&horizontal_frames) {
+        return Ok(SpriteGridGuess {
+            cell_width: height,
+            cell_height: height,
+            columns: horizontal_frames,
+            rows: 1,
+        });
+    }
+
+    let vertical_frames = height / width.max(1);
+    if height % width == 0 && (2..=64).contains(&vertical_frames) {
+        return Ok(SpriteGridGuess {
+            cell_width: width,
+            cell_height: width,
+            columns: 1,
+            rows: vertical_frames,
+        });
+    }
+
+    for cell in [64, 32, 16, 8] {
+        if width % cell == 0 && height % cell == 0 && (width / cell) * (height / cell) > 1 {
+            return Ok(SpriteGridGuess {
+                cell_width: cell,
+                cell_height: cell,
+                columns: width / cell,
+                rows: height / cell,
+            });
+        }
+    }
+
+    Ok(SpriteGridGuess {
+        cell_width: width,
+        cell_height: height,
+        columns: 1,
+        rows: 1,
+    })
+}
+
+fn relative_project_path(game: &Game, path: &Path) -> String {
+    path.strip_prefix(&game.project_path)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 fn draw_panel_chrome(rect: RectSpec, title: &str, subtitle: &str) {
@@ -3777,14 +6672,39 @@ fn draw_sources_panel(game: &Game, state: &mut EditorState, rect: RectSpec) {
                 Color::from_rgba(18, 24, 35, 255)
             },
         );
-        draw_text(source_icon(icon), row.x + 8.0, y, 14.0, ui_accent_2());
-        draw_text(label, row.x + 30.0, y, 14.0, ui_text());
-        draw_text(
+        draw_source_icon(
+            icon,
+            RectSpec {
+                x: row.x + 7.0,
+                y: row.y + 4.0,
+                w: 18.0,
+                h: 16.0,
+            },
+            selected,
+        );
+        draw_text_fit(
+            label,
+            RectSpec {
+                x: row.x + 32.0,
+                y: row.y + 2.0,
+                w: (row.w - 66.0).max(24.0),
+                h: row.h - 4.0,
+            },
+            14,
+            ui_text(),
+            TextAlign::Left,
+        );
+        draw_text_fit(
             &count.to_string(),
-            row.x + row.w - 28.0,
-            y,
-            12.0,
+            RectSpec {
+                x: row.x + row.w - 30.0,
+                y: row.y + 3.0,
+                w: 22.0,
+                h: row.h - 6.0,
+            },
+            12,
             ui_text_muted(),
+            TextAlign::Right,
         );
         if hovered && is_mouse_button_pressed(MouseButton::Left) {
             state.content_source = label.to_string();
@@ -3884,6 +6804,23 @@ fn draw_graph_template_search_box(state: &mut EditorState, rect: RectSpec) {
     if contains_mouse(rect) && is_mouse_button_pressed(MouseButton::Left) {
         state.graph_template_search_active = true;
         state.graph_node_search_active = false;
+        state.code_editor_active = false;
+    }
+}
+
+fn draw_script_search_box(state: &mut EditorState, rect: RectSpec) {
+    draw_inline_search_box(
+        rect,
+        "Find",
+        "function, error, text",
+        &state.script_search,
+        state.script_search_active,
+    );
+    if contains_mouse(rect) && is_mouse_button_pressed(MouseButton::Left) {
+        state.script_search_active = true;
+        state.graph_node_search_active = false;
+        state.graph_template_search_active = false;
+        state.content_search_active = false;
         state.code_editor_active = false;
     }
 }
@@ -4001,21 +6938,15 @@ fn draw_asset_grid(
                 Color::from_rgba(54, 64, 80, 255)
             },
         );
-        let color = asset_type_color(&asset.asset_type);
-        draw_rectangle(card.x + 12.0, card.y + 10.0, card.w - 24.0, 48.0, color);
-        draw_rectangle(
-            card.x + 16.0,
-            card.y + 14.0,
-            card.w - 32.0,
-            40.0,
-            Color::from_rgba(12, 15, 20, 75),
-        );
-        draw_text(
-            asset_icon(&asset.asset_type),
-            card.x + 47.0,
-            card.y + 43.0,
-            22.0,
-            Color::from_rgba(240, 246, 255, 255),
+        draw_asset_thumbnail(
+            &asset.asset_type,
+            RectSpec {
+                x: card.x + 12.0,
+                y: card.y + 10.0,
+                w: card.w - 24.0,
+                h: 48.0,
+            },
+            !asset.compatibility.is_empty(),
         );
         if !asset.compatibility.is_empty() {
             draw_text(
@@ -4026,19 +6957,29 @@ fn draw_asset_grid(
                 Color::from_rgba(255, 206, 130, 255),
             );
         }
-        draw_text(
-            &ellipsize(&asset.name, 15),
-            card.x + 10.0,
-            card.y + 76.0,
-            13.0,
+        draw_text_fit(
+            &asset.name,
+            RectSpec {
+                x: card.x + 10.0,
+                y: card.y + 62.0,
+                w: card.w - 20.0,
+                h: 22.0,
+            },
+            13,
             Color::from_rgba(232, 238, 248, 255),
+            TextAlign::Center,
         );
-        draw_text(
-            &ellipsize(&asset.asset_type, 14),
-            card.x + 10.0,
-            card.y + 94.0,
-            11.0,
+        draw_text_fit(
+            &asset.asset_type,
+            RectSpec {
+                x: card.x + 10.0,
+                y: card.y + 82.0,
+                w: card.w - 20.0,
+                h: 18.0,
+            },
+            11,
             Color::from_rgba(145, 162, 190, 255),
+            TextAlign::Center,
         );
         if hovered && is_mouse_button_pressed(MouseButton::Left) {
             activate_asset_from_browser(game, state, asset);
@@ -4093,10 +7034,10 @@ fn activate_asset_from_browser(game: &mut Game, state: &mut EditorState, asset: 
                 "ASSETS",
             );
         }
-        "RhaiScript" | "VisualGraph" | "Data" | "Material" | "Shader" | "AudioEvent" => {
+        "LuauScript" | "VisualGraph" | "Data" | "Material" | "Shader" | "AudioEvent" => {
             open_project_file_in_editor(game, state, asset.relative_path.clone());
         }
-        _ if asset.relative_path.ends_with(".rhai")
+        _ if asset.relative_path.ends_with(".luau")
             || asset.relative_path.ends_with(".mfgraph")
             || asset.relative_path.ends_with(".json")
             || asset.relative_path.ends_with(".prefab")
@@ -4144,6 +7085,11 @@ fn open_project_file_in_editor(
             set_open_file_editor_state(state, &opened);
             state.show_console = true;
             state.bottom_tab = BottomTab::Programming;
+            if state.editor_preferences.open_external_on_script
+                && opened.extension().and_then(|value| value.to_str()) != Some("mfgraph")
+            {
+                open_file_in_external_editor(game, state, &opened);
+            }
             true
         }
         Err(error) => {
@@ -4180,44 +7126,238 @@ fn source_prefix(source: &str) -> &'static str {
     }
 }
 
-fn source_icon(kind: &str) -> &'static str {
+fn draw_source_icon(kind: &str, rect: RectSpec, active: bool) {
+    let color = if active { ui_accent_2() } else { ui_accent() };
     match kind {
-        "assets" => "A",
-        "image" => "I",
-        "sound" => "S",
-        "prefab" => "P",
-        "code" => "{ }",
-        "graph" => "G",
-        "scene" => "L",
-        "gear" => "*",
-        _ => "C",
+        "assets" | "project" => {
+            draw_rectangle(rect.x, rect.y + 4.0, rect.w, rect.h - 4.0, color);
+            draw_rectangle(rect.x + 2.0, rect.y, rect.w * 0.48, 6.0, color);
+            draw_rectangle_lines(rect.x, rect.y + 4.0, rect.w, rect.h - 4.0, 1.0, ui_line());
+        }
+        "image" => {
+            draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, color);
+            draw_rectangle(rect.x + 3.0, rect.y + 9.0, rect.w - 6.0, 4.0, color);
+            draw_circle(rect.x + rect.w - 5.0, rect.y + 5.0, 2.0, color);
+        }
+        "sound" => {
+            for index in 0..4 {
+                let h = 5.0 + index as f32 * 3.0;
+                draw_rectangle(
+                    rect.x + index as f32 * 4.0 + 1.0,
+                    rect.y + rect.h - h,
+                    2.5,
+                    h,
+                    color,
+                );
+            }
+        }
+        "graph" => {
+            draw_circle(rect.x + 4.0, rect.y + 5.0, 3.0, color);
+            draw_circle(rect.x + rect.w - 4.0, rect.y + rect.h - 5.0, 3.0, color);
+            draw_line(
+                rect.x + 6.0,
+                rect.y + 6.0,
+                rect.x + rect.w - 6.0,
+                rect.y + rect.h - 6.0,
+                2.0,
+                color,
+            );
+        }
+        "scene" => {
+            draw_rectangle_lines(
+                rect.x + 2.0,
+                rect.y + 1.0,
+                rect.w - 4.0,
+                rect.h - 2.0,
+                1.0,
+                color,
+            );
+            draw_line(
+                rect.x + 5.0,
+                rect.y + rect.h - 4.0,
+                rect.x + rect.w - 5.0,
+                rect.y + 4.0,
+                1.0,
+                color,
+            );
+        }
+        "gear" => {
+            draw_circle_lines(
+                rect.x + rect.w * 0.5,
+                rect.y + rect.h * 0.5,
+                6.0,
+                2.0,
+                color,
+            );
+            draw_circle(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5, 2.0, color);
+        }
+        "code" => {
+            draw_text("{}", rect.x + 1.0, rect.y + 13.0, 13.0, color);
+        }
+        "prefab" => {
+            draw_rectangle_lines(rect.x + 2.0, rect.y + 2.0, 10.0, 10.0, 1.0, color);
+            draw_rectangle_lines(rect.x + 7.0, rect.y + 6.0, 10.0, 10.0, 1.0, color);
+        }
+        _ => draw_circle(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5, 5.0, color),
     }
 }
 
 fn asset_icon(asset_type: &str) -> &'static str {
     match asset_type {
-        "Sprite" => "IMG",
-        "Audio" | "AudioEvent" => "AUD",
+        "Sprite" | "Sprite2D" => "SPR",
+        "SpriteSheet" => "SHT",
+        "SpriteFrames2D" | "FlipbookAnimation2D" => "ANI",
+        "Audio" | "AudioEvent" | "Audio2D" => "AUD",
         "Prefab" | "UI" => "PFB",
-        "VisualGraph" => "NOD",
-        "RhaiScript" => "RHA",
-        "Scene" => "LVL",
-        "Material" => "MAT",
+        "VisualGraph" | "BlueprintGraph2D" | "AnimationBlueprint2D" => "NOD",
+        "LuauScript" => "LUA",
+        "Scene" | "Scene2D" => "LVL",
+        "Material" | "Material2D" => "MAT",
         "Shader" => "SHD",
+        "Tilemap" | "Tilemap2D" | "Tileset2D" => "TIL",
+        "ParticlePreset" | "Particles2D" => "FX",
+        "Font" => "FNT",
         _ => "DAT",
     }
 }
 
 fn asset_type_color(asset_type: &str) -> Color {
     match asset_type {
-        "Sprite" => Color::from_rgba(52, 128, 176, 255),
-        "Audio" | "AudioEvent" => Color::from_rgba(184, 114, 58, 255),
+        "Sprite" | "Sprite2D" | "SpriteSheet" | "SpriteFrames2D" => {
+            Color::from_rgba(52, 128, 176, 255)
+        }
+        "Audio" | "AudioEvent" | "Audio2D" => Color::from_rgba(184, 114, 58, 255),
         "Prefab" | "UI" => Color::from_rgba(122, 94, 190, 255),
-        "VisualGraph" => Color::from_rgba(54, 150, 137, 255),
-        "RhaiScript" => Color::from_rgba(68, 118, 190, 255),
-        "Scene" => Color::from_rgba(98, 150, 82, 255),
-        "Material" | "Shader" => Color::from_rgba(137, 99, 184, 255),
+        "VisualGraph" | "BlueprintGraph2D" | "AnimationBlueprint2D" | "FlipbookAnimation2D" => {
+            Color::from_rgba(54, 150, 137, 255)
+        }
+        "LuauScript" => Color::from_rgba(68, 118, 190, 255),
+        "Scene" | "Scene2D" => Color::from_rgba(98, 150, 82, 255),
+        "Material" | "Material2D" | "Shader" => Color::from_rgba(137, 99, 184, 255),
+        "Tilemap" | "Tilemap2D" | "Tileset2D" => Color::from_rgba(102, 148, 92, 255),
+        "ParticlePreset" | "Particles2D" => Color::from_rgba(194, 134, 66, 255),
+        "Font" => Color::from_rgba(120, 132, 168, 255),
         _ => Color::from_rgba(82, 96, 118, 255),
+    }
+}
+
+fn draw_asset_thumbnail(asset_type: &str, rect: RectSpec, has_warning: bool) {
+    let color = asset_type_color(asset_type);
+    draw_gradient_rect(
+        rect,
+        blend_color(color, WHITE, 0.08),
+        blend_color(color, BLACK, 0.2),
+    );
+    draw_rectangle(
+        rect.x + 4.0,
+        rect.y + 4.0,
+        rect.w - 8.0,
+        rect.h - 8.0,
+        Color::from_rgba(12, 15, 20, 68),
+    );
+    match asset_type {
+        "Sprite" | "Sprite2D" | "SpriteSheet" | "SpriteFrames2D" => {
+            let cell = 9.0;
+            for row in 0..3 {
+                for col in 0..5 {
+                    let alpha = if (row + col) % 2 == 0 { 170 } else { 80 };
+                    draw_rectangle(
+                        rect.x + 18.0 + col as f32 * cell,
+                        rect.y + 11.0 + row as f32 * cell,
+                        cell - 1.0,
+                        cell - 1.0,
+                        Color::from_rgba(235, 247, 255, alpha),
+                    );
+                }
+            }
+        }
+        "Audio" | "AudioEvent" | "Audio2D" => {
+            for index in 0..14 {
+                let h = ((index * 19) % 26 + 8) as f32;
+                draw_rectangle(
+                    rect.x + 12.0 + index as f32 * 5.1,
+                    rect.y + rect.h * 0.5 - h * 0.5,
+                    2.8,
+                    h,
+                    Color::from_rgba(255, 232, 186, 220),
+                );
+            }
+        }
+        "VisualGraph" | "BlueprintGraph2D" | "AnimationBlueprint2D" | "FlipbookAnimation2D" => {
+            let points = [
+                (rect.x + 24.0, rect.y + 15.0),
+                (rect.x + rect.w - 24.0, rect.y + 15.0),
+                (rect.x + rect.w * 0.5, rect.y + rect.h - 14.0),
+            ];
+            for pair in [(0, 1), (1, 2), (2, 0)] {
+                draw_line(
+                    points[pair.0].0,
+                    points[pair.0].1,
+                    points[pair.1].0,
+                    points[pair.1].1,
+                    2.0,
+                    Color::from_rgba(230, 248, 255, 180),
+                );
+            }
+            for point in points {
+                draw_circle(point.0, point.1, 5.0, Color::from_rgba(230, 248, 255, 235));
+            }
+        }
+        "Scene" | "Scene2D" => {
+            draw_rectangle_lines(
+                rect.x + 18.0,
+                rect.y + 10.0,
+                rect.w - 36.0,
+                rect.h - 18.0,
+                2.0,
+                Color::from_rgba(235, 248, 230, 220),
+            );
+            draw_line(
+                rect.x + 22.0,
+                rect.y + rect.h - 12.0,
+                rect.x + rect.w - 22.0,
+                rect.y + 14.0,
+                2.0,
+                Color::from_rgba(235, 248, 230, 160),
+            );
+        }
+        "Prefab" | "UI" => {
+            draw_rectangle_lines(rect.x + 24.0, rect.y + 12.0, 26.0, 22.0, 2.0, WHITE);
+            draw_rectangle_lines(
+                rect.x + rect.w - 50.0,
+                rect.y + 16.0,
+                26.0,
+                22.0,
+                2.0,
+                Color::from_rgba(230, 224, 255, 230),
+            );
+        }
+        "Material" | "Material2D" | "Shader" => {
+            draw_circle(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5, 15.0, WHITE);
+            draw_circle(
+                rect.x + rect.w * 0.58,
+                rect.y + rect.h * 0.42,
+                13.0,
+                Color::from_rgba(86, 214, 180, 190),
+            );
+        }
+        _ => {
+            draw_text_fit(
+                asset_icon(asset_type),
+                RectSpec {
+                    x: rect.x + 8.0,
+                    y: rect.y + 8.0,
+                    w: rect.w - 16.0,
+                    h: rect.h - 16.0,
+                },
+                19,
+                WHITE,
+                TextAlign::Center,
+            );
+        }
+    }
+    if has_warning {
+        draw_circle(rect.x + rect.w - 9.0, rect.y + 9.0, 6.0, ui_warning());
     }
 }
 
@@ -4304,7 +7444,28 @@ fn draw_asset_preview(game: &mut Game, state: &mut EditorState, rect: RectSpec) 
             .ok();
     }
     if button(rect.x + 112.0, button_y, 80.0, 22.0, "Deps", false) {
-        game.asset_database.rebuild_dependency_graph().ok();
+        match game.asset_database.rebuild_dependency_graph() {
+            Ok(_) => {
+                let report = game.asset_database.dependency_report();
+                game.console.log(
+                    format!(
+                        "Grafo de assets: {} nodos, {} enlaces, {} ciclos",
+                        report.build_order.len(),
+                        report.edge_count,
+                        report.cycles.len()
+                    ),
+                    if report.cycles.is_empty() {
+                        "ASSETS"
+                    } else {
+                        "WARNING"
+                    },
+                );
+            }
+            Err(error) => game.console.log(
+                format!("No se pudo reconstruir dependencias: {error}"),
+                "ERROR",
+            ),
+        }
     }
     if button(rect.x + 198.0, button_y, 80.0, 22.0, "Drag", false)
         && let Some(asset) = game.asset_database.assets.get(&path)
@@ -4344,7 +7505,7 @@ fn draw_preview_visual(asset_type: &str, x: f32, y: f32, w: f32, h: f32) {
     draw_rectangle(x, y, w, h, Color::from_rgba(18, 22, 30, 255));
     draw_rectangle_lines(x, y, w, h, 1.0, Color::from_rgba(70, 82, 104, 255));
     match asset_type {
-        "Sprite" => {
+        "Sprite" | "Sprite2D" | "SpriteSheet" | "SpriteFrames2D" => {
             for row in 0..4 {
                 for col in 0..6 {
                     let c = if (row + col) % 2 == 0 {
@@ -4361,8 +7522,28 @@ fn draw_preview_visual(asset_type: &str, x: f32, y: f32, w: f32, h: f32) {
                     );
                 }
             }
+            if matches!(asset_type, "SpriteFrames2D" | "SpriteSheet") {
+                draw_rectangle(
+                    x + 8.0,
+                    y + h - 15.0,
+                    w - 16.0,
+                    5.0,
+                    Color::from_rgba(255, 206, 105, 220),
+                );
+                for index in 1..5 {
+                    let px = x + 8.0 + (w - 16.0) * index as f32 / 5.0;
+                    draw_line(
+                        px,
+                        y + h - 17.0,
+                        px,
+                        y + h - 8.0,
+                        1.0,
+                        Color::from_rgba(20, 24, 32, 220),
+                    );
+                }
+            }
         }
-        "Audio" => {
+        "Audio" | "AudioEvent" | "Audio2D" => {
             for index in 0..16 {
                 let height = ((index * 37) % 44 + 8) as f32;
                 draw_rectangle(
@@ -4374,7 +7555,48 @@ fn draw_preview_visual(asset_type: &str, x: f32, y: f32, w: f32, h: f32) {
                 );
             }
         }
-        "Material" | "Shader" => {
+        "VisualGraph" | "BlueprintGraph2D" | "AnimationBlueprint2D" => {
+            let nodes = [
+                (x + 20.0, y + 16.0, 30.0, 18.0),
+                (x + w - 54.0, y + 20.0, 34.0, 18.0),
+                (x + w * 0.5 - 18.0, y + h - 30.0, 36.0, 18.0),
+            ];
+            for pair in [(0, 1), (1, 2), (0, 2)] {
+                let a = nodes[pair.0];
+                let b = nodes[pair.1];
+                draw_line(
+                    a.0 + a.2 * 0.5,
+                    a.1 + a.3 * 0.5,
+                    b.0 + b.2 * 0.5,
+                    b.1 + b.3 * 0.5,
+                    2.0,
+                    Color::from_rgba(120, 220, 255, 170),
+                );
+            }
+            for node in nodes {
+                draw_rectangle(
+                    node.0,
+                    node.1,
+                    node.2,
+                    node.3,
+                    Color::from_rgba(50, 85, 120, 245),
+                );
+                draw_rectangle_lines(node.0, node.1, node.2, node.3, 1.0, ui_accent());
+            }
+        }
+        "LuauScript" => {
+            for row in 0..4 {
+                let width = [52.0, 74.0, 44.0, 62.0][row];
+                draw_rectangle(
+                    x + 14.0,
+                    y + 14.0 + row as f32 * 12.0,
+                    width,
+                    4.0,
+                    Color::from_rgba(142, 188, 255, 220),
+                );
+            }
+        }
+        "Material" | "Material2D" | "Shader" => {
             draw_rectangle(
                 x + 12.0,
                 y + 12.0,
@@ -4429,13 +7651,25 @@ fn draw_asset_preview_section(x: f32, y: &mut f32, title: &str, values: &[String
 }
 
 fn draw_programming_panel(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
+    let catalog = game.programming.catalog_summary();
     draw_text("Programming", rect.x + 14.0, rect.y + 20.0, 18.0, WHITE);
-    draw_text(
-        &game.programming.summary(),
-        rect.x + 128.0,
-        rect.y + 20.0,
-        15.0,
+    draw_text_fit(
+        &format!(
+            "{} | {} nodes | {} cats | {} actions",
+            game.programming.summary(),
+            catalog.node_count,
+            catalog.categories.len(),
+            catalog.quick_action_count
+        ),
+        RectSpec {
+            x: rect.x + 128.0,
+            y: rect.y + 4.0,
+            w: (rect.w - 1060.0).max(180.0),
+            h: 24.0,
+        },
+        14,
         Color::from_rgba(185, 202, 224, 255),
+        TextAlign::Left,
     );
     if button(rect.x + 430.0, rect.y + 4.0, 92.0, 22.0, "New Graph", false)
         && let Ok(path) = game.create_program_asset("LogAndMove")
@@ -4443,7 +7677,7 @@ fn draw_programming_panel(game: &mut Game, state: &mut EditorState, rect: RectSp
         set_open_file_editor_state(state, &path);
     }
     if button(rect.x + 530.0, rect.y + 4.0, 92.0, 22.0, "+ Script", false)
-        && let Ok(path) = game.create_rhai_script_asset("PlayerController")
+        && let Ok(path) = game.create_luau_script_asset("PlayerController")
     {
         set_open_file_editor_state(state, &path);
     }
@@ -4500,19 +7734,29 @@ fn draw_programming_panel(game: &mut Game, state: &mut EditorState, rect: RectSp
                 Color::from_rgba(31, 36, 46, 255)
             },
         );
-        draw_text(
+        draw_text_fit(
             &template.name,
-            row.x + 8.0,
-            y,
-            15.0,
+            RectSpec {
+                x: row.x + 8.0,
+                y: row.y + 2.0,
+                w: 112.0,
+                h: row.h - 4.0,
+            },
+            14,
             Color::from_rgba(226, 235, 244, 255),
+            TextAlign::Left,
         );
-        draw_text(
-            &ellipsize(&template.description, 72),
-            row.x + 130.0,
-            y,
-            13.0,
+        draw_text_fit(
+            &template.description,
+            RectSpec {
+                x: row.x + 128.0,
+                y: row.y + 3.0,
+                w: row.w - 136.0,
+                h: row.h - 6.0,
+            },
+            12,
             Color::from_rgba(150, 164, 186, 255),
+            TextAlign::Left,
         );
         if hovered && is_mouse_button_pressed(MouseButton::Left) {
             game.attach_program_template_to_selected(&template.name);
@@ -4560,6 +7804,74 @@ fn draw_programming_panel(game: &mut Game, state: &mut EditorState, rect: RectSp
             );
             wy += 18.0;
         }
+    }
+    let mut qa_y = rect.y + 126.0;
+    draw_text(
+        "Quick Actions",
+        rect.x + 655.0,
+        qa_y,
+        16.0,
+        Color::from_rgba(125, 216, 205, 255),
+    );
+    qa_y += 21.0;
+    for action in game.programming.quick_actions().iter().take(4) {
+        let row = RectSpec {
+            x: rect.x + 655.0,
+            y: qa_y - 15.0,
+            w: (rect.w - 670.0).clamp(220.0, 380.0),
+            h: 24.0,
+        };
+        let hovered = contains_mouse(row);
+        draw_rect(
+            row,
+            if hovered {
+                Color::from_rgba(42, 55, 72, 255)
+            } else {
+                Color::from_rgba(25, 31, 42, 255)
+            },
+        );
+        draw_rectangle(row.x, row.y, 3.0, row.h, ui_accent_2());
+        draw_text(
+            &ellipsize(&action.label, 18),
+            row.x + 10.0,
+            qa_y,
+            13.0,
+            ui_text(),
+        );
+        draw_text(
+            &ellipsize(&action.description, 30),
+            row.x + 126.0,
+            qa_y,
+            12.0,
+            ui_text_muted(),
+        );
+        if hovered && is_mouse_button_pressed(MouseButton::Left) {
+            match game.add_quick_action_to_open_graph(action) {
+                Ok(ids) if !ids.is_empty() => {
+                    state.bottom_tab = BottomTab::Programming;
+                    state.graph_pan = (24.0, 24.0);
+                }
+                Ok(_) => game
+                    .console
+                    .log("Abre un .mfgraph para insertar accion", "SCRIPT"),
+                Err(error) => game
+                    .console
+                    .log(format!("Quick action no aplicada: {error}"), "WARNING"),
+            }
+        }
+        qa_y += 27.0;
+    }
+    if !catalog.categories.is_empty() {
+        draw_text(
+            &ellipsize(
+                &format!("Categorias: {}", catalog.categories.join(", ")),
+                58,
+            ),
+            rect.x + 655.0,
+            qa_y + 4.0,
+            12.0,
+            ui_text_muted(),
+        );
     }
 
     let input_x = rect.x + 14.0;
@@ -4705,18 +8017,201 @@ fn draw_editor_tab_strip(game: &mut Game, state: &mut EditorState, rect: RectSpe
                 .log(format!("Pestana activa: {label}"), "EDITOR");
         }
         if button(x + width - 23.0, rect.y + 3.0, 20.0, 20.0, "X", false) {
-            match game.script_editor.close_tab(path) {
-                Ok(Some(opened)) => set_open_file_editor_state(state, &opened),
-                Ok(None) => {
-                    state.code_editor_active = false;
-                    state.code_cursor_line = 0;
-                    state.code_cursor_column = 0;
-                }
-                Err(error) => game.console.log(format!("Pestana: {error}"), "ERROR"),
-            }
+            request_close_script_tab(game, state, Some(path.clone()));
             return;
         }
         x += width + 4.0;
+    }
+}
+
+#[allow(dead_code)]
+fn draw_floating_sprite_window_legacy(game: &mut Game, state: &mut EditorState, sw: f32, sh: f32) {
+    if !state.sprite_window_open {
+        return;
+    }
+    state.sprite_window_rect = update_floating_drag(
+        state,
+        FloatingWindowKind::Sprite,
+        state.sprite_window_rect,
+        sw,
+        sh,
+    );
+    let rect = clamp_window_rect(state.sprite_window_rect, sw, sh);
+    state.sprite_window_rect = rect;
+    draw_floating_shell(rect, "Sprite Editor");
+    if button(
+        rect.x + rect.w - 122.0,
+        rect.y + 5.0,
+        58.0,
+        22.0,
+        "Dock",
+        false,
+    ) {
+        state.sprite_window_open = false;
+        state.show_console = true;
+        state.bottom_tab = BottomTab::Sprites;
+    }
+    if button(rect.x + rect.w - 56.0, rect.y + 5.0, 42.0, 22.0, "X", false) {
+        state.sprite_window_open = false;
+        return;
+    }
+    draw_sprite_editor_panel(
+        game,
+        state,
+        RectSpec {
+            x: rect.x + 8.0,
+            y: rect.y + 38.0,
+            w: rect.w - 16.0,
+            h: rect.h - 46.0,
+        },
+    );
+}
+
+#[allow(dead_code)]
+fn draw_python_tools_window_legacy(game: &mut Game, state: &mut EditorState, sw: f32, sh: f32) {
+    if !state.python_tools_open {
+        return;
+    }
+    state.python_tools_rect = update_floating_drag(
+        state,
+        FloatingWindowKind::PythonTools,
+        state.python_tools_rect,
+        sw,
+        sh,
+    );
+    let rect = clamp_window_rect(state.python_tools_rect, sw, sh);
+    state.python_tools_rect = rect;
+    draw_floating_shell(rect, "Python Automation Tools");
+    if button(rect.x + rect.w - 56.0, rect.y + 5.0, 42.0, 22.0, "X", false) {
+        state.python_tools_open = false;
+        return;
+    }
+
+    let host = PythonAutomationHost::new(&game.project_path);
+    if button(
+        rect.x + 14.0,
+        rect.y + 42.0,
+        106.0,
+        22.0,
+        "Install tools",
+        false,
+    ) {
+        match host.install_builtin_tools() {
+            Ok(paths) => game.console.log(
+                format!("Python tools instalados/verificados: {}", paths.len()),
+                "PYTHON",
+            ),
+            Err(error) => game.console.log(format!("Python tools: {error}"), "ERROR"),
+        }
+    }
+    if button(
+        rect.x + 128.0,
+        rect.y + 42.0,
+        112.0,
+        22.0,
+        "Scene report",
+        false,
+    ) {
+        run_python_tool(game, state, "scene_report");
+    }
+    if button(
+        rect.x + 248.0,
+        rect.y + 42.0,
+        112.0,
+        22.0,
+        "Import drop",
+        false,
+    ) {
+        let report = batch_import_assets(&game.project_path, "ImportDrop", "assets/imported");
+        log_python_batch(game, "Batch import", report);
+        refresh_assets(game);
+    }
+    if button(
+        rect.x + 368.0,
+        rect.y + 42.0,
+        116.0,
+        22.0,
+        "Convert sprites",
+        false,
+    ) {
+        let report = batch_convert_sprites(
+            &game.project_path,
+            "assets/sprites",
+            "assets/sprites/converted",
+        );
+        log_python_batch(game, "Sprite conversion", report);
+        refresh_assets(game);
+    }
+    if button(
+        rect.x + 492.0,
+        rect.y + 42.0,
+        112.0,
+        22.0,
+        "Build atlases",
+        false,
+    ) {
+        let report = generate_paged_sprite_atlases(
+            &game.project_path,
+            "assets/sprites",
+            "assets/sprite_atlases",
+            2048,
+            2,
+        );
+        log_python_batch(game, "Atlas generation", report);
+        refresh_assets(game);
+    }
+
+    draw_text(
+        "Herramientas declarativas descubiertas en project/tools",
+        rect.x + 16.0,
+        rect.y + 90.0,
+        15.0,
+        ui_text(),
+    );
+    let tools = host.discover().unwrap_or_default();
+    let mut y = rect.y + 118.0;
+    for tool in tools.iter().take(14) {
+        let row = RectSpec {
+            x: rect.x + 14.0,
+            y: y - 17.0,
+            w: rect.w - 28.0,
+            h: 26.0,
+        };
+        draw_rect(row, Color::from_rgba(20, 27, 39, 245));
+        draw_text(
+            &ellipsize(&format!("{}  —  {}", tool.label, tool.description), 82),
+            row.x + 8.0,
+            y,
+            13.0,
+            ui_text_muted(),
+        );
+        if button(row.x + row.w - 58.0, row.y + 2.0, 52.0, 22.0, "Run", false) {
+            run_python_tool(game, state, &tool.id);
+        }
+        y += 29.0;
+        if y > rect.y + rect.h - 24.0 {
+            break;
+        }
+    }
+}
+
+fn log_python_batch(game: &mut Game, label: &str, report: io::Result<PythonBatchReport>) {
+    match report {
+        Ok(report) => game.console.log(
+            format!(
+                "{label}: {} procesados, {} omitidos, {} salidas, {} warnings",
+                report.processed,
+                report.skipped,
+                report.output_files.len(),
+                report.warnings.len()
+            ),
+            if report.warnings.is_empty() {
+                "PYTHON"
+            } else {
+                "WARNING"
+            },
+        ),
+        Err(error) => game.console.log(format!("{label}: {error}"), "ERROR"),
     }
 }
 
@@ -4763,7 +8258,7 @@ fn draw_floating_script_window(game: &mut Game, state: &mut EditorState, sw: f32
         state.code_editor_active = !state.code_editor_active;
     }
     if button(rect.x + rect.w - 56.0, rect.y + 5.0, 42.0, 22.0, "X", false) {
-        state.script_window_open = false;
+        request_close_script_tab(game, state, game.script_editor.document.path.clone());
     }
     draw_text(
         &ellipsize(
@@ -4774,12 +8269,12 @@ fn draw_floating_script_window(game: &mut Game, state: &mut EditorState, sw: f32
                 .and_then(|path| path.file_name())
                 .and_then(|value| value.to_str())
                 .unwrap_or("No file open"),
-            56,
+            42,
         ),
-        rect.x + 18.0,
-        rect.y + 24.0,
-        15.0,
-        Color::from_rgba(220, 230, 244, 255),
+        rect.x + 184.0,
+        rect.y + 23.0,
+        13.0,
+        ui_text_muted(),
     );
     let content = RectSpec {
         x: rect.x + 10.0,
@@ -4792,6 +8287,477 @@ fn draw_floating_script_window(game: &mut Game, state: &mut EditorState, sw: f32
     } else {
         draw_code_editor(game, state, content);
     }
+}
+
+fn draw_floating_sprite_window(game: &mut Game, state: &mut EditorState, sw: f32, sh: f32) {
+    if !state.sprite_window_open {
+        return;
+    }
+    state.sprite_window_rect = update_floating_drag(
+        state,
+        FloatingWindowKind::Sprite,
+        state.sprite_window_rect,
+        sw,
+        sh,
+    );
+    let rect = clamp_window_rect(state.sprite_window_rect, sw, sh);
+    state.sprite_window_rect = rect;
+    draw_floating_shell(rect, "Sprite Studio 2D");
+    if button(
+        rect.x + rect.w - 134.0,
+        rect.y + 5.0,
+        68.0,
+        22.0,
+        "Dock",
+        false,
+    ) {
+        state.sprite_window_open = false;
+        state.show_console = true;
+        state.bottom_tab = BottomTab::Sprites;
+        return;
+    }
+    if button(rect.x + rect.w - 58.0, rect.y + 5.0, 42.0, 22.0, "X", false) {
+        state.sprite_window_open = false;
+        return;
+    }
+    draw_sprite_editor_panel(
+        game,
+        state,
+        RectSpec {
+            x: rect.x + 8.0,
+            y: rect.y + 38.0,
+            w: rect.w - 16.0,
+            h: rect.h - 46.0,
+        },
+    );
+}
+
+fn draw_python_tools_window(game: &mut Game, state: &mut EditorState, sw: f32, sh: f32) {
+    if !state.python_tools_open {
+        return;
+    }
+    state.python_tools_rect = update_floating_drag(
+        state,
+        FloatingWindowKind::PythonTools,
+        state.python_tools_rect,
+        sw,
+        sh,
+    );
+    let rect = clamp_window_rect(state.python_tools_rect, sw, sh);
+    state.python_tools_rect = rect;
+    draw_floating_shell(rect, "Python Tools");
+    if button(
+        rect.x + rect.w - 178.0,
+        rect.y + 5.0,
+        108.0,
+        22.0,
+        "Install/Refresh",
+        false,
+    ) {
+        let host = PythonAutomationHost::new(&game.project_path);
+        match host.install_builtin_tools() {
+            Ok(files) => game.console.log(
+                format!("Python tools instaladas: {} archivos", files.len()),
+                "PYTHON",
+            ),
+            Err(error) => game
+                .console
+                .log(format!("Instalar Python tools: {error}"), "ERROR"),
+        }
+    }
+    if button(rect.x + rect.w - 60.0, rect.y + 5.0, 44.0, 22.0, "X", false) {
+        state.python_tools_open = false;
+        return;
+    }
+
+    let host = PythonAutomationHost::new(&game.project_path);
+    let version = host
+        .interpreter_version()
+        .unwrap_or_else(|_| "Python no disponible".to_string());
+    let tools = host.discover().unwrap_or_default();
+    draw_text(
+        &format!("{version} | {} herramientas confiables", tools.len()),
+        rect.x + 16.0,
+        rect.y + 56.0,
+        14.0,
+        ui_text_muted(),
+    );
+    let list = RectSpec {
+        x: rect.x + 12.0,
+        y: rect.y + 70.0,
+        w: rect.w - 24.0,
+        h: rect.h - 82.0,
+    };
+    draw_rect(list, Color::from_rgba(13, 16, 23, 245));
+    draw_rectangle_lines(list.x, list.y, list.w, list.h, 1.0, ui_line_soft());
+    if tools.is_empty() {
+        draw_text(
+            "Pulsa Install/Refresh para instalar la suite de automatización.",
+            list.x + 16.0,
+            list.y + 30.0,
+            14.0,
+            ui_text_muted(),
+        );
+        return;
+    }
+    let mut y = list.y + 10.0;
+    let max_rows = ((list.h - 16.0) / 46.0).max(1.0) as usize;
+    for tool in tools.into_iter().take(max_rows) {
+        let row = RectSpec {
+            x: list.x + 8.0,
+            y,
+            w: list.w - 16.0,
+            h: 40.0,
+        };
+        draw_rect(row, Color::from_rgba(23, 29, 40, 245));
+        draw_text(
+            &ellipsize(&tool.label, 48),
+            row.x + 10.0,
+            row.y + 16.0,
+            13.0,
+            ui_text(),
+        );
+        draw_text(
+            &ellipsize(&format!("{} — {}", tool.menu_path, tool.description), 78),
+            row.x + 10.0,
+            row.y + 32.0,
+            11.0,
+            ui_text_muted(),
+        );
+        if button(row.x + row.w - 74.0, row.y + 8.0, 62.0, 24.0, "Run", false) {
+            run_python_tool(game, state, &tool.id);
+        }
+        y += 46.0;
+    }
+}
+
+fn request_close_script_tab(game: &mut Game, state: &mut EditorState, path: Option<PathBuf>) {
+    let Some(path) = path else {
+        state.script_window_open = false;
+        state.code_editor_active = false;
+        game.console
+            .log("Editor de scripts cerrado sin archivo activo", "EDITOR");
+        return;
+    };
+    if game.script_editor.is_dirty(&path) {
+        state.pending_script_close = Some(path);
+        game.console.log(
+            "Cierre de script pendiente: hay cambios sin guardar",
+            "EDITOR",
+        );
+        return;
+    }
+    close_script_tab_with_choice(game, state, path, CloseDocumentChoice::Discard);
+}
+
+fn close_script_tab_with_choice(
+    game: &mut Game,
+    state: &mut EditorState,
+    path: PathBuf,
+    choice: CloseDocumentChoice,
+) {
+    match game.script_editor.close_tab_with_choice(&path, choice) {
+        Ok(outcome) if outcome.cancelled => {
+            state.pending_script_close = None;
+            game.console.log("Cierre de script cancelado", "EDITOR");
+        }
+        Ok(outcome) => {
+            state.pending_script_close = None;
+            game.event_bus.emit(
+                "ScriptClosed",
+                json!({"path": path.to_string_lossy(), "saved": outcome.saved}),
+            );
+            if let Some(opened) = outcome.active {
+                set_open_file_editor_state(state, &opened);
+                game.console.log(
+                    format!("Pestana cerrada; activo: {}", opened.display()),
+                    "EDITOR",
+                );
+            } else {
+                state.code_editor_active = false;
+                state.code_cursor_line = 0;
+                state.code_cursor_column = 0;
+                state.code_scroll_line = 0;
+                state.script_window_open = false;
+                game.console
+                    .log("Pestana cerrada; no quedan documentos abiertos", "EDITOR");
+            }
+        }
+        Err(error) => {
+            state.pending_script_close = None;
+            game.console
+                .log(format!("No se pudo cerrar pestana: {error}"), "ERROR");
+        }
+    }
+}
+
+fn draw_script_close_prompt(game: &mut Game, state: &mut EditorState, sw: f32, sh: f32) {
+    let Some(path) = state.pending_script_close.clone() else {
+        return;
+    };
+    let rect = RectSpec {
+        x: (sw - 460.0) * 0.5,
+        y: (sh - 170.0) * 0.5,
+        w: 460.0,
+        h: 170.0,
+    };
+    draw_rectangle(0.0, 0.0, sw, sh, Color::from_rgba(0, 0, 0, 130));
+    draw_panel_chrome(rect, "Cambios sin guardar", "Script Editor");
+    draw_text(
+        &ellipsize(
+            &format!(
+                "{} tiene cambios sin guardar.",
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("Documento")
+            ),
+            58,
+        ),
+        rect.x + 18.0,
+        rect.y + 58.0,
+        15.0,
+        ui_text(),
+    );
+    draw_text(
+        "Guardar antes de cerrar, descartar cambios o cancelar.",
+        rect.x + 18.0,
+        rect.y + 82.0,
+        13.0,
+        ui_text_muted(),
+    );
+    let y = rect.y + rect.h - 44.0;
+    if button(rect.x + 18.0, y, 96.0, 26.0, "Guardar", false) {
+        close_script_tab_with_choice(game, state, path, CloseDocumentChoice::Save);
+    } else if button(rect.x + 124.0, y, 104.0, 26.0, "Descartar", false) {
+        close_script_tab_with_choice(game, state, path, CloseDocumentChoice::Discard);
+    } else if button(rect.x + rect.w - 116.0, y, 96.0, 26.0, "Cancelar", false) {
+        state.pending_script_close = None;
+        game.console.log("Cierre de script cancelado", "EDITOR");
+    }
+}
+
+fn editor_preferences_path(game: &Game) -> PathBuf {
+    game.project_paths.settings.join("editor_preferences.json")
+}
+
+fn load_editor_preferences(game: &Game) -> EditorPreferences {
+    let path = editor_preferences_path(game);
+    let Ok(value) = AssetTools::read_json(&path) else {
+        return EditorPreferences::default();
+    };
+    EditorPreferences {
+        prefer_vscode: value
+            .get("prefer_vscode")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        external_editor_command: value
+            .get("external_editor_command")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("code")
+            .to_string(),
+        open_external_on_script: value
+            .get("open_external_on_script")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        keyboard_layout_hint: value
+            .get("keyboard_layout_hint")
+            .and_then(Value::as_str)
+            .unwrap_or("international")
+            .to_string(),
+    }
+}
+
+fn save_editor_preferences(game: &mut Game, state: &EditorState) {
+    let path = editor_preferences_path(game);
+    let prefs = &state.editor_preferences;
+    let value = json!({
+        "prefer_vscode": prefs.prefer_vscode,
+        "external_editor_command": prefs.external_editor_command,
+        "open_external_on_script": prefs.open_external_on_script,
+        "keyboard_layout_hint": prefs.keyboard_layout_hint,
+    });
+    match AssetTools::write_json(&path, &value) {
+        Ok(()) => game.console.log(
+            format!("Preferencias guardadas: {}", path.display()),
+            "EDITOR",
+        ),
+        Err(error) => game.console.log(
+            format!("No se pudieron guardar preferencias: {error}"),
+            "ERROR",
+        ),
+    }
+}
+
+fn open_current_file_in_external_editor(game: &mut Game, state: &EditorState) {
+    let Some(path) = game.script_editor.document.path.clone() else {
+        game.console.log(
+            "No hay archivo abierto para enviar al editor externo",
+            "WARNING",
+        );
+        return;
+    };
+    open_file_in_external_editor(game, state, &path);
+}
+
+fn open_file_in_external_editor(game: &mut Game, state: &EditorState, path: &Path) {
+    let line = state.code_cursor_line + 1;
+    let column = line_visual_column(
+        game.script_editor
+            .lines
+            .get(state.code_cursor_line)
+            .map(String::as_str)
+            .unwrap_or(""),
+        state.code_cursor_column,
+    ) + 1;
+    let command = if state.editor_preferences.prefer_vscode {
+        "code"
+    } else {
+        state.editor_preferences.external_editor_command.as_str()
+    };
+    let launch = Command::new(command)
+        .arg("-g")
+        .arg(format!("{}:{line}:{column}", path.display()))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+
+    match launch {
+        Ok(_) => game.console.log(
+            format!("Abriendo editor externo: {}", path.display()),
+            "EDITOR",
+        ),
+        Err(error) => {
+            if open_in_default_application(path).is_ok() {
+                game.console.log(
+                    format!("Abriendo con aplicación del sistema: {}", path.display()),
+                    "EDITOR",
+                );
+                return;
+            }
+            game.console.log(
+                format!("No se pudo abrir editor externo ({command}): {error}"),
+                "ERROR",
+            );
+        }
+    }
+}
+
+fn draw_preferences_window(game: &mut Game, state: &mut EditorState, sw: f32, sh: f32) {
+    if !state.preferences_open {
+        return;
+    }
+    let rect = RectSpec {
+        x: (sw - 560.0).max(20.0) * 0.5,
+        y: (sh - 360.0).max(20.0) * 0.5,
+        w: 560.0_f32.min(sw - 32.0),
+        h: 360.0_f32.min(sh - 32.0),
+    };
+    draw_rectangle(0.0, 0.0, sw, sh, Color::from_rgba(0, 0, 0, 145));
+    draw_panel_chrome(rect, "Preferences", "editor and input");
+    if button(rect.x + rect.w - 58.0, rect.y + 8.0, 42.0, 22.0, "X", false) {
+        state.preferences_open = false;
+        return;
+    }
+
+    let mut y = rect.y + 64.0;
+    draw_text("Script Editor", rect.x + 18.0, y, 17.0, ui_text());
+    y += 28.0;
+    if button(
+        rect.x + 18.0,
+        y - 18.0,
+        152.0,
+        24.0,
+        "Prefer VS Code",
+        state.editor_preferences.prefer_vscode,
+    ) {
+        state.editor_preferences.prefer_vscode = !state.editor_preferences.prefer_vscode;
+        save_editor_preferences(game, state);
+    }
+    if button(
+        rect.x + 182.0,
+        y - 18.0,
+        184.0,
+        24.0,
+        "Open scripts externally",
+        state.editor_preferences.open_external_on_script,
+    ) {
+        state.editor_preferences.open_external_on_script =
+            !state.editor_preferences.open_external_on_script;
+        save_editor_preferences(game, state);
+    }
+    if button(rect.x + 378.0, y - 18.0, 124.0, 24.0, "Open Current", false) {
+        open_current_file_in_external_editor(game, state);
+    }
+
+    y += 42.0;
+    draw_rect(
+        RectSpec {
+            x: rect.x + 18.0,
+            y: y - 20.0,
+            w: rect.w - 36.0,
+            h: 48.0,
+        },
+        Color::from_rgba(14, 18, 27, 240),
+    );
+    draw_text_fit(
+        &format!(
+            "External command: {}",
+            state.editor_preferences.external_editor_command
+        ),
+        RectSpec {
+            x: rect.x + 30.0,
+            y: y - 15.0,
+            w: rect.w - 60.0,
+            h: 22.0,
+        },
+        13,
+        ui_text_muted(),
+        TextAlign::Left,
+    );
+    draw_text_fit(
+        "Uses `code -g file:line:column`; macOS falls back to Visual Studio Code.app.",
+        RectSpec {
+            x: rect.x + 30.0,
+            y: y + 6.0,
+            w: rect.w - 60.0,
+            h: 20.0,
+        },
+        12,
+        ui_text_muted(),
+        TextAlign::Left,
+    );
+
+    y += 74.0;
+    draw_text("Keyboard", rect.x + 18.0, y, 17.0, ui_text());
+    y += 28.0;
+    draw_text_fit(
+        "International input is enabled: text input uses Unicode characters, Cmd/Ctrl+/ also accepts Cmd/Ctrl+Shift+7 for Spanish/Latin layouts.",
+        RectSpec {
+            x: rect.x + 18.0,
+            y: y - 18.0,
+            w: rect.w - 36.0,
+            h: 42.0,
+        },
+        13,
+        ui_text_muted(),
+        TextAlign::Left,
+    );
+    y += 56.0;
+    draw_text("Blueprint Navigation", rect.x + 18.0, y, 17.0, ui_text());
+    y += 28.0;
+    draw_text_fit(
+        "Hold right mouse anywhere over the Blueprint editor to pan, middle mouse still pans, wheel scrolls vertically, Shift+wheel scrolls horizontally.",
+        RectSpec {
+            x: rect.x + 18.0,
+            y: y - 18.0,
+            w: rect.w - 36.0,
+            h: 44.0,
+        },
+        13,
+        ui_text_muted(),
+        TextAlign::Left,
+    );
 }
 
 fn draw_floating_play_window(game: &mut Game, state: &mut EditorState, sw: f32, sh: f32) {
@@ -5118,6 +9084,8 @@ fn pointer_over_floating_windows(state: &EditorState, mx: f32, my: f32) -> bool 
     (state.script_window_open && contains(state.script_window_rect, mx, my))
         || (state.play_window_open && contains(state.play_window_rect, mx, my))
         || (state.blueprint_picker_open && contains(state.blueprint_picker_rect, mx, my))
+        || (state.sprite_window_open && contains(state.sprite_window_rect, mx, my))
+        || (state.python_tools_open && contains(state.python_tools_rect, mx, my))
 }
 
 fn open_file_extension(game: &Game) -> Option<String> {
@@ -5150,7 +9118,7 @@ fn draw_visual_graph_editor(game: &mut Game, state: &mut EditorState, rect: Rect
     );
     let button_y = rect.y + 5.0;
     if button(
-        rect.x + rect.w - 462.0,
+        rect.x + rect.w - 522.0,
         button_y,
         62.0,
         21.0,
@@ -5160,7 +9128,7 @@ fn draw_visual_graph_editor(game: &mut Game, state: &mut EditorState, rect: Rect
         game.add_node_to_open_graph("Log").ok();
     }
     if button(
-        rect.x + rect.w - 394.0,
+        rect.x + rect.w - 454.0,
         button_y,
         70.0,
         21.0,
@@ -5170,7 +9138,7 @@ fn draw_visual_graph_editor(game: &mut Game, state: &mut EditorState, rect: Rect
         game.add_node_to_open_graph("Move").ok();
     }
     if button(
-        rect.x + rect.w - 318.0,
+        rect.x + rect.w - 378.0,
         button_y,
         78.0,
         21.0,
@@ -5180,7 +9148,7 @@ fn draw_visual_graph_editor(game: &mut Game, state: &mut EditorState, rect: Rect
         game.add_node_to_open_graph("SetHealth").ok();
     }
     if button(
-        rect.x + rect.w - 234.0,
+        rect.x + rect.w - 294.0,
         button_y,
         58.0,
         21.0,
@@ -5189,6 +9157,14 @@ fn draw_visual_graph_editor(game: &mut Game, state: &mut EditorState, rect: Rect
     ) {
         game.add_node_to_open_graph("SetVelocity").ok();
     }
+    let frame_graph_requested = button(
+        rect.x + rect.w - 230.0,
+        button_y,
+        54.0,
+        21.0,
+        "Frame",
+        false,
+    );
     if button(rect.x + rect.w - 170.0, button_y, 72.0, 21.0, "Save", false)
         && let Err(error) = game.save_open_file()
     {
@@ -5222,7 +9198,19 @@ fn draw_visual_graph_editor(game: &mut Game, state: &mut EditorState, rect: Rect
         w: rect.w - canvas.w - 26.0,
         h: canvas.h,
     };
-    draw_graph_canvas_background(canvas);
+    draw_graph_canvas_background(canvas, state.graph_pan);
+    draw_text_fit(
+        "RMB drag pan | MMB pan | Shift+wheel horizontal",
+        RectSpec {
+            x: canvas.x + 12.0,
+            y: canvas.y + canvas.h - 26.0,
+            w: canvas.w - 24.0,
+            h: 18.0,
+        },
+        12,
+        ui_text_muted(),
+        TextAlign::Left,
+    );
     let Some(view) = game.current_visual_graph_view() else {
         draw_text(
             "Graph invalido o vacio.",
@@ -5233,6 +9221,16 @@ fn draw_visual_graph_editor(game: &mut Game, state: &mut EditorState, rect: Rect
         );
         return;
     };
+    if frame_graph_requested {
+        frame_graph_nodes(state, canvas, &view);
+    }
+    let graph_navigation_rect = RectSpec {
+        x: canvas.x,
+        y: canvas.y,
+        w: rect.x + rect.w - canvas.x - 8.0,
+        h: canvas.h,
+    };
+    update_graph_canvas_pan(state, graph_navigation_rect);
 
     for connection in &view.connections {
         let Some(from) = view.nodes.iter().find(|node| node.id == connection.from) else {
@@ -5241,32 +9239,38 @@ fn draw_visual_graph_editor(game: &mut Game, state: &mut EditorState, rect: Rect
         let Some(to) = view.nodes.iter().find(|node| node.id == connection.to) else {
             continue;
         };
-        let start = graph_output_pin_pos_for(canvas, from, &connection.pin);
-        let end = graph_input_pin_pos(canvas, to);
-        draw_graph_wire(start, end, Color::from_rgba(112, 184, 255, 255));
+        let start = graph_output_pin_pos_for(canvas, state.graph_pan, from, &connection.pin);
+        let end = graph_input_pin_pos(canvas, state.graph_pan, to);
+        draw_graph_wire(canvas, start, end, Color::from_rgba(112, 184, 255, 255));
     }
     if let Some(from_id) = &state.graph_connect_from
         && let Some(from) = view.nodes.iter().find(|node| &node.id == from_id)
     {
         draw_graph_wire(
-            graph_output_pin_pos_for(canvas, from, &state.graph_connect_pin),
+            canvas,
+            graph_output_pin_pos_for(canvas, state.graph_pan, from, &state.graph_connect_pin),
             mouse_position(),
             Color::from_rgba(255, 210, 115, 255),
         );
     }
 
-    if is_mouse_button_released(MouseButton::Left) {
+    let graph_mouse_released = is_mouse_button_released(MouseButton::Left);
+    let mut graph_connection_resolved = false;
+    if graph_mouse_released {
         state.graph_drag_node = None;
     }
     for node in &view.nodes {
-        let node_rect = graph_node_rect(canvas, node);
-        let input_pin = pin_rect(graph_input_pin_pos(canvas, node));
+        let node_rect = graph_node_rect(canvas, state.graph_pan, node);
+        if !rects_intersect(canvas, node_rect) {
+            continue;
+        }
+        let input_pin = pin_rect(graph_input_pin_pos(canvas, state.graph_pan, node));
         let hovered = contains_mouse(node_rect);
         let selected = state.graph_selected_node.as_deref() == Some(node.id.as_str());
         draw_graph_node(node_rect, node, selected, hovered);
         draw_pin(input_pin, Color::from_rgba(92, 182, 255, 255));
         for pin in &node.output_pins {
-            let output_pin = pin_rect(graph_output_pin_pos_for(canvas, node, pin));
+            let output_pin = pin_rect(graph_output_pin_pos_for(canvas, state.graph_pan, node, pin));
             draw_pin(output_pin, graph_pin_color(pin));
             draw_text(
                 pin,
@@ -5279,8 +9283,11 @@ fn draw_visual_graph_editor(game: &mut Game, state: &mut EditorState, rect: Rect
 
         let mut output_clicked = false;
         for pin in &node.output_pins {
-            let output_pin = pin_rect(graph_output_pin_pos_for(canvas, node, pin));
-            if contains_mouse(output_pin) && is_mouse_button_pressed(MouseButton::Left) {
+            let output_pin = pin_rect(graph_output_pin_pos_for(canvas, state.graph_pan, node, pin));
+            if !state.graph_panning
+                && contains_mouse(output_pin)
+                && is_mouse_button_pressed(MouseButton::Left)
+            {
                 state.graph_connect_from = Some(node.id.clone());
                 state.graph_connect_pin = pin.clone();
                 state.graph_selected_node = Some(node.id.clone());
@@ -5289,16 +9296,21 @@ fn draw_visual_graph_editor(game: &mut Game, state: &mut EditorState, rect: Rect
         }
 
         if output_clicked {
-        } else if contains_mouse(input_pin) && is_mouse_button_pressed(MouseButton::Left) {
+        } else if contains_mouse(input_pin)
+            && !state.graph_panning
+            && (is_mouse_button_pressed(MouseButton::Left) || graph_mouse_released)
+        {
             if let Some(from) = state.graph_connect_from.clone()
                 && game
                     .connect_open_graph_nodes_on_pin(&from, &node.id, &state.graph_connect_pin)
                     .unwrap_or(false)
             {
                 state.graph_connect_from = None;
+                state.graph_connect_pin.clear();
+                graph_connection_resolved = true;
             }
             state.graph_selected_node = Some(node.id.clone());
-        } else if hovered && is_mouse_button_pressed(MouseButton::Left) {
+        } else if hovered && !state.graph_panning && is_mouse_button_pressed(MouseButton::Left) {
             let mouse = mouse_position();
             state.graph_selected_node = Some(node.id.clone());
             state.graph_drag_node = Some(node.id.clone());
@@ -5310,22 +9322,27 @@ fn draw_visual_graph_editor(game: &mut Game, state: &mut EditorState, rect: Rect
         && let Some(node_id) = state.graph_drag_node.clone()
     {
         let mouse = mouse_position();
-        let x = (mouse.0 - state.graph_drag_offset.0 - canvas.x).max(8.0);
-        let y = (mouse.1 - state.graph_drag_offset.1 - canvas.y).max(8.0);
+        let x = (mouse.0 - state.graph_drag_offset.0 - canvas.x - state.graph_pan.0).max(8.0);
+        let y = (mouse.1 - state.graph_drag_offset.1 - canvas.y - state.graph_pan.1).max(8.0);
         game.move_open_graph_node(&node_id, x as f64, y as f64).ok();
+    }
+
+    if graph_mouse_released && !graph_connection_resolved {
+        state.graph_connect_from = None;
+        state.graph_connect_pin.clear();
     }
 
     draw_graph_details(game, state, details, &view);
 }
 
-fn draw_graph_canvas_background(rect: RectSpec) {
+fn draw_graph_canvas_background(rect: RectSpec, pan: (f32, f32)) {
     draw_gradient_rect(
         rect,
         Color::from_rgba(11, 17, 28, 255),
         Color::from_rgba(6, 9, 15, 255),
     );
     let grid = 24.0;
-    let mut x = rect.x;
+    let mut x = rect.x + pan.0.rem_euclid(grid) - grid;
     while x < rect.x + rect.w {
         draw_line(
             x,
@@ -5337,7 +9354,7 @@ fn draw_graph_canvas_background(rect: RectSpec) {
         );
         x += grid;
     }
-    let mut y = rect.y;
+    let mut y = rect.y + pan.1.rem_euclid(grid) - grid;
     while y < rect.y + rect.h {
         draw_line(
             rect.x,
@@ -5351,22 +9368,91 @@ fn draw_graph_canvas_background(rect: RectSpec) {
     }
 }
 
-fn graph_node_rect(canvas: RectSpec, node: &VisualGraphNodeView) -> RectSpec {
+fn update_graph_canvas_pan(state: &mut EditorState, pan_rect: RectSpec) {
+    let mouse = mouse_position();
+    let pan_button_down = is_mouse_button_down(MouseButton::Middle)
+        || is_mouse_button_down(MouseButton::Right)
+        || (is_key_down(KeyCode::Space) && is_mouse_button_down(MouseButton::Left));
+    let wants_pan = (contains_mouse(pan_rect) || state.graph_panning)
+        && state.graph_drag_node.is_none()
+        && state.graph_connect_from.is_none()
+        && pan_button_down;
+    if wants_pan {
+        if state.graph_panning {
+            let dx = mouse.0 - state.graph_pan_last.0;
+            let dy = mouse.1 - state.graph_pan_last.1;
+            state.graph_pan.0 += dx;
+            state.graph_pan.1 += dy;
+        }
+        state.graph_panning = true;
+        state.graph_pan_last = mouse;
+    } else {
+        state.graph_panning = false;
+        state.graph_pan_last = mouse;
+    }
+    if contains_mouse(pan_rect) {
+        let (wheel_x, wheel_y) = mouse_wheel();
+        if wheel_x.abs() > f32::EPSILON || wheel_y.abs() > f32::EPSILON {
+            if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) {
+                state.graph_pan.0 += wheel_y * 42.0;
+            } else {
+                state.graph_pan.0 += wheel_x * 42.0;
+                state.graph_pan.1 += wheel_y * 42.0;
+            }
+        }
+    }
+    state.graph_pan.0 = state.graph_pan.0.clamp(-8000.0, 8000.0);
+    state.graph_pan.1 = state.graph_pan.1.clamp(-8000.0, 8000.0);
+}
+
+fn frame_graph_nodes(state: &mut EditorState, canvas: RectSpec, view: &VisualGraphView) {
+    let Some(first) = view.nodes.first() else {
+        state.graph_pan = (24.0, 24.0);
+        return;
+    };
+    let mut min_x = first.x as f32;
+    let mut min_y = first.y as f32;
+    let mut max_x = first.x as f32 + 148.0;
+    let mut max_y = first.y as f32 + 74.0;
+    for node in &view.nodes {
+        min_x = min_x.min(node.x as f32);
+        min_y = min_y.min(node.y as f32);
+        max_x = max_x.max(node.x as f32 + 148.0);
+        max_y = max_y.max(node.y as f32 + 74.0);
+    }
+    let graph_center_x = (min_x + max_x) * 0.5;
+    let graph_center_y = (min_y + max_y) * 0.5;
+    state.graph_pan = (
+        canvas.w * 0.5 - graph_center_x,
+        canvas.h * 0.5 - graph_center_y,
+    );
+}
+
+fn graph_node_rect(canvas: RectSpec, pan: (f32, f32), node: &VisualGraphNodeView) -> RectSpec {
     RectSpec {
-        x: canvas.x + node.x as f32,
-        y: canvas.y + node.y as f32,
+        x: canvas.x + pan.0 + node.x as f32,
+        y: canvas.y + pan.1 + node.y as f32,
         w: 148.0,
         h: 74.0,
     }
 }
 
-fn graph_input_pin_pos(canvas: RectSpec, node: &VisualGraphNodeView) -> (f32, f32) {
-    let rect = graph_node_rect(canvas, node);
+fn graph_input_pin_pos(
+    canvas: RectSpec,
+    pan: (f32, f32),
+    node: &VisualGraphNodeView,
+) -> (f32, f32) {
+    let rect = graph_node_rect(canvas, pan, node);
     (rect.x - 1.0, rect.y + 42.0)
 }
 
-fn graph_output_pin_pos_for(canvas: RectSpec, node: &VisualGraphNodeView, pin: &str) -> (f32, f32) {
-    let rect = graph_node_rect(canvas, node);
+fn graph_output_pin_pos_for(
+    canvas: RectSpec,
+    pan: (f32, f32),
+    node: &VisualGraphNodeView,
+    pin: &str,
+) -> (f32, f32) {
+    let rect = graph_node_rect(canvas, pan, node);
     let index = node
         .output_pins
         .iter()
@@ -5410,12 +9496,45 @@ fn graph_pin_color(pin: &str) -> Color {
     }
 }
 
-fn draw_graph_wire(start: (f32, f32), end: (f32, f32), color: Color) {
-    let mid_x = (start.0 + end.0) * 0.5;
-    let points = [start, (mid_x, start.1), (mid_x, end.1), end];
-    for pair in points.windows(2) {
-        draw_line(pair[0].0, pair[0].1, pair[1].0, pair[1].1, 2.0, color);
+fn draw_graph_wire(canvas: RectSpec, start: (f32, f32), end: (f32, f32), color: Color) {
+    let bounds = RectSpec {
+        x: start.0.min(end.0),
+        y: start.1.min(end.1),
+        w: (end.0 - start.0).abs().max(1.0),
+        h: (end.1 - start.1).abs().max(1.0),
+    };
+    if !rects_intersect(canvas, bounds) {
+        return;
     }
+    let handle = ((end.0 - start.0).abs() * 0.5).clamp(42.0, 180.0);
+    let path = VectorPath2D::new(VectorStyle2D {
+        fill: None,
+        stroke: Some([
+            (color.r * 255.0) as u8,
+            (color.g * 255.0) as u8,
+            (color.b * 255.0) as u8,
+            (color.a * 255.0) as u8,
+        ]),
+        stroke_width: 2.25,
+        tolerance: 0.15,
+        ..VectorStyle2D::default()
+    })
+    .move_to(start.0, start.1)
+    .cubic_to(
+        start.0 + handle,
+        start.1,
+        end.0 - handle,
+        end.1,
+        end.0,
+        end.1,
+    );
+    if let Ok(geometry) = path.tessellate() {
+        draw_vector_geometry_screen(&geometry);
+    }
+}
+
+fn rects_intersect(a: RectSpec, b: RectSpec) -> bool {
+    a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
 }
 
 fn draw_graph_node(rect: RectSpec, node: &VisualGraphNodeView, selected: bool, hovered: bool) {
@@ -5522,6 +9641,52 @@ fn draw_graph_details(
         12.0,
         Color::from_rgba(150, 166, 192, 255),
     );
+    let blueprint_analysis = serde_json::from_str::<Value>(&game.script_editor.text())
+        .ok()
+        .and_then(|value| {
+            crate::engine::miniforge_2d::blueprint::graph_from_value(&value)
+                .ok()
+                .map(|graph| graph.analyze())
+        });
+    if let Some(analysis) = &blueprint_analysis {
+        draw_text(
+            &format!(
+                "{} nodes | {} links | depth {}",
+                analysis.node_count, analysis.edge_count, analysis.max_exec_depth
+            ),
+            rect.x + 10.0,
+            rect.y + 62.0,
+            11.0,
+            Color::from_rgba(190, 202, 222, 255),
+        );
+        draw_text(
+            &format!(
+                "{} reachable | {} orphan",
+                analysis.reachable_node_ids.len(),
+                analysis.orphan_node_ids.len()
+            ),
+            rect.x + 10.0,
+            rect.y + 78.0,
+            11.0,
+            if analysis.orphan_node_ids.is_empty() {
+                Color::from_rgba(135, 230, 165, 255)
+            } else {
+                Color::from_rgba(255, 206, 130, 255)
+            },
+        );
+    } else {
+        draw_text(
+            &format!(
+                "{} nodes | {} links",
+                view.nodes.len(),
+                view.connections.len()
+            ),
+            rect.x + 10.0,
+            rect.y + 62.0,
+            11.0,
+            Color::from_rgba(190, 202, 222, 255),
+        );
+    }
     let selected = state
         .graph_selected_node
         .as_ref()
@@ -5530,28 +9695,28 @@ fn draw_graph_details(
         draw_text(
             &format!("Node: {}", node.title),
             rect.x + 10.0,
-            rect.y + 75.0,
+            rect.y + 102.0,
             13.0,
             Color::from_rgba(126, 205, 255, 255),
         );
         draw_text(
             &format!("id {}", node.id),
             rect.x + 10.0,
-            rect.y + 96.0,
+            rect.y + 123.0,
             12.0,
             Color::from_rgba(190, 202, 222, 255),
         );
         draw_text(
             &format!("next {}", node.next.as_deref().unwrap_or("none")),
             rect.x + 10.0,
-            rect.y + 115.0,
+            rect.y + 142.0,
             12.0,
             Color::from_rgba(190, 202, 222, 255),
         );
         draw_text(
             &format!("pins {}", node.output_pins.join(", ")),
             rect.x + 10.0,
-            rect.y + 134.0,
+            rect.y + 161.0,
             12.0,
             Color::from_rgba(190, 202, 222, 255),
         );
@@ -5559,12 +9724,12 @@ fn draw_graph_details(
         draw_text(
             "Select a node or drag from output pin.",
             rect.x + 10.0,
-            rect.y + 76.0,
+            rect.y + 104.0,
             12.0,
             Color::from_rgba(132, 150, 176, 255),
         );
     }
-    let mut y = rect.y + 150.0;
+    let mut y = rect.y + 176.0;
     draw_text(
         "Warnings",
         rect.x + 10.0,
@@ -5591,6 +9756,40 @@ fn draw_graph_details(
                 Color::from_rgba(255, 206, 130, 255),
             );
             y += 17.0;
+        }
+    }
+    if let Some(analysis) = &blueprint_analysis {
+        y += 8.0;
+        draw_text(
+            "Flow",
+            rect.x + 10.0,
+            y,
+            13.0,
+            Color::from_rgba(125, 216, 205, 255),
+        );
+        y += 18.0;
+        let flow = if analysis.orphan_node_ids.is_empty() {
+            format!("events {}", analysis.event_node_ids.join(", "))
+        } else {
+            format!("orphans {}", analysis.orphan_node_ids.join(", "))
+        };
+        draw_text(
+            &ellipsize(&flow, 29),
+            rect.x + 18.0,
+            y,
+            12.0,
+            ui_text_muted(),
+        );
+        y += 17.0;
+        for action in analysis.recommended_actions.iter().take(3) {
+            draw_text(
+                &ellipsize(action, 28),
+                rect.x + 18.0,
+                y,
+                12.0,
+                Color::from_rgba(214, 224, 238, 255),
+            );
+            y += 16.0;
         }
     }
     y += 22.0;
@@ -5685,14 +9884,29 @@ fn draw_code_editor(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
     } else {
         ""
     };
-    draw_text(
-        &ellipsize(&format!("Editor: {title}{dirty}"), 60),
-        rect.x + 10.0,
-        rect.y + 20.0,
-        16.0,
+    draw_text_fit(
+        &format!("Editor: {title}{dirty}"),
+        RectSpec {
+            x: rect.x + 10.0,
+            y: rect.y + 3.0,
+            w: (rect.w - 456.0).max(160.0),
+            h: 24.0,
+        },
+        16,
         ui_text(),
+        TextAlign::Left,
     );
     let button_y = rect.y + 5.0;
+    if button(
+        rect.x + rect.w - 436.0,
+        button_y,
+        78.0,
+        21.0,
+        "VS Code",
+        state.editor_preferences.prefer_vscode,
+    ) {
+        open_current_file_in_external_editor(game, state);
+    }
     if button(
         rect.x + rect.w - 352.0,
         button_y,
@@ -5736,27 +9950,131 @@ fn draw_code_editor(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
             game.console.log(error.clone(), "ERROR");
         }
     }
+    let tools_y = rect.y + 30.0;
+    if button(rect.x + 10.0, tools_y, 78.0, 21.0, "fn start", false)
+        && game.script_editor.insert_luau_event_template("on_start")
+    {
+        state.code_cursor_line = game.script_editor.lines.len().saturating_sub(1);
+        state.code_cursor_column = 0;
+    }
+    if button(rect.x + 94.0, tools_y, 86.0, 21.0, "fn update", false)
+        && game.script_editor.insert_luau_event_template("on_update")
+    {
+        state.code_cursor_line = game.script_editor.lines.len().saturating_sub(1);
+        state.code_cursor_column = 0;
+    }
+    if button(rect.x + 186.0, tools_y, 76.0, 21.0, "Format", false) {
+        match game.script_editor.format_json_pretty() {
+            Ok(true) => game.console.log("JSON/graph formateado", "SCRIPT"),
+            Ok(false) => {}
+            Err(error) => game.console.log(
+                format!("No se pudo formatear como JSON: {error}"),
+                "WARNING",
+            ),
+        }
+    }
+    if button(rect.x + 268.0, tools_y, 68.0, 21.0, "Dupe", false) {
+        let (line, column) = game.script_editor.duplicate_line(state.code_cursor_line);
+        state.code_cursor_line = line;
+        state.code_cursor_column = column;
+    }
+    if button(rect.x + 342.0, tools_y, 78.0, 21.0, "Comment", false) {
+        let (line, column) = game
+            .script_editor
+            .toggle_line_comment(state.code_cursor_line);
+        state.code_cursor_line = line;
+        state.code_cursor_column = column;
+    }
+    if button(rect.x + 426.0, tools_y, 56.0, 21.0, "+Log", false)
+        && let Some((line, column)) = game.script_editor.insert_snippet(
+            "log",
+            state.code_cursor_line,
+            state.code_cursor_column,
+        )
+    {
+        state.code_cursor_line = line;
+        state.code_cursor_column = column;
+    }
+    if button(rect.x + 488.0, tools_y, 70.0, 21.0, "+Spawn", false)
+        && let Some((line, column)) = game.script_editor.insert_snippet(
+            "spawn",
+            state.code_cursor_line,
+            state.code_cursor_column,
+        )
+    {
+        state.code_cursor_line = line;
+        state.code_cursor_column = column;
+    }
+    if button(rect.x + 564.0, tools_y, 70.0, 21.0, "+Sprite", false)
+        && let Some((line, column)) = game.script_editor.insert_snippet(
+            "sprite",
+            state.code_cursor_line,
+            state.code_cursor_column,
+        )
+    {
+        state.code_cursor_line = line;
+        state.code_cursor_column = column;
+    }
+    if button(rect.x + 640.0, tools_y, 62.0, 21.0, "+Anim", false)
+        && let Some((line, column)) = game.script_editor.insert_snippet(
+            "anim",
+            state.code_cursor_line,
+            state.code_cursor_column,
+        )
+    {
+        state.code_cursor_line = line;
+        state.code_cursor_column = column;
+    }
 
+    let side_w = if rect.w > 760.0 { 270.0 } else { 0.0 };
     let code_area = RectSpec {
         x: rect.x + 8.0,
-        y: rect.y + 34.0,
-        w: rect.w - 16.0,
-        h: rect.h - 62.0,
+        y: rect.y + 58.0,
+        w: rect.w - 16.0 - side_w,
+        h: rect.h - 86.0,
+    };
+    let side_panel = RectSpec {
+        x: code_area.x + code_area.w + 8.0,
+        y: code_area.y,
+        w: side_w - 8.0,
+        h: code_area.h,
     };
     draw_rect(code_area, Color::from_rgba(13, 16, 23, 255));
     if contains_mouse(code_area) && is_mouse_button_pressed(MouseButton::Left) {
         state.code_editor_active = true;
+        let (mx, _) = mouse_position();
         let row = ((mouse_position().1 - code_area.y) / 17.0).max(0.0) as usize;
         state.code_cursor_line =
             (state.code_scroll_line + row).min(game.script_editor.lines.len().saturating_sub(1));
-        state.code_cursor_column = 0;
+        state.code_cursor_column = game
+            .script_editor
+            .lines
+            .get(state.code_cursor_line)
+            .map(|line| {
+                byte_index_from_visual_column(
+                    line,
+                    ((mx - code_area.x - 48.0) / 7.2).round().max(0.0) as usize,
+                )
+            })
+            .unwrap_or(0);
     }
 
     if game.script_editor.document.path.is_none() {
-        draw_text(
-            "Sin archivo abierto.",
+        if button(
             code_area.x + 12.0,
-            code_area.y + 28.0,
+            code_area.y + 12.0,
+            118.0,
+            24.0,
+            "New Script",
+            false,
+        ) && let Ok(path) = game.create_luau_script_asset("NewGameplayScript")
+        {
+            set_open_file_editor_state(state, &path);
+        }
+        draw_text(
+            "Sin archivo abierto. Click aqui o New Script para empezar.",
+            code_area.x + 12.0,
+            code_area.y + 58.0,
             14.0,
             Color::from_rgba(150, 166, 192, 255),
         );
@@ -5806,15 +10124,44 @@ fn draw_code_editor(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
             13.0,
             Color::from_rgba(96, 116, 145, 255),
         );
-        draw_text(
-            &ellipsize(line, 112),
+        let matches_search = !state.script_search.is_empty()
+            && line
+                .to_lowercase()
+                .contains(&state.script_search.to_lowercase());
+        if matches_search {
+            draw_rectangle(
+                code_area.x + 2.0,
+                y - 13.0,
+                code_area.w - 4.0,
+                16.0,
+                Color::from_rgba(66, 54, 24, 210),
+            );
+        }
+        let extension = game
+            .script_editor
+            .document
+            .path
+            .as_ref()
+            .and_then(|path| path.extension())
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("rs");
+        draw_code_line_colored(
+            &state.syntax_highlighter,
+            line,
+            extension,
             code_area.x + 48.0,
             y,
-            13.0,
-            Color::from_rgba(214, 224, 238, 255),
+            (code_area.w - 60.0).max(40.0),
+            if matches_search {
+                Some(Color::from_rgba(255, 230, 150, 255))
+            } else {
+                None
+            },
         );
         if index == state.code_cursor_line && state.code_editor_active {
-            let cursor_x = code_area.x + 48.0 + (state.code_cursor_column as f32 * 7.2);
+            let cursor_x = code_area.x
+                + 48.0
+                + (line_visual_column(line, state.code_cursor_column) as f32 * 7.2);
             draw_line(
                 cursor_x,
                 y - 13.0,
@@ -5825,6 +10172,10 @@ fn draw_code_editor(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
             );
         }
         y += 17.0;
+    }
+
+    if side_w > 0.0 {
+        draw_script_intelligence_panel(game, state, side_panel);
     }
 
     if let Some(error) = &game.script_editor.document.syntax_error {
@@ -5856,6 +10207,351 @@ fn draw_code_editor(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
         (content_h - code_area.h).max(0.0),
         content_h.max(code_area.h),
     );
+}
+
+fn draw_script_intelligence_panel(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
+    draw_rect(rect, Color::from_rgba(16, 20, 29, 245));
+    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, ui_line_soft());
+    draw_text("Script Map", rect.x + 10.0, rect.y + 19.0, 14.0, ui_text());
+    draw_script_search_box(
+        state,
+        RectSpec {
+            x: rect.x + 8.0,
+            y: rect.y + 28.0,
+            w: rect.w - 16.0,
+            h: 24.0,
+        },
+    );
+
+    let stats = game.script_editor.stats();
+    let diagnostic_summary = game.script_editor.diagnostic_summary();
+    draw_text(
+        &format!(
+            "{} lines | {} chars | {} fn | {} nodes",
+            stats.lines, stats.characters, stats.functions, stats.graph_nodes
+        ),
+        rect.x + 10.0,
+        rect.y + 70.0,
+        12.0,
+        ui_text_muted(),
+    );
+    draw_text(
+        &format!(
+            "E{} W{} H{}",
+            diagnostic_summary.errors, diagnostic_summary.warnings, diagnostic_summary.hints
+        ),
+        rect.x + rect.w - 72.0,
+        rect.y + 70.0,
+        12.0,
+        if diagnostic_summary.errors > 0 {
+            Color::from_rgba(255, 130, 110, 255)
+        } else {
+            ui_text_muted()
+        },
+    );
+
+    let mut y = rect.y + 94.0;
+    draw_text(
+        "Outline",
+        rect.x + 10.0,
+        y,
+        13.0,
+        Color::from_rgba(125, 216, 205, 255),
+    );
+    y += 18.0;
+    let query = state.script_search.to_lowercase();
+    let outline = game.script_editor.outline.clone();
+    for symbol in outline
+        .iter()
+        .filter(|symbol| query.is_empty() || symbol.name.to_lowercase().contains(&query))
+        .take(7)
+    {
+        let row = RectSpec {
+            x: rect.x + 8.0,
+            y: y - 13.0,
+            w: rect.w - 16.0,
+            h: 17.0,
+        };
+        if contains_mouse(row) {
+            draw_rect(row, Color::from_rgba(40, 50, 64, 255));
+            if is_mouse_button_pressed(MouseButton::Left) {
+                state.code_cursor_line = symbol.line.saturating_sub(1);
+                state.code_cursor_column = 0;
+                keep_code_cursor_visible(state, 12);
+            }
+        }
+        draw_text(
+            &ellipsize(&format!("{}  {}", symbol.kind, symbol.name), 27),
+            rect.x + 12.0,
+            y,
+            12.0,
+            ui_text(),
+        );
+        draw_text(
+            &format!("{}", symbol.line),
+            rect.x + rect.w - 34.0,
+            y,
+            12.0,
+            ui_text_muted(),
+        );
+        y += 18.0;
+    }
+
+    if !state.script_search.is_empty() {
+        y += 6.0;
+        draw_text(
+            "Matches",
+            rect.x + 10.0,
+            y,
+            13.0,
+            Color::from_rgba(145, 190, 255, 255),
+        );
+        y += 18.0;
+        for result in game
+            .script_editor
+            .search_text(&state.script_search)
+            .iter()
+            .take(4)
+        {
+            let row = RectSpec {
+                x: rect.x + 8.0,
+                y: y - 13.0,
+                w: rect.w - 16.0,
+                h: 17.0,
+            };
+            if contains_mouse(row) {
+                draw_rect(row, Color::from_rgba(40, 50, 64, 255));
+                if is_mouse_button_pressed(MouseButton::Left) {
+                    state.code_cursor_line = result.line.saturating_sub(1);
+                    state.code_cursor_column = result.column;
+                    keep_code_cursor_visible(state, 12);
+                }
+            }
+            draw_text(
+                &ellipsize(&format!("{}  {}", result.line, result.preview), 31),
+                rect.x + 12.0,
+                y,
+                12.0,
+                Color::from_rgba(214, 224, 238, 255),
+            );
+            y += 17.0;
+        }
+    }
+
+    y += 8.0;
+    draw_text(
+        "Diagnostics",
+        rect.x + 10.0,
+        y,
+        13.0,
+        Color::from_rgba(255, 206, 130, 255),
+    );
+    y += 18.0;
+    let diagnostics = game.script_editor.diagnostics.clone();
+    if diagnostics.is_empty() {
+        draw_text(
+            "No issues after last check.",
+            rect.x + 12.0,
+            y,
+            12.0,
+            Color::from_rgba(135, 230, 165, 255),
+        );
+    } else {
+        for diagnostic in diagnostics.iter().take(7) {
+            let color = match diagnostic.severity {
+                crate::engine::script_editor::ScriptDiagnosticSeverity::Error => {
+                    Color::from_rgba(255, 130, 110, 255)
+                }
+                crate::engine::script_editor::ScriptDiagnosticSeverity::Warning => {
+                    Color::from_rgba(255, 206, 130, 255)
+                }
+                crate::engine::script_editor::ScriptDiagnosticSeverity::Hint => {
+                    Color::from_rgba(145, 190, 255, 255)
+                }
+            };
+            let prefix = diagnostic
+                .line
+                .map(|line| format!("{line}: "))
+                .unwrap_or_default();
+            draw_text(
+                &ellipsize(&format!("{prefix}{}", diagnostic.message), 32),
+                rect.x + 12.0,
+                y,
+                12.0,
+                color,
+            );
+            y += 17.0;
+        }
+    }
+
+    y += 10.0;
+    draw_text(
+        "Actions",
+        rect.x + 10.0,
+        y,
+        13.0,
+        Color::from_rgba(126, 205, 255, 255),
+    );
+    y += 18.0;
+    let actions = game.script_editor.code_actions();
+    for action in actions.iter().take(4) {
+        let row = RectSpec {
+            x: rect.x + 8.0,
+            y: y - 13.0,
+            w: rect.w - 16.0,
+            h: 18.0,
+        };
+        let hovered = contains_mouse(row);
+        draw_rect(
+            row,
+            if hovered {
+                Color::from_rgba(38, 50, 68, 255)
+            } else {
+                Color::from_rgba(24, 30, 41, 255)
+            },
+        );
+        draw_text(
+            &ellipsize(&action.title, 31),
+            rect.x + 12.0,
+            y,
+            12.0,
+            ui_text(),
+        );
+        if hovered && is_mouse_button_pressed(MouseButton::Left) {
+            match game.script_editor.apply_code_action(action) {
+                Ok(true) => {
+                    game.console
+                        .log(format!("Action applied: {}", action.title), "SCRIPT");
+                    keep_code_cursor_visible(state, 12);
+                }
+                Ok(false) => {
+                    if let Some(line) = action.line {
+                        state.code_cursor_line = line.saturating_sub(1);
+                        state.code_cursor_column = 0;
+                        keep_code_cursor_visible(state, 12);
+                    }
+                }
+                Err(error) => game
+                    .console
+                    .log(format!("No se pudo aplicar accion: {error}"), "WARNING"),
+            }
+        }
+        y += 19.0;
+    }
+
+    let mini_y = rect.y + rect.h - 84.0;
+    draw_text(
+        "Mini",
+        rect.x + 10.0,
+        mini_y,
+        12.0,
+        Color::from_rgba(125, 216, 205, 255),
+    );
+    let mini = game.script_editor.minimap();
+    let mini_rect = RectSpec {
+        x: rect.x + 48.0,
+        y: mini_y - 11.0,
+        w: rect.w - 58.0,
+        h: 28.0,
+    };
+    draw_rect(mini_rect, Color::from_rgba(11, 15, 22, 255));
+    for item in mini.iter().take(42) {
+        let color = match item.kind.as_str() {
+            "diagnostic" => Color::from_rgba(255, 130, 110, 255),
+            "function" => Color::from_rgba(125, 216, 205, 255),
+            "graph_node" => Color::from_rgba(145, 190, 255, 255),
+            "comment" => Color::from_rgba(96, 116, 145, 255),
+            _ => Color::from_rgba(214, 224, 238, 180),
+        };
+        let x = mini_rect.x + (item.line.saturating_sub(1) as f32 % 42.0) * 4.0;
+        let h = ((item.intensity as f32 / 96.0) * 22.0).clamp(3.0, 22.0);
+        draw_rectangle(x, mini_rect.y + mini_rect.h - h - 3.0, 2.0, h, color);
+    }
+
+    let help_y = rect.y + rect.h - 46.0;
+    draw_text(
+        "Cmd+S save | Cmd+D duplicate",
+        rect.x + 10.0,
+        help_y,
+        11.0,
+        ui_text_muted(),
+    );
+    draw_text(
+        "Cmd+/ comment | Tab indent",
+        rect.x + 10.0,
+        help_y + 16.0,
+        11.0,
+        ui_text_muted(),
+    );
+}
+
+fn draw_code_line_colored(
+    highlighter: &EditorSyntaxHighlighter,
+    line: &str,
+    extension: &str,
+    x: f32,
+    y: f32,
+    max_w: f32,
+    override_color: Option<Color>,
+) {
+    let mut draw_x = x;
+    let max_x = x + max_w;
+    let spans = highlighter.highlight_line(line, extension);
+    for span in spans {
+        if draw_x >= max_x {
+            break;
+        }
+        let color = override_color.unwrap_or_else(|| {
+            Color::from_rgba(span.rgba[0], span.rgba[1], span.rgba[2], span.rgba[3])
+        });
+        let shown = if draw_x + measure_text(&span.text, None, 13, 1.0).width > max_x {
+            let remaining = ((max_x - draw_x) / 7.2).floor().max(1.0) as usize;
+            ellipsize(&span.text, remaining)
+        } else {
+            span.text
+        };
+        if !shown.trim().is_empty() {
+            draw_text(&shown, draw_x, y, 13.0, color);
+        }
+        draw_x += measure_text(&shown, None, 13, 1.0).width;
+        if shown.ends_with("...") {
+            break;
+        }
+    }
+}
+
+fn byte_index_from_visual_column(line: &str, visual_column: usize) -> usize {
+    line.char_indices()
+        .nth(visual_column)
+        .map(|(index, _)| index)
+        .unwrap_or(line.len())
+}
+
+fn line_visual_column(line: &str, byte_index: usize) -> usize {
+    let byte_index = byte_index.min(line.len());
+    line.char_indices()
+        .take_while(|(index, _)| *index < byte_index)
+        .count()
+}
+
+fn previous_code_char_boundary(line: &str, byte_index: usize) -> usize {
+    let mut previous = 0usize;
+    for (index, _) in line.char_indices() {
+        if index >= byte_index {
+            break;
+        }
+        previous = index;
+    }
+    previous
+}
+
+fn next_code_char_boundary(line: &str, byte_index: usize) -> usize {
+    let byte_index = byte_index.min(line.len());
+    line[byte_index..]
+        .char_indices()
+        .nth(1)
+        .map(|(index, _)| byte_index + index)
+        .unwrap_or(line.len())
 }
 
 fn draw_prefab_panel(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
@@ -6234,7 +10930,7 @@ fn draw_scenes_panel(game: &mut Game, _state: &mut EditorState, rect: RectSpec) 
     }
 }
 
-fn draw_sprite_editor_panel(game: &mut Game, _state: &mut EditorState, rect: RectSpec) {
+fn draw_sprite_editor_panel(game: &mut Game, state: &mut EditorState, rect: RectSpec) {
     let canvas = game.sprite_editor.clone();
     draw_panel_chrome(
         rect,
@@ -6259,27 +10955,73 @@ fn draw_sprite_editor_panel(game: &mut Game, _state: &mut EditorState, rect: Rec
         game.new_sprite_canvas(32, 32);
     }
     if button(rect.x + 182.0, rect.y + 31.0, 68.0, 22.0, "Clear", false) {
+        game.sprite_editor.begin_edit();
         game.sprite_editor.clear(SpriteColor::TRANSPARENT);
+        game.sprite_editor.commit_edit();
     }
     if button(rect.x + 258.0, rect.y + 31.0, 66.0, 22.0, "Flip H", false) {
+        game.sprite_editor.begin_edit();
         game.sprite_editor.flip_horizontal();
+        game.sprite_editor.commit_edit();
     }
     if button(rect.x + 332.0, rect.y + 31.0, 66.0, 22.0, "Flip V", false) {
+        game.sprite_editor.begin_edit();
         game.sprite_editor.flip_vertical();
+        game.sprite_editor.commit_edit();
     }
     if button(rect.x + 406.0, rect.y + 31.0, 62.0, 22.0, "Rotate", false) {
+        game.sprite_editor.begin_edit();
         game.sprite_editor.rotate_right();
+        game.sprite_editor.commit_edit();
     }
     if button(rect.x + 476.0, rect.y + 31.0, 72.0, 22.0, "Save", false) {
         game.save_sprite_canvas("Sprite").ok();
     }
+    if button(rect.x + 556.0, rect.y + 31.0, 64.0, 22.0, "Crop", false) {
+        game.sprite_editor.begin_edit();
+        if game.sprite_editor.crop_to_content(1) {
+            game.sprite_editor.commit_edit();
+            game.console.log("Sprite recortado al contenido", "SPRITE");
+        }
+    }
+    if button(rect.x + 628.0, rect.y + 31.0, 74.0, 22.0, "Outline", false) {
+        game.sprite_editor.begin_edit();
+        let color = game.sprite_editor.active_color;
+        let changed = game.sprite_editor.outline_alpha(color);
+        game.sprite_editor.commit_edit();
+        game.console
+            .log(format!("Outline aplicado a {changed} pixeles"), "SPRITE");
+    }
+    if button(rect.x + 710.0, rect.y + 31.0, 54.0, 22.0, "Undo", false) {
+        game.sprite_editor.undo();
+    }
+    if button(rect.x + 772.0, rect.y + 31.0, 54.0, 22.0, "Redo", false) {
+        game.sprite_editor.redo();
+    }
+    let sheet_y = rect.y + 58.0;
+    draw_text(
+        "Sheet",
+        rect.x + 14.0,
+        sheet_y + 16.0,
+        13.0,
+        Color::from_rgba(125, 216, 205, 255),
+    );
+    if button(rect.x + 70.0, sheet_y, 70.0, 21.0, "2x1", false) {
+        save_sprite_sheet_from_canvas(game, state, 2, 1);
+    }
+    if button(rect.x + 146.0, sheet_y, 70.0, 21.0, "4x1", false) {
+        save_sprite_sheet_from_canvas(game, state, 4, 1);
+    }
+    if button(rect.x + 222.0, sheet_y, 70.0, 21.0, "4x2", false) {
+        save_sprite_sheet_from_canvas(game, state, 4, 2);
+    }
 
-    let grid_size = (rect.h - 96.0).min(rect.w * 0.45).max(96.0);
+    let grid_size = (rect.h - 122.0).min(rect.w * 0.45).max(96.0);
     let pixel = (grid_size / canvas.width.max(canvas.height) as f32)
         .floor()
         .max(2.0);
     let origin_x = rect.x + 18.0;
-    let origin_y = rect.y + 72.0;
+    let origin_y = rect.y + 98.0;
     draw_rect(
         RectSpec {
             x: origin_x - 6.0,
@@ -6302,8 +11044,22 @@ fn draw_sprite_editor_panel(game: &mut Game, _state: &mut EditorState, rect: Rec
             draw_rectangle_lines(sx, sy, pixel, pixel, 1.0, Color::from_rgba(0, 0, 0, 50));
         }
     }
+    let frame_w = canvas.width.clamp(1, 16);
+    let frame_h = canvas.height.clamp(1, 16);
+    let draft = canvas.animation_clip_draft("SpriteDraft", frame_w, frame_h, 8.0);
+    let sample = draft.sample_at(get_time() as f32, true);
+    draw_sprite_frame_overlay(
+        &draft,
+        sample.as_ref().map(|sample| sample.frame_index),
+        origin_x,
+        origin_y,
+        pixel,
+    );
 
     let (mx, my) = mouse_position();
+    if is_mouse_button_released(MouseButton::Left) || is_mouse_button_released(MouseButton::Right) {
+        game.sprite_editor.commit_edit();
+    }
     let local_x = ((mx - origin_x) / pixel).floor() as i32;
     let local_y = ((my - origin_y) / pixel).floor() as i32;
     if local_x >= 0
@@ -6311,6 +11067,10 @@ fn draw_sprite_editor_panel(game: &mut Game, _state: &mut EditorState, rect: Rec
         && (local_x as u32) < canvas.width
         && (local_y as u32) < canvas.height
     {
+        if is_mouse_button_pressed(MouseButton::Left) || is_mouse_button_pressed(MouseButton::Right)
+        {
+            game.sprite_editor.begin_edit();
+        }
         if is_mouse_button_down(MouseButton::Left) {
             game.paint_sprite_pixel(
                 local_x as u32,
@@ -6324,6 +11084,11 @@ fn draw_sprite_editor_panel(game: &mut Game, _state: &mut EditorState, rect: Rec
                 local_y as u32,
                 game.sprite_editor.secondary_color,
             );
+        }
+        if is_mouse_button_released(MouseButton::Left)
+            || is_mouse_button_released(MouseButton::Right)
+        {
+            game.sprite_editor.commit_edit();
         }
     }
 
@@ -6422,6 +11187,13 @@ fn draw_sprite_editor_panel(game: &mut Game, _state: &mut EditorState, rect: Rec
             sy += 36.0;
         }
     }
+    let timeline_rect = RectSpec {
+        x: inspector.x + 12.0,
+        y: (sy + 42.0).min(inspector.y + inspector.h - 132.0),
+        w: inspector.w - 24.0,
+        h: 92.0,
+    };
+    draw_sprite_animation_timeline(&draft, sample.as_ref(), timeline_rect);
     draw_text(
         "Left paints active color; right paints secondary.",
         inspector.x + 12.0,
@@ -6429,6 +11201,206 @@ fn draw_sprite_editor_panel(game: &mut Game, _state: &mut EditorState, rect: Rec
         13.0,
         Color::from_rgba(145, 162, 190, 255),
     );
+}
+
+fn save_sprite_sheet_from_canvas(
+    game: &mut Game,
+    state: &mut EditorState,
+    columns: u32,
+    rows: u32,
+) {
+    let columns = columns.max(1).min(game.sprite_editor.width.max(1));
+    let rows = rows.max(1).min(game.sprite_editor.height.max(1));
+    let frame_width = (game.sprite_editor.width / columns).max(1);
+    let frame_height = (game.sprite_editor.height / rows).max(1);
+    let base = game
+        .sprite_editor
+        .last_path
+        .as_ref()
+        .and_then(|path| path.file_stem())
+        .and_then(|value| value.to_str())
+        .unwrap_or("SpriteSheetLab")
+        .to_string();
+    let name = format!("{base}_{columns}x{rows}");
+    let result: io::Result<(PathBuf, PathBuf, PathBuf)> = (|| {
+        let image_path = game.save_sprite_canvas(&name)?;
+        let sheet_meta =
+            SpriteSheetImporter::build_metadata(&image_path, frame_width, frame_height, 0, 0)?;
+        let sheet_path = SpriteSheetImporter::write_sidecar(&image_path, &sheet_meta)?;
+        let texture_ref = relative_project_path(game, &image_path);
+        let frames = SpriteFrames2D::grid_slice(
+            name.clone(),
+            texture_ref.clone(),
+            columns,
+            rows,
+            frame_width,
+            frame_height,
+            8.0,
+        );
+        let animation_folder = AssetTools::create_special_folder(&game.project_path, "animations")?;
+        let frames_path =
+            AssetTools::unique_path(&animation_folder, &format!("{name}.spriteframes"));
+        let frames_value = serde_json::to_value(frames).map_err(io::Error::other)?;
+        AssetTools::write_json(&frames_path, &frames_value)?;
+        let sprite_manifest = game.create_sprite_import_asset(&name, &texture_ref)?;
+        patch_sprite_import_links(
+            game,
+            &sprite_manifest,
+            Some(&sheet_path),
+            Some(&frames_path),
+            (columns * rows) as usize,
+        )?;
+        Ok((sprite_manifest, sheet_path, frames_path))
+    })();
+
+    match result {
+        Ok((sprite_manifest, _sheet_path, frames_path)) => {
+            state.selected_asset_path = Some(relative_project_path(game, &sprite_manifest));
+            state.content_source = "Sprites".to_string();
+            state.content_type_filter = Some("Sprite".to_string());
+            game.refresh_assets().ok();
+            game.console.log(
+                format!(
+                    "Plancha {columns}x{rows} creada: {}",
+                    relative_project_path(game, &frames_path)
+                ),
+                "SPRITE",
+            );
+        }
+        Err(error) => game.console.log(
+            format!("No se pudo crear plancha de sprites: {error}"),
+            "ERROR",
+        ),
+    }
+}
+
+fn draw_sprite_frame_overlay(
+    draft: &SpriteAnimationClipDraft,
+    active_frame: Option<usize>,
+    origin_x: f32,
+    origin_y: f32,
+    pixel: f32,
+) {
+    for marker in &draft.timeline_preview().markers {
+        let [x, y, w, h] = marker.source_rect;
+        let rect = RectSpec {
+            x: origin_x + x as f32 * pixel,
+            y: origin_y + y as f32 * pixel,
+            w: w as f32 * pixel,
+            h: h as f32 * pixel,
+        };
+        let active = active_frame == Some(marker.frame_index);
+        draw_rectangle_lines(
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            if active { 2.5 } else { 1.0 },
+            if active {
+                Color::from_rgba(255, 214, 92, 255)
+            } else {
+                Color::from_rgba(100, 185, 255, 180)
+            },
+        );
+        if active {
+            draw_text(
+                &marker.label,
+                rect.x + 3.0,
+                rect.y + 12.0,
+                11.0,
+                Color::from_rgba(255, 245, 190, 255),
+            );
+        }
+    }
+}
+
+fn draw_sprite_animation_timeline(
+    draft: &SpriteAnimationClipDraft,
+    sample: Option<&SpriteAnimationPlaybackSample>,
+    rect: RectSpec,
+) {
+    draw_rect(rect, Color::from_rgba(15, 18, 25, 235));
+    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, ui_line_soft());
+    let preview = draft.timeline_preview();
+    draw_text(
+        &format!(
+            "Animation Draft | {} frames | {:.2}s @ {:.0} fps",
+            preview.frame_count, preview.total_duration, preview.fps
+        ),
+        rect.x + 10.0,
+        rect.y + 20.0,
+        13.0,
+        ui_text(),
+    );
+    let bar = RectSpec {
+        x: rect.x + 10.0,
+        y: rect.y + 34.0,
+        w: rect.w - 20.0,
+        h: 24.0,
+    };
+    draw_rectangle(
+        bar.x,
+        bar.y,
+        bar.w,
+        bar.h,
+        Color::from_rgba(25, 30, 40, 255),
+    );
+    for marker in &preview.markers {
+        let mx = bar.x + bar.w * marker.normalized_start;
+        let mw = (bar.w * (marker.normalized_end - marker.normalized_start)).max(2.0);
+        let active = sample.is_some_and(|sample| sample.frame_index == marker.frame_index);
+        draw_rectangle(
+            mx,
+            bar.y,
+            mw - 1.0,
+            bar.h,
+            if active {
+                Color::from_rgba(255, 204, 92, 255)
+            } else {
+                Color::from_rgba(72, 118, 176, 230)
+            },
+        );
+        if mw > 22.0 {
+            draw_text(
+                &marker.label,
+                mx + 4.0,
+                bar.y + 16.0,
+                10.0,
+                Color::from_rgba(245, 248, 255, 255),
+            );
+        }
+    }
+    if let Some(sample) = sample {
+        let px = bar.x + bar.w * sample.normalized_time;
+        draw_line(
+            px,
+            bar.y - 4.0,
+            px,
+            bar.y + bar.h + 4.0,
+            2.0,
+            Color::from_rgba(255, 245, 190, 255),
+        );
+        draw_text(
+            &format!(
+                "Frame {} | rect {:?}",
+                sample.frame_index + 1,
+                sample.source_rect
+            ),
+            rect.x + 10.0,
+            rect.y + 76.0,
+            12.0,
+            Color::from_rgba(185, 205, 232, 255),
+        );
+    }
+    for warning in preview.warnings.iter().take(1) {
+        draw_text(
+            warning,
+            rect.x + 10.0,
+            rect.y + rect.h - 10.0,
+            11.0,
+            Color::from_rgba(255, 178, 128, 255),
+        );
+    }
 }
 
 fn sprite_editor_color(color: SpriteColor) -> Color {
@@ -6443,19 +11415,40 @@ fn checker_color(x: u32, y: u32) -> Color {
     }
 }
 
-fn draw_profiler_panel(game: &Game, rect: RectSpec) {
-    draw_text("Profiler", rect.x + 14.0, rect.y + 20.0, 18.0, WHITE);
+fn frame_health_label(health: crate::engine::diagnostics::FrameHealth) -> &'static str {
+    match health {
+        crate::engine::diagnostics::FrameHealth::Stable => "stable",
+        crate::engine::diagnostics::FrameHealth::OverBudget => "over budget",
+        crate::engine::diagnostics::FrameHealth::Saturated => "fixed saturated",
+    }
+}
+
+fn frame_health_color(health: crate::engine::diagnostics::FrameHealth) -> Color {
+    match health {
+        crate::engine::diagnostics::FrameHealth::Stable => Color::from_rgba(80, 210, 150, 255),
+        crate::engine::diagnostics::FrameHealth::OverBudget => Color::from_rgba(255, 198, 92, 255),
+        crate::engine::diagnostics::FrameHealth::Saturated => Color::from_rgba(255, 110, 110, 255),
+    }
+}
+
+fn draw_profiler_panel(game: &mut Game, rect: RectSpec) {
+    draw_text(
+        &format!("Profiler {}", crate::ENGINE_VERSION),
+        rect.x + 14.0,
+        rect.y + 20.0,
+        18.0,
+        WHITE,
+    );
     let mut x = rect.x + 120.0;
     let stats = [
         format!("FPS {:.0}", game.diagnostics.fps),
         format!("Frame {:.2} ms", game.diagnostics.frame_time_ms),
-        format!("Entities {}", game.units.len()),
-        format!("Mode {}", game.mode),
         format!(
-            "Budget {}",
-            game.editor_workspace
-                .performance_status(game.diagnostics.frame_time_ms)
+            "Health {}",
+            frame_health_label(game.diagnostics.last_frame.health)
         ),
+        format!("Entities {}", game.runtime_world.units.len()),
+        format!("Mode {}", game.mode),
     ];
     for item in stats {
         draw_text(
@@ -6468,7 +11461,72 @@ fn draw_profiler_panel(game: &Game, rect: RectSpec) {
         x += 126.0;
     }
 
-    let mut y = rect.y + 46.0;
+    let health = &game.diagnostics.last_frame;
+    let health_color = frame_health_color(health.health);
+    let health_width = if rect.w > 940.0 {
+        (rect.w - 342.0).max(300.0)
+    } else {
+        rect.w - 28.0
+    };
+    let health_rect = RectSpec {
+        x: rect.x + 14.0,
+        y: rect.y + 38.0,
+        w: health_width,
+        h: 50.0,
+    };
+    draw_gradient_rect(
+        health_rect,
+        Color::from_rgba(23, 31, 44, 255),
+        Color::from_rgba(13, 17, 25, 255),
+    );
+    draw_rectangle_lines(
+        health_rect.x,
+        health_rect.y,
+        health_rect.w,
+        health_rect.h,
+        1.0,
+        ui_line_soft(),
+    );
+    draw_rect(
+        RectSpec {
+            x: health_rect.x,
+            y: health_rect.y,
+            w: 4.0,
+            h: health_rect.h,
+        },
+        health_color,
+    );
+    draw_text(
+        frame_health_label(health.health),
+        health_rect.x + 12.0,
+        health_rect.y + 18.0,
+        15.0,
+        health_color,
+    );
+    let summary = game.diagnostics.health_summary();
+    draw_text(
+        &ellipsize(&summary, 112),
+        health_rect.x + 132.0,
+        health_rect.y + 18.0,
+        13.0,
+        Color::from_rgba(218, 225, 238, 255),
+    );
+    let pacing = format!(
+        "fixed {} x {:.2} ms | dropped {:.2} ms | alpha {:.2}",
+        health.fixed_steps,
+        health.fixed_delta_ms,
+        health.dropped_time_ms,
+        health.interpolation_alpha
+    );
+    draw_text(
+        &ellipsize(&pacing, 74),
+        health_rect.x + 132.0,
+        health_rect.y + 38.0,
+        12.0,
+        Color::from_rgba(160, 178, 202, 255),
+    );
+
+    let mut y = rect.y + 106.0;
     draw_text(
         "Counters",
         rect.x + 14.0,
@@ -6488,7 +11546,7 @@ fn draw_profiler_panel(game: &Game, rect: RectSpec) {
         y += 18.0;
     }
 
-    let mut y2 = rect.y + 46.0;
+    let mut y2 = rect.y + 106.0;
     draw_text(
         "Gameplay",
         rect.x + 220.0,
@@ -6508,7 +11566,7 @@ fn draw_profiler_panel(game: &Game, rect: RectSpec) {
         y2 += 18.0;
     }
 
-    let mut y3 = rect.y + 46.0;
+    let mut y3 = rect.y + 106.0;
     draw_text(
         "Physics",
         rect.x + 430.0,
@@ -6528,7 +11586,7 @@ fn draw_profiler_panel(game: &Game, rect: RectSpec) {
         y3 += 18.0;
     }
 
-    let mut y4 = rect.y + 46.0;
+    let mut y4 = rect.y + 106.0;
     draw_text(
         "Systems",
         rect.x + 650.0,
@@ -6548,6 +11606,17 @@ fn draw_profiler_panel(game: &Game, rect: RectSpec) {
         );
         y4 += 17.0;
     }
+    let actions = health.action_items();
+    for action in actions.iter().take(2) {
+        draw_text(
+            &ellipsize(action, 44),
+            rect.x + 650.0,
+            y4,
+            12.0,
+            Color::from_rgba(255, 190, 145, 255),
+        );
+        y4 += 16.0;
+    }
     for (name, value) in game.profiler.rows().iter().take(7) {
         draw_text(
             &format!("{name}: {value}"),
@@ -6558,6 +11627,194 @@ fn draw_profiler_panel(game: &Game, rect: RectSpec) {
         );
         y4 += 18.0;
     }
+
+    if rect.w > 940.0 {
+        draw_complex_game_checklist(
+            game,
+            RectSpec {
+                x: rect.x + rect.w - 306.0,
+                y: rect.y + 44.0,
+                w: 292.0,
+                h: rect.h - 54.0,
+            },
+        );
+    }
+}
+
+#[derive(Debug, Clone)]
+struct EditorChecklistItem {
+    label: &'static str,
+    ok: bool,
+    detail: String,
+}
+
+fn draw_complex_game_checklist(game: &mut Game, rect: RectSpec) {
+    draw_rect(rect, Color::from_rgba(16, 20, 28, 235));
+    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, ui_line_soft());
+    draw_text(
+        "Complex Game Checklist",
+        rect.x + 10.0,
+        rect.y + 21.0,
+        15.0,
+        Color::from_rgba(180, 220, 255, 255),
+    );
+    let items = complex_game_checklist(game);
+    let ready = items.iter().filter(|item| item.ok).count();
+    draw_text(
+        &format!("{ready}/{} foundations ready", items.len()),
+        rect.x + 10.0,
+        rect.y + 40.0,
+        12.0,
+        ui_text_muted(),
+    );
+    let max_items = ((rect.h - 102.0) / 34.0).floor().clamp(1.0, 8.0) as usize;
+    let mut y = rect.y + 63.0;
+    for item in items.iter().take(max_items) {
+        let color = if item.ok {
+            Color::from_rgba(116, 220, 148, 255)
+        } else {
+            Color::from_rgba(255, 184, 104, 255)
+        };
+        draw_circle(rect.x + 14.0, y - 5.0, 4.0, color);
+        draw_text(item.label, rect.x + 26.0, y, 12.0, ui_text());
+        draw_text(
+            &ellipsize(&item.detail, 33),
+            rect.x + 26.0,
+            y + 15.0,
+            11.0,
+            ui_text_muted(),
+        );
+        y += 34.0;
+    }
+    let button_y = rect.y + rect.h - 30.0;
+    if button(
+        rect.x + 10.0,
+        button_y,
+        rect.w - 20.0,
+        22.0,
+        "Prepare Foundations",
+        false,
+    ) {
+        let report = game.prepare_complex_game_foundations();
+        game.console.log(
+            format!(
+                "Checklist action: player +{}, systems +{}, ui {}",
+                report.added_player_components.len(),
+                report.added_system_components.len(),
+                if report.created_ui_canvas {
+                    "created"
+                } else {
+                    "ready"
+                }
+            ),
+            "EDITOR",
+        );
+    }
+}
+
+fn complex_game_checklist(game: &Game) -> Vec<EditorChecklistItem> {
+    let ui_elements: usize = ui_canvases_from_value(&game.ui_canvases)
+        .iter()
+        .map(|canvas| canvas.elements.len())
+        .sum();
+    let component_count = |component: &str| {
+        game.runtime_world
+            .units
+            .iter()
+            .filter(|entity| entity.get_component(component).is_some())
+            .count()
+    };
+    let has_scripted_logic = game.runtime_world.units.iter().any(|entity| {
+        entity.script.is_some()
+            || !entity.scripts.is_empty()
+            || entity.get_component("VisualScript").is_some()
+    });
+    let gameplay_components = [
+        "Health",
+        "Inventory",
+        "Ability",
+        "QuestLog",
+        "EconomyWallet",
+        "ProductionQueue",
+    ]
+    .iter()
+    .map(|component| component_count(component))
+    .sum::<usize>();
+    let runtime_scale_components = [
+        "RuntimeBudget2D",
+        "WorldPartition2D",
+        "ObjectPool2D",
+        "SpawnDirector2D",
+        "SaveShard2D",
+    ]
+    .iter()
+    .map(|component| component_count(component))
+    .sum::<usize>();
+    vec![
+        EditorChecklistItem {
+            label: "Playable Actor",
+            ok: component_count("CharacterController2D") > 0
+                || game
+                    .runtime_world
+                    .units
+                    .iter()
+                    .any(|entity| entity.tag == "Player"),
+            detail: format!(
+                "{} controllers, {} Player tags",
+                component_count("CharacterController2D"),
+                game.runtime_world
+                    .units
+                    .iter()
+                    .filter(|entity| entity.tag == "Player")
+                    .count()
+            ),
+        },
+        EditorChecklistItem {
+            label: "Gameplay Loop",
+            ok: gameplay_components >= 3,
+            detail: format!("{gameplay_components} economy/combat/progression components"),
+        },
+        EditorChecklistItem {
+            label: "AI / Navigation",
+            ok: component_count("AIController") > 0 || component_count("NavAgent") > 0,
+            detail: format!(
+                "{} AI, {} nav agents",
+                component_count("AIController"),
+                component_count("NavAgent")
+            ),
+        },
+        EditorChecklistItem {
+            label: "Runtime UI",
+            ok: ui_elements > 0 || component_count("UIElement") > 0,
+            detail: format!(
+                "{ui_elements} canvas widgets, {} legacy UI",
+                component_count("UIElement")
+            ),
+        },
+        EditorChecklistItem {
+            label: "Save Path",
+            ok: component_count("Saveable") > 0,
+            detail: format!("{} saveable entities", component_count("Saveable")),
+        },
+        EditorChecklistItem {
+            label: "Scripted Logic",
+            ok: has_scripted_logic,
+            detail: format!(
+                "{} open visual graphs",
+                game.programming.opened_graphs.len()
+            ),
+        },
+        EditorChecklistItem {
+            label: "Input Map",
+            ok: game.input_map.actions.len() >= 6,
+            detail: format!("{} actions configured", game.input_map.actions.len()),
+        },
+        EditorChecklistItem {
+            label: "Runtime Scale",
+            ok: runtime_scale_components >= 3,
+            detail: format!("{runtime_scale_components}/5 scale systems"),
+        },
+    ]
 }
 
 const COMMAND_PALETTE_ITEMS: &[(&str, &str)] = &[
@@ -6572,9 +11829,13 @@ const COMMAND_PALETTE_ITEMS: &[(&str, &str)] = &[
     ("Create TopDown starter scene", "starter_topdown"),
     ("Create Platformer starter scene", "starter_platformer"),
     ("Create RTS skirmish scene", "rts_skirmish"),
+    ("Prepare complex game foundations", "prepare_complex"),
     ("Toggle Play Mode snapshot", "toggle_play"),
     ("Open Play Window", "play_window"),
+    ("Open Launcher", "open_launcher"),
     ("Open detached script window", "script_window"),
+    ("Open preferences", "preferences"),
+    ("Open script in VS Code", "open_vscode"),
     ("Add Health to selected", "add_health"),
     ("Add NavAgent to selected", "add_nav"),
     ("Add VisualScript to selected", "add_visual"),
@@ -6614,7 +11875,8 @@ const COMMAND_PALETTE_ITEMS: &[(&str, &str)] = &[
     ("Revert selected prefab", "revert_prefab"),
     ("Detach selected prefab", "detach_prefab"),
     ("Open Scene Browser", "scene_browser"),
-    ("Open Sprite Editor", "sprite_editor"),
+    ("Open detached Sprite Editor", "sprite_editor"),
+    ("Open Python automation tools", "python_tools"),
     ("Export project package", "export_project_zip"),
     ("Import project package", "import_project_zip"),
     ("Workspace world", "workspace_world"),
@@ -6629,6 +11891,19 @@ const COMMAND_PALETTE_ITEMS: &[(&str, &str)] = &[
     ("Recover autosave", "recover_autosave"),
     ("Validate project", "validate"),
     ("Refresh asset database", "refresh"),
+    ("Align selection left", "align_left"),
+    ("Align selection center X", "align_center_x"),
+    ("Align selection top", "align_top"),
+    ("Align selection center Y", "align_center_y"),
+    ("Distribute selection horizontally", "distribute_x"),
+    ("Distribute selection vertically", "distribute_y"),
+    ("Group selected objects", "group_selection"),
+    ("Ungroup selected objects", "ungroup_selection"),
+    ("Lock or unlock selected layer", "toggle_layer_lock"),
+    ("Show or hide selected layer", "toggle_layer_visibility"),
+    ("Move selection to next layer", "selection_next_layer"),
+    ("Run Python scene production report", "python_scene_report"),
+    ("Show 0.9.3.4 foundation status", "foundation_0934"),
     ("Build manifest", "manifest"),
     ("Export runtime debug", "export_debug"),
     ("Export runtime release", "export_release"),
@@ -6672,27 +11947,37 @@ fn draw_command_palette(game: &mut Game, state: &mut EditorState, sw: f32, sh: f
         Color::from_rgba(12, 16, 24, 255),
     );
     draw_rectangle_lines(search.x, search.y, search.w, search.h, 1.0, ui_line());
-    let query_label = if state.command_palette_search.is_empty() {
+    let query_label = if state.command_palette.query.is_empty() {
         "buscar comando, blueprint, inventario, economia..."
     } else {
-        &state.command_palette_search
+        &state.command_palette.query
     };
     draw_text(
         &ellipsize(query_label, 68),
         search.x + 10.0,
         search.y + 21.0,
         15.0,
-        if state.command_palette_search.is_empty() {
+        if state.command_palette.query.is_empty() {
             ui_text_muted()
         } else {
             ui_text()
         },
     );
 
-    let commands = filtered_palette_commands(&state.command_palette_search);
+    let commands = filtered_palette_commands(&state.command_palette.query);
     let mut y = panel.y + 116.0;
     let max_rows = ((panel.h - 158.0) / 22.0).floor().max(1.0) as usize;
-    for (label, command) in commands.into_iter().take(max_rows) {
+    let first_visible = state
+        .command_palette
+        .selected_index
+        .saturating_add(1)
+        .saturating_sub(max_rows);
+    for (index, (label, command)) in commands
+        .into_iter()
+        .enumerate()
+        .skip(first_visible)
+        .take(max_rows)
+    {
         let row = RectSpec {
             x: panel.x + 14.0,
             y: y - 18.0,
@@ -6700,9 +11985,10 @@ fn draw_command_palette(game: &mut Game, state: &mut EditorState, sw: f32, sh: f
             h: 23.0,
         };
         let hovered = contains_mouse(row);
+        let selected = state.command_palette.selected_index == index;
         draw_rect(
             row,
-            if hovered {
+            if hovered || selected {
                 Color::from_rgba(41, 58, 82, 255)
             } else {
                 Color::from_rgba(23, 30, 43, 255)
@@ -6713,12 +11999,17 @@ fn draw_command_palette(game: &mut Game, state: &mut EditorState, sw: f32, sh: f
             row.y,
             3.0,
             row.h,
-            if hovered { ui_accent() } else { ui_line_soft() },
+            if hovered || selected {
+                ui_accent()
+            } else {
+                ui_line_soft()
+            },
         );
         draw_text(label, row.x + 10.0, y, 16.0, ui_text());
         if hovered && is_mouse_button_pressed(MouseButton::Left) {
             run_palette_command(game, state, command);
-            state.command_palette = false;
+            state.command_palette.record_execution(command);
+            state.command_palette.close();
         }
         y += 22.0;
     }
@@ -6739,43 +12030,55 @@ fn draw_command_palette(game: &mut Game, state: &mut EditorState, sw: f32, sh: f
 }
 
 fn filtered_palette_commands(query: &str) -> Vec<(&'static str, &'static str)> {
-    let query = query.trim().to_lowercase();
-    let mut scored = COMMAND_PALETTE_ITEMS
+    let searchable = COMMAND_PALETTE_ITEMS
         .iter()
-        .filter_map(|(label, command)| {
-            let score = palette_score(&query, label, command);
-            if query.is_empty() || score >= 0.58 {
-                Some((score, *label, *command))
-            } else {
-                None
-            }
-        })
+        .map(|(label, command)| format!("{} {} {}", label, command, command.replace('_', " ")))
         .collect::<Vec<_>>();
-    scored.sort_by(|a, b| {
-        b.0.partial_cmp(&a.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.1.cmp(b.1))
-    });
-    scored
+    fuzzy_rank(query, &searchable, searchable.len())
         .into_iter()
-        .map(|(_, label, command)| (label, command))
+        .map(|result| COMMAND_PALETTE_ITEMS[result.index])
         .collect()
-}
-
-fn palette_score(query: &str, label: &str, command: &str) -> f64 {
-    if query.is_empty() {
-        return 1.0;
-    }
-    let label = label.to_lowercase();
-    let command = command.to_lowercase();
-    if label.contains(query) || command.contains(query) {
-        return 1.0;
-    }
-    jaro_winkler(&label, query).max(jaro_winkler(&command, query))
 }
 
 fn run_palette_command(game: &mut Game, state: &mut EditorState, command: &str) {
     match command {
+        "align_left" => align_selected_entities(game, AlignMode2D::Left),
+        "align_center_x" => align_selected_entities(game, AlignMode2D::CenterX),
+        "align_top" => align_selected_entities(game, AlignMode2D::Top),
+        "align_center_y" => align_selected_entities(game, AlignMode2D::CenterY),
+        "distribute_x" => align_selected_entities(game, AlignMode2D::DistributeX),
+        "distribute_y" => align_selected_entities(game, AlignMode2D::DistributeY),
+        "group_selection" => group_selected_entities(game),
+        "ungroup_selection" => ungroup_selected_entities(game),
+        "toggle_layer_lock" => toggle_selected_layer_lock(game),
+        "toggle_layer_visibility" => toggle_selected_layer_visibility(game),
+        "selection_next_layer" => move_selection_to_next_layer(game),
+        "python_scene_report" => {
+            run_python_tool(game, state, "scene_report");
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Console;
+        }
+        "toggle_smart_snap" => state.smart_snap = !state.smart_snap,
+        "toggle_collision_overlay" => state.show_collisions = !state.show_collisions,
+        "toggle_camera_frame" => state.show_camera_frame = !state.show_camera_frame,
+        "foundation_0934" => {
+            let plan = crate::engine::update_0934::Engine0934FoundationPlan::current();
+            game.console.log(
+                format!(
+                    "MiniForge {} | {:?} | launch_allowed={} | {}",
+                    plan.version, plan.release_state, plan.launch_allowed, plan.focus
+                ),
+                "0.9.3.4",
+            );
+            for capability in plan.capabilities {
+                game.console.log(
+                    format!("{}: {}", capability.area, capability.foundation),
+                    "FOUNDATION",
+                );
+            }
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Console;
+        }
         "spawn_unit" => {
             let (x, y) = spawn_position(game);
             game.spawn_unit("PlayerUnit", x, y);
@@ -6809,6 +12112,12 @@ fn run_palette_command(game: &mut Game, state: &mut EditorState, command: &str) 
             game.create_platformer_starter();
         }
         "rts_skirmish" => game.create_rts_skirmish(),
+        "prepare_complex" => {
+            game.prepare_complex_game_foundations();
+            state.show_console = true;
+            state.bottom_tab = BottomTab::Profiler;
+            state.show_inspector = true;
+        }
         "toggle_play" => toggle_play_mode(game, state),
         "add_health" => {
             if let Some(id) = selected_id(game) {
@@ -6980,8 +12289,7 @@ fn run_palette_command(game: &mut Game, state: &mut EditorState, command: &str) 
         "save" => save_scene(game),
         "new_scene" => create_new_scene(game),
         "command_palette" => {
-            state.command_palette = true;
-            state.command_palette_search.clear();
+            state.command_palette.open();
         }
         "toggle_browser" => {
             state.show_console = !state.show_console;
@@ -6992,9 +12300,10 @@ fn run_palette_command(game: &mut Game, state: &mut EditorState, command: &str) 
             state.bottom_tab = BottomTab::Scenes;
         }
         "sprite_editor" => {
-            state.show_console = true;
+            state.sprite_window_open = true;
             state.bottom_tab = BottomTab::Sprites;
         }
+        "python_tools" => state.python_tools_open = true,
         "toggle_hierarchy" => state.show_hierarchy = !state.show_hierarchy,
         "toggle_inspector" => state.show_inspector = !state.show_inspector,
         "script_window" => {
@@ -7002,12 +12311,24 @@ fn run_palette_command(game: &mut Game, state: &mut EditorState, command: &str) 
             state.show_console = true;
             state.bottom_tab = BottomTab::Programming;
         }
+        "preferences" => {
+            state.preferences_open = true;
+            state.menu_bar.close();
+            state.command_palette.close();
+        }
+        "open_vscode" => {
+            open_current_file_in_external_editor(game, state);
+        }
         "play_window" => {
             if game.mode == "PLAY" || state.external_play_child.is_some() {
                 state.play_window_open = true;
             } else {
                 launch_play_window(game, state);
             }
+        }
+        "open_launcher" => {
+            state.launcher_overlay = Some(new_launcher_state());
+            state.command_palette.close();
         }
         "validate" => {
             game.validate_project();
@@ -7060,16 +12381,18 @@ fn draw_status_bar(game: &Game, state: &EditorState, rect: RectSpec) {
     let layer = &game.tilemap_layers.layers[game.tilemap_layers.active_layer].name;
     draw_text(
         &format!(
-            "FPS {:.0} | frame {:.2} ms avg {:.2} | {} | dock egui_dock | zoom {:.2} | camera {:.0},{:.0} | tool {} | layer {} | {}{}{}",
+            "{} | FPS {:.0} | frame {:.2} ms avg {:.2} | health {} | {} | dock egui_dock | zoom {:.2} | camera {:.0},{:.0} | tool {} | layer {} | {}{}{}",
+            crate::ENGINE_VERSION,
             game.diagnostics.fps,
             game.diagnostics.frame_time_ms,
             game.diagnostics.average_frame_time_ms,
+            frame_health_label(game.diagnostics.last_frame.health),
             game.editor_workspace
                 .performance_status(game.diagnostics.frame_time_ms),
             game.camera.zoom,
             game.camera.x,
             game.camera.y,
-            state.tool.label(),
+            state.toolbar.active_tool().label(),
             layer,
             if game.scene_dirty { "dirty" } else { "clean" },
             if game.mode == "PLAY" {
@@ -7313,7 +12636,7 @@ fn delete_selected(game: &mut Game) {
 fn undo(game: &mut Game) {
     if let Some(label) = game.undo_editor_command() {
         game.console.log(format!("Undo: {label}"), "EDITOR");
-    } else if let Some(label) = game.history.undo(&mut game.units) {
+    } else if let Some(label) = game.history.undo(&mut game.runtime_world.units) {
         game.clear_selection();
         game.sync_world();
         game.mark_scene_dirty("Undo");
@@ -7324,7 +12647,7 @@ fn undo(game: &mut Game) {
 fn redo(game: &mut Game) {
     if let Some(label) = game.redo_editor_command() {
         game.console.log(format!("Redo: {label}"), "EDITOR");
-    } else if let Some(label) = game.history.redo(&mut game.units) {
+    } else if let Some(label) = game.history.redo(&mut game.runtime_world.units) {
         game.clear_selection();
         game.sync_world();
         game.mark_scene_dirty("Redo");
@@ -7334,6 +12657,25 @@ fn redo(game: &mut Game) {
 
 fn selected_id(game: &Game) -> Option<u64> {
     game.selected_units.first().copied()
+}
+
+fn entity_depth_in_units(entities: &[GameObject], entity_id: u64) -> usize {
+    let mut depth = 0;
+    let mut current = entities
+        .iter()
+        .find(|entity| entity.id == entity_id)
+        .and_then(|entity| entity.parent_id);
+    while let Some(parent_id) = current {
+        depth += 1;
+        if depth > entities.len() {
+            break;
+        }
+        current = entities
+            .iter()
+            .find(|entity| entity.id == parent_id)
+            .and_then(|entity| entity.parent_id);
+    }
+    depth
 }
 
 fn spawn_position(game: &Game) -> (f64, f64) {
@@ -7411,23 +12753,23 @@ fn draw_rect(rect: RectSpec, color: Color) {
 }
 
 fn ui_bg() -> Color {
-    Color::from_rgba(9, 12, 18, 255)
+    Color::from_rgba(9, 11, 15, 255)
 }
 
 fn ui_panel() -> Color {
-    Color::from_rgba(19, 24, 34, 248)
+    Color::from_rgba(17, 21, 29, 248)
 }
 
 fn ui_panel_alt() -> Color {
-    Color::from_rgba(25, 31, 43, 248)
+    Color::from_rgba(24, 29, 39, 248)
 }
 
 fn ui_line() -> Color {
-    Color::from_rgba(73, 88, 112, 255)
+    Color::from_rgba(67, 80, 101, 255)
 }
 
 fn ui_line_soft() -> Color {
-    Color::from_rgba(49, 61, 80, 255)
+    Color::from_rgba(42, 52, 68, 255)
 }
 
 fn ui_text() -> Color {
@@ -7439,11 +12781,11 @@ fn ui_text_muted() -> Color {
 }
 
 fn ui_accent() -> Color {
-    Color::from_rgba(83, 178, 255, 255)
+    Color::from_rgba(88, 166, 255, 255)
 }
 
 fn ui_accent_2() -> Color {
-    Color::from_rgba(111, 226, 196, 255)
+    Color::from_rgba(86, 214, 180, 255)
 }
 
 fn ui_warning() -> Color {
@@ -7461,7 +12803,7 @@ fn blend_color(a: Color, b: Color, t: f32) -> Color {
 }
 
 fn draw_gradient_rect(rect: RectSpec, top: Color, bottom: Color) {
-    let steps = rect.h.max(1.0).min(96.0) as usize;
+    let steps = rect.h.clamp(1.0, 96.0) as usize;
     if steps == 0 {
         return;
     }
@@ -7490,24 +12832,25 @@ fn draw_editor_backdrop(sw: f32, sh: f32) {
             w: sw,
             h: sh,
         },
-        Color::from_rgba(12, 16, 24, 255),
-        Color::from_rgba(6, 8, 13, 255),
+        Color::from_rgba(13, 17, 24, 255),
+        Color::from_rgba(6, 8, 12, 255),
     );
     draw_rectangle(0.0, 0.0, sw, 2.0, Color::from_rgba(107, 213, 255, 80));
+    draw_rectangle(0.0, 2.0, sw, 1.0, Color::from_rgba(86, 214, 180, 42));
 }
 
 fn draw_surface(rect: RectSpec, active: bool) {
     draw_rectangle(
-        rect.x + 4.0,
-        rect.y + 6.0,
+        rect.x,
+        rect.y + 2.0,
         rect.w,
         rect.h,
-        Color::from_rgba(0, 0, 0, 70),
+        Color::from_rgba(0, 0, 0, 48),
     );
     draw_gradient_rect(
         rect,
         if active {
-            Color::from_rgba(31, 42, 62, 252)
+            Color::from_rgba(28, 36, 50, 252)
         } else {
             ui_panel_alt()
         },
@@ -7518,7 +12861,14 @@ fn draw_surface(rect: RectSpec, active: bool) {
         rect.y,
         rect.w,
         1.0,
-        Color::from_rgba(255, 255, 255, 22),
+        Color::from_rgba(255, 255, 255, 30),
+    );
+    draw_rectangle(
+        rect.x + 1.0,
+        rect.y + rect.h - 2.0,
+        rect.w - 2.0,
+        1.0,
+        Color::from_rgba(0, 0, 0, 60),
     );
     draw_rectangle_lines(
         rect.x,
@@ -7526,7 +12876,11 @@ fn draw_surface(rect: RectSpec, active: bool) {
         rect.w,
         rect.h,
         1.0,
-        if active { ui_accent() } else { ui_line_soft() },
+        if active {
+            Color::from_rgba(84, 116, 150, 255)
+        } else {
+            ui_line_soft()
+        },
     );
 }
 
@@ -7538,18 +12892,41 @@ fn draw_panel_header(rect: RectSpec, title: &str, subtitle: &str) {
             w: rect.w,
             h: 42.0_f32.min(rect.h),
         },
-        Color::from_rgba(35, 44, 61, 245),
-        Color::from_rgba(24, 30, 42, 235),
+        Color::from_rgba(38, 49, 67, 245),
+        Color::from_rgba(22, 28, 39, 235),
     );
     draw_rectangle(rect.x, rect.y, 4.0, rect.h.min(42.0), ui_accent());
-    draw_text(title, rect.x + 14.0, rect.y + 26.0, 19.0, ui_text());
+    draw_rectangle(
+        rect.x + 4.0,
+        rect.y + rect.h.min(42.0) - 1.0,
+        rect.w - 4.0,
+        1.0,
+        Color::from_rgba(86, 214, 180, 75),
+    );
+    draw_text_fit(
+        title,
+        RectSpec {
+            x: rect.x + 14.0,
+            y: rect.y + 6.0,
+            w: (rect.w * 0.42).max(92.0),
+            h: 28.0,
+        },
+        19,
+        ui_text(),
+        TextAlign::Left,
+    );
     if !subtitle.is_empty() {
-        draw_text(
-            &ellipsize(subtitle, 42),
-            rect.x + 128.0,
-            rect.y + 25.0,
-            12.0,
+        draw_text_fit(
+            subtitle,
+            RectSpec {
+                x: rect.x + (rect.w * 0.42).max(126.0),
+                y: rect.y + 8.0,
+                w: (rect.w * 0.56 - 18.0).max(44.0),
+                h: 24.0,
+            },
+            12,
             ui_text_muted(),
+            TextAlign::Right,
         );
     }
 }
@@ -7602,12 +12979,44 @@ fn draw_macos_chrome(rect: RectSpec) {
 }
 
 fn contains(rect: RectSpec, x: f32, y: f32) -> bool {
-    x >= rect.x && y >= rect.y && x <= rect.x + rect.w && y <= rect.y + rect.h
+    UiButton::hit_test(
+        (
+            f64::from(rect.x),
+            f64::from(rect.y),
+            f64::from(rect.w),
+            f64::from(rect.h),
+        ),
+        f64::from(x),
+        f64::from(y),
+        true,
+        true,
+    )
 }
 
 fn contains_mouse(rect: RectSpec) -> bool {
     let (mx, my) = mouse_position();
     contains(rect, mx, my)
+}
+
+fn draw_text_fit(text: &str, rect: RectSpec, font_size: u16, color: Color, align: TextAlign) {
+    if rect.w <= 1.0 || rect.h <= 1.0 || text.is_empty() {
+        return;
+    }
+    let mut size = font_size.max(8);
+    while size > 8 && measure_text(text, None, size, 1.0).width > rect.w {
+        size -= 1;
+    }
+    let avg_char_w = (size as f32 * 0.55).max(1.0);
+    let max_chars = (rect.w / avg_char_w).floor().max(1.0) as usize;
+    let shown = ellipsize(text, max_chars);
+    let measure = measure_text(&shown, None, size, 1.0);
+    let x = match align {
+        TextAlign::Left => rect.x,
+        TextAlign::Center => rect.x + ((rect.w - measure.width) * 0.5).max(0.0),
+        TextAlign::Right => rect.x + (rect.w - measure.width).max(0.0),
+    };
+    let y = rect.y + rect.h * 0.5 + measure.height * 0.34;
+    draw_text(&shown, x, y, size as f32, color);
 }
 
 fn command_modifier_down() -> bool {
@@ -7619,26 +13028,41 @@ fn command_modifier_down() -> bool {
 
 fn button(x: f32, y: f32, w: f32, h: f32, label: &str, active: bool) -> bool {
     let rect = RectSpec { x, y, w, h };
-    let hovered = contains_mouse(rect);
-    let (top, bottom) = if active {
-        (
-            Color::from_rgba(55, 122, 176, 255),
-            Color::from_rgba(26, 74, 118, 255),
-        )
+    let (mouse_x, mouse_y) = mouse_position();
+    let hovered = UiButton::hit_test(
+        (f64::from(x), f64::from(y), f64::from(w), f64::from(h)),
+        f64::from(mouse_x),
+        f64::from(mouse_y),
+        true,
+        true,
+    );
+    let pressed = hovered && is_mouse_button_down(MouseButton::Left);
+    let visual_state = UiButton::resolve_visual_state(true, true, hovered, pressed);
+    let fill = if active {
+        Color::from_rgba(38, 91, 134, 255)
+    } else if visual_state == crate::engine::ui::ButtonVisualState::Pressed {
+        Color::from_rgba(30, 79, 118, 255)
     } else if hovered {
-        (
-            Color::from_rgba(49, 61, 80, 255),
-            Color::from_rgba(34, 42, 58, 255),
-        )
+        Color::from_rgba(39, 48, 63, 255)
     } else {
-        (
-            Color::from_rgba(31, 38, 51, 255),
-            Color::from_rgba(22, 27, 38, 255),
-        )
+        Color::from_rgba(25, 31, 42, 255)
     };
-    draw_rectangle(x, y + 2.0, w, h, Color::from_rgba(0, 0, 0, 70));
-    draw_gradient_rect(rect, top, bottom);
-    draw_rectangle(x, y, w, 1.0, Color::from_rgba(255, 255, 255, 28));
+    draw_gradient_rect(
+        rect,
+        if hovered || active {
+            blend_color(fill, Color::from_rgba(255, 255, 255, 255), 0.08)
+        } else {
+            fill
+        },
+        blend_color(fill, Color::from_rgba(0, 0, 0, 255), 0.16),
+    );
+    draw_rectangle(
+        x + 1.0,
+        y + 1.0,
+        w - 2.0,
+        1.0,
+        Color::from_rgba(255, 255, 255, 22),
+    );
     draw_rectangle_lines(
         x,
         y,
@@ -7646,25 +13070,70 @@ fn button(x: f32, y: f32, w: f32, h: f32, label: &str, active: bool) -> bool {
         h,
         1.0,
         if hovered || active {
-            Color::from_rgba(124, 202, 255, 255)
+            Color::from_rgba(111, 190, 244, 255)
         } else {
-            Color::from_rgba(67, 80, 104, 255)
+            Color::from_rgba(54, 65, 84, 255)
         },
     );
     if active {
         draw_rectangle(x + 3.0, y + h - 3.0, w - 6.0, 2.0, ui_accent_2());
     }
-    let font_size = 14;
-    let shown = ellipsize(label, (w / 7.0).max(3.0) as usize);
-    let measure = measure_text(&shown, None, font_size, 1.0);
-    draw_text(
-        &shown,
-        x + ((w - measure.width) * 0.5).max(4.0),
-        y + h * 0.5 + measure.height * 0.34,
-        font_size as f32,
+    draw_text_fit(
+        label,
+        RectSpec {
+            x: x + 5.0,
+            y: y + 1.0,
+            w: (w - 10.0).max(1.0),
+            h: (h - 2.0).max(1.0),
+        },
+        14,
         ui_text(),
+        TextAlign::Center,
     );
     hovered && is_mouse_button_pressed(MouseButton::Left)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "compact immediate-mode UI primitive"
+)]
+fn icon_button(
+    font: Option<&Font>,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    icon: EditorIcon,
+    label: &str,
+    active: bool,
+) -> bool {
+    let clicked = button(x, y, w, h, "", active);
+    if let Some(font) = font {
+        draw_text_ex(
+            icon.glyph(),
+            x + 6.0,
+            y + h - 6.0,
+            TextParams {
+                font: Some(font),
+                font_size: 15,
+                color: if active { WHITE } else { ui_text() },
+                ..Default::default()
+            },
+        );
+    }
+    draw_text_fit(
+        label,
+        RectSpec {
+            x: x + if font.is_some() { 22.0 } else { 5.0 },
+            y: y + 1.0,
+            w: (w - if font.is_some() { 27.0 } else { 10.0 }).max(1.0),
+            h: (h - 2.0).max(1.0),
+        },
+        14,
+        ui_text(),
+        TextAlign::Center,
+    );
+    clicked
 }
 
 fn ellipsize(text: &str, max_chars: usize) -> String {
@@ -7738,7 +13207,16 @@ pub async fn run_exported_runtime_player() {
         eprintln!("Estructura de proyecto incompleta: {error}");
         return;
     }
-    let mut game = match Game::from_project(&build_root, true) {
+    CrashReporter::install(CrashReporterConfig::for_project(
+        &build_root,
+        "MiniForge Runtime",
+    ));
+    let safe_mode = if safe_mode_requested_from_environment() {
+        SafeModeSettings::for_recovery("solicitado para runtime exportado")
+    } else {
+        SafeModeSettings::default()
+    };
+    let mut game = match Game::from_project_with_safe_mode(&build_root, true, safe_mode) {
         Ok(game) => game,
         Err(error) => {
             eprintln!("No se pudo cargar el proyecto exportado: {error}");
@@ -7750,6 +13228,10 @@ pub async fn run_exported_runtime_player() {
         format!("Runtime player: {} (Esc para salir)", build_root.display()),
         "RUNTIME",
     );
+    let mut nav = EditorState {
+        zoom_target: game.camera.zoom,
+        ..EditorState::default()
+    };
     loop {
         if is_key_pressed(KeyCode::Escape) {
             break;
@@ -7757,8 +13239,7 @@ pub async fn run_exported_runtime_player() {
         let dt = get_frame_time() as f64;
         let sw = screen_width();
         let sh = screen_height();
-        let nav = EditorState::default();
-        handle_camera_input(&mut game, dt, &nav);
+        handle_camera_input(&mut game, dt, &mut nav);
         handle_character_input(&mut game);
         game.run_headless_once(dt);
         clear_background(Color::from_rgba(18, 20, 26, 255));
@@ -7784,4 +13265,11 @@ pub async fn run_exported_runtime_player() {
         );
         next_frame().await;
     }
+}
+
+fn safe_mode_requested_from_environment() -> bool {
+    std::env::args().any(|argument| argument == "--safe-mode")
+        || std::env::var("MINIFORGE_SAFE_MODE")
+            .ok()
+            .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
 }

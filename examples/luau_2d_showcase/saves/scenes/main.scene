@@ -1,0 +1,152 @@
+{
+  "version": "0.9.3",
+  "engine_version": "0.9.3",
+  "scene_name": "luau_2d_showcase",
+  "mode": "PLAY",
+  "grid": {
+    "width": 24,
+    "height": 14,
+    "tile_size": 16,
+    "chunk_size": 8
+  },
+  "camera": {
+    "x": 0.0,
+    "y": 0.0,
+    "zoom": 2.0
+  },
+  "tilemap_layers": {
+    "width": 24,
+    "height": 14,
+    "active_layer": 0,
+    "layers": [
+      {"name": "Ground", "visible": true, "locked": false, "tiles": []},
+      {"name": "Decoration", "visible": true, "locked": false, "tiles": []},
+      {"name": "Collision", "visible": false, "locked": false, "tiles": [
+        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+      ]},
+      {"name": "Overlay", "visible": true, "locked": false, "tiles": []}
+    ]
+  },
+  "entities": [
+    {
+      "type": "GameObject",
+      "id": 1001,
+      "name": "Player",
+      "tag": "Player",
+      "layer": "Player",
+      "x": 3.0,
+      "y": 10.8,
+      "width": 0.8,
+      "height": 1.0,
+      "script": "PlayerController.luau",
+      "components": [
+        {"component_type": "Transform", "x": 3.0, "y": 10.8, "rotation": 0.0, "scale_x": 1.0, "scale_y": 1.0},
+        {"component_type": "SpriteRenderer", "sprite_name": "Player", "sprite_frames": "assets/animations/player.spriteframes", "active_animation": "Idle", "use_2d_animation": true, "flip_x": false, "flip_y": false},
+        {"component_type": "Collider2D", "shape": "rect", "width": 0.8, "height": 1.0, "collision_layer": "Player", "collision_mask": ["WorldStatic", "Enemy", "Trigger", "OneWayPlatform"]},
+        {"component_type": "Rigidbody2D", "body_type": "dynamic", "mass": 1.0, "use_gravity": true, "gravity_scale": 1.0, "freeze_rotation": true},
+        {"component_type": "CharacterController2D", "mode": "platformer", "walk_speed": 5.0, "run_speed": 8.0, "jump_force": 9.0, "max_jumps": 1},
+        {"component_type": "Camera2D", "active": true, "zoom": 2.0, "pixel_perfect": true, "pixels_per_unit": 16.0},
+        {"component_type": "CameraFollow", "target_id": 1001, "smoothness": 8.0, "zoom": 2.0, "viewport_width": 960.0, "viewport_height": 540.0},
+        {"component_type": "CameraShake", "active": false, "duration": 0.0, "elapsed": 0.0, "trauma": 0.0, "amplitude": 0.0},
+        {"component_type": "AnimatedSprite", "frames": "assets/animations/player.spriteframes", "animation": "Idle", "playing": true},
+        {"component_type": "AnimationPlayer", "current": "Idle", "playing": true, "parameters": {}}
+      ]
+    },
+    {
+      "type": "GameObject",
+      "id": 1002,
+      "name": "Enemy",
+      "tag": "Enemy",
+      "layer": "Enemy",
+      "x": 10.0,
+      "y": 10.8,
+      "width": 0.9,
+      "height": 0.9,
+      "script": "EnemyBrain.luau",
+      "components": [
+        {"component_type": "Transform", "x": 10.0, "y": 10.8, "rotation": 0.0, "scale_x": 1.0, "scale_y": 1.0},
+        {"component_type": "SpriteRenderer", "sprite_name": "Enemy", "active_animation": "Idle"},
+        {"component_type": "Collider2D", "shape": "rect", "width": 0.9, "height": 0.9, "collision_layer": "Enemy", "collision_mask": ["Player", "Projectile", "WorldStatic"]},
+        {"component_type": "Rigidbody2D", "body_type": "dynamic", "mass": 1.0, "use_gravity": true, "freeze_rotation": true},
+        {"component_type": "Health", "max_health": 25.0, "health": 25.0, "alive": true},
+        {"component_type": "AnimationPlayer", "current": "Idle", "playing": true, "parameters": {}}
+      ]
+    },
+    {
+      "type": "GameObject",
+      "id": 1003,
+      "name": "OneWayPlatform",
+      "tag": "Platform",
+      "layer": "WorldStatic",
+      "x": 7.0,
+      "y": 8.8,
+      "width": 4.0,
+      "height": 0.25,
+      "components": [
+        {"component_type": "Transform", "x": 7.0, "y": 8.8, "rotation": 0.0, "scale_x": 1.0, "scale_y": 1.0},
+        {"component_type": "Collider2D", "shape": "rect", "width": 4.0, "height": 0.25, "collision_layer": "OneWayPlatform", "collision_mask": ["Player"]},
+        {"component_type": "StaticBody2D", "body_type": "static", "one_way": true, "one_way_normal_x": 0.0, "one_way_normal_y": -1.0},
+        {"component_type": "OneWayPlatform2D", "enabled": true, "normal_x": 0.0, "normal_y": -1.0}
+      ]
+    },
+    {
+      "type": "GameObject",
+      "id": 1004,
+      "name": "ScoreTrigger",
+      "tag": "Trigger",
+      "layer": "Trigger",
+      "x": 13.0,
+      "y": 10.8,
+      "width": 1.5,
+      "height": 1.5,
+      "components": [
+        {"component_type": "Transform", "x": 13.0, "y": 10.8, "rotation": 0.0, "scale_x": 1.0, "scale_y": 1.0},
+        {"component_type": "Area2D", "shape": "rect", "width": 1.5, "height": 1.5, "collision_layer": "Trigger", "collision_mask": ["Player"]},
+        {"component_type": "Collider2D", "enabled": false, "shape": "rect", "width": 1.5, "height": 1.5, "is_trigger": true, "collision_layer": "Trigger", "collision_mask": ["Player"]}
+      ]
+    },
+    {
+      "type": "GameObject",
+      "id": 1010,
+      "name": "ShowcaseTilemap",
+      "tag": "Tilemap",
+      "layer": "WorldStatic",
+      "x": 0.0,
+      "y": 0.0,
+      "components": [
+        {"component_type": "TilemapRenderer2D", "tilemap": "assets/tilemaps/showcase.tilemap.json", "tileset": "assets/tiles/showcase.tileset.json", "visible_layers": ["Ground"]},
+        {"component_type": "Tilemap2D", "width": 24, "height": 14, "tile_width": 16, "tile_height": 16, "chunk_width": 8, "chunk_height": 8, "layers": [
+          {"name": "Ground", "visible": true, "collision": false, "navigation": false, "tiles": []},
+          {"name": "Collision", "visible": false, "collision": true, "navigation": false, "tiles": []},
+          {"name": "Navigation", "visible": false, "collision": false, "navigation": true, "tiles": []}
+        ], "autotiles": [], "animated_tiles": [], "dirty_chunks": []},
+        {"component_type": "TilemapCollider", "solid_tiles": [1], "one_way_tiles": [], "enabled_layers": ["Collision"]}
+      ]
+    },
+    {
+      "type": "GameObject",
+      "id": 1030,
+      "name": "HudScore",
+      "tag": "UI",
+      "layer": "UI",
+      "x": 0.0,
+      "y": 0.0,
+      "components": [
+        {"component_type": "UIElement", "element_type": "Label", "text": "Score 0", "x": 24.0, "y": 24.0, "width": 160.0, "height": 32.0}
+      ]
+    }
+  ]
+}

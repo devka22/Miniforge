@@ -1,0 +1,49 @@
+{
+  "simulation": "CityDirector publishes phase/weather/headlights into Blackboard for any game script.",
+  "day_length_seconds": 1333,
+  "profiles": [
+    {
+      "id": "clear",
+      "name": "Claro",
+      "ambient": 1.0,
+      "traffic": 1.0,
+      "headlights": false
+    },
+    {
+      "id": "cloudy",
+      "name": "Nublado",
+      "ambient": 0.84,
+      "traffic": 0.94,
+      "headlights": false
+    },
+    {
+      "id": "rain",
+      "name": "Lluvia",
+      "ambient": 0.66,
+      "traffic": 0.82,
+      "headlights": true
+    },
+    {
+      "id": "storm",
+      "name": "Tormenta suave",
+      "ambient": 0.52,
+      "traffic": 0.72,
+      "headlights": true
+    },
+    {
+      "id": "coastal_fog",
+      "name": "Niebla costera",
+      "ambient": 0.6,
+      "traffic": 0.76,
+      "headlights": true
+    }
+  ],
+  "consumers": [
+    "TrafficBrain",
+    "PoliceBrain",
+    "PedestrianBrain",
+    "Light2D",
+    "Bloom2D",
+    "HUD_Weather"
+  ]
+}

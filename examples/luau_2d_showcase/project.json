@@ -1,0 +1,7 @@
+{
+  "name": "Luau 2D Showcase",
+  "version": 1,
+  "main_scene": "saves/scenes/main.scene",
+  "runtime": "macroquad+luau",
+  "description": "MiniForge 2D gameplay showcase using Rust systems and Luau gameplay scripts."
+}

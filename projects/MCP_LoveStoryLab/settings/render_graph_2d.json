@@ -1,0 +1,11 @@
+{
+  "format": "miniforge.render-graph-2d",
+  "schema_version": 1,
+  "engine_version": "0.9.3",
+  "kind": "RenderGraph2D",
+  "batcher": "SpriteBatcher",
+  "atlas": "TextureAtlas2D",
+  "passes": ["Tilemap", "WorldSprites", "Particles", "Lighting2D", "UI"],
+  "pixel_perfect": true,
+  "sort_mode": "layer_then_order"
+}

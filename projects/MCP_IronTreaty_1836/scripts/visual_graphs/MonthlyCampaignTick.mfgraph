@@ -1,0 +1,43 @@
+{
+  "version": "0.9.1.1",
+  "kind": "MiniForgeVisualGraph",
+  "runtime": "rust_visual_graph",
+  "name": "MonthlyCampaignTick",
+  "variables": {
+    "month": 1,
+    "treasury_delta": 0,
+    "militancy_pressure": 0,
+    "industrial_score": 21
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "EventStart",
+      "next": "announce"
+    },
+    {
+      "id": "update",
+      "type": "EventUpdate",
+      "next": "economy"
+    },
+    {
+      "id": "announce",
+      "type": "Log",
+      "message": "Grand strategy campaign systems loaded",
+      "next": null
+    },
+    {
+      "id": "economy",
+      "type": "EconomyAdd",
+      "resource": "Gold",
+      "amount": 5,
+      "next": "research"
+    },
+    {
+      "id": "research",
+      "type": "Log",
+      "message": "Monthly research and market pass",
+      "next": null
+    }
+  ]
+}

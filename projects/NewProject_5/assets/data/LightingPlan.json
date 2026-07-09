@@ -1,0 +1,25 @@
+{
+  "tech": "Runtime Light2D fan renderer using raycasts against ShadowCaster2D AABBs",
+  "global": "World_Ambient changes intensity with time_of_day and weather",
+  "dynamic": [
+    "player lamp",
+    "street lamps",
+    "police lights",
+    "vehicle headlights",
+    "contact halos",
+    "pier/yacht lights",
+    "projectile tracers"
+  ],
+  "shadow_casters": [
+    "all buildings"
+  ],
+  "runtime_pass": [
+    "night overlay",
+    "raycast light fans",
+    "shadow wedges",
+    "visible source cores"
+  ],
+  "post": [
+    "World_Bloom tracks wanted level"
+  ]
+}

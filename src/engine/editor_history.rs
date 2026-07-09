@@ -3,6 +3,7 @@ use crate::engine::editor_command::EditorCommand;
 use crate::engine::tilemap_layers::TilemapLayers;
 use crate::entities::game_object::GameObject;
 use crate::map::grid::Grid;
+use serde_json::Value;
 
 #[derive(Debug, Clone, Default)]
 pub struct EditorHistory {
@@ -46,11 +47,12 @@ impl EditorHistory {
         tilemap_layers: &mut TilemapLayers,
         grid: &mut Grid,
         camera: &mut Camera,
+        ui_canvases: &mut Value,
     ) -> Option<String> {
         let command = self.command_undo.pop()?;
         command
             .before
-            .restore(entities, tilemap_layers, grid, camera);
+            .restore(entities, tilemap_layers, grid, camera, ui_canvases);
         let label = command.label.clone();
         self.command_redo.push(command);
         Some(label)
@@ -62,11 +64,12 @@ impl EditorHistory {
         tilemap_layers: &mut TilemapLayers,
         grid: &mut Grid,
         camera: &mut Camera,
+        ui_canvases: &mut Value,
     ) -> Option<String> {
         let command = self.command_redo.pop()?;
         command
             .after
-            .restore(entities, tilemap_layers, grid, camera);
+            .restore(entities, tilemap_layers, grid, camera, ui_canvases);
         let label = command.label.clone();
         self.command_undo.push(command);
         Some(label)

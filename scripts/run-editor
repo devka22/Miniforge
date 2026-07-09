@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BUILD_DIR="${MINIFORGE_QT_BUILD_DIR:-"$ROOT/build/editor-qt"}"
+PROJECT_PATH="${1:-"$ROOT/projects/DefaultProject"}"
+
+"$ROOT/scripts/build-editor"
+"$BUILD_DIR/miniforge_qt_editor" "$PROJECT_PATH"

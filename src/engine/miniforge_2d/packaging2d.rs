@@ -8,6 +8,9 @@ use crate::engine::miniforge_2d::validation::ValidationReport2D;
 pub enum PackageProfile2D {
     Debug,
     Release,
+    Shipping,
+    WebFuture,
+    MacosAppFuture,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -42,6 +45,7 @@ impl PackageManifest2D {
             validation_errors: Vec::new(),
             settings: json!({
                 "include_debug_tools": matches!(profile, PackageProfile2D::Debug),
+                "shipping": matches!(profile, PackageProfile2D::Shipping),
                 "asset_manifest": "runtime_manifest.json"
             }),
         }

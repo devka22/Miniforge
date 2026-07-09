@@ -1,0 +1,25 @@
+{
+  "animations": [
+    {
+      "asset": "animations/SpriteSheetLab_4x1_4x2_4x1_2x1.spriteframes",
+      "fps": 8.0,
+      "frames": 2,
+      "name": "default"
+    }
+  ],
+  "atlas": "assets/sprites/SpriteSheetLab_4x1_4x2_4x1_2x1.spritesheet.json",
+  "collision": {
+    "generate": false,
+    "shape": "rect"
+  },
+  "filter": "nearest",
+  "kind": "MiniForgeSpriteImport",
+  "name": "SpriteSheetLab_4x1_4x2_4x1_2x1",
+  "pivot": [
+    0.5,
+    0.5
+  ],
+  "pixels_per_unit": 32,
+  "source": "assets/sprites/SpriteSheetLab_4x1_4x2_4x1_2x1.png",
+  "version": "0.9.3"
+}

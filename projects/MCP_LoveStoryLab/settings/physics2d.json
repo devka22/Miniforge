@@ -1,0 +1,12 @@
+{
+  "format": "miniforge.physics2d-settings",
+  "schema_version": 1,
+  "engine_version": "0.9.3",
+  "gravity": [0.0, 0.0],
+  "fixed_timestep": 0.016666667,
+  "velocity_iterations": 8,
+  "position_iterations": 3,
+  "continuous_collision": true,
+  "trigger_events": true,
+  "layers": ["World", "Player", "Characters", "Props", "Trigger"]
+}

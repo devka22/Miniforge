@@ -1,0 +1,49 @@
+{
+  "version": "0.9.1.1",
+  "kind": "MiniForgeVisualGraph",
+  "runtime": "rust_visual_graph",
+  "name": "AstroHarvestLoop",
+  "variables": {
+    "crystals_required": 250,
+    "base_health_required": 1
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "EventStart",
+      "next": "log"
+    },
+    {
+      "id": "update",
+      "type": "EventUpdate",
+      "next": "branch"
+    },
+    {
+      "id": "log",
+      "type": "Log",
+      "message": "Astro Harvester graph ready",
+      "next": null
+    },
+    {
+      "id": "branch",
+      "type": "BranchVariable",
+      "variable": "crystals_required",
+      "operator": ">",
+      "value": 0,
+      "true_next": "objective",
+      "false_next": "win"
+    },
+    {
+      "id": "objective",
+      "type": "Log",
+      "message": "Keep harvesting crystals",
+      "next": null
+    },
+    {
+      "id": "win",
+      "type": "Log",
+      "message": "Forge stabilized",
+      "next": null
+    }
+  ]
+}

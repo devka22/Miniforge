@@ -1,0 +1,83 @@
+{
+  "animations": [
+    {
+      "fps": 8.0,
+      "frames": [
+        {
+          "collision_shapes": [],
+          "duration": 0.125,
+          "events": [],
+          "hitboxes": [],
+          "hurtboxes": [],
+          "pivot": [
+            2.0,
+            8.0
+          ],
+          "rect": {
+            "height": 16,
+            "width": 4,
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "collision_shapes": [],
+          "duration": 0.125,
+          "events": [],
+          "hitboxes": [],
+          "hurtboxes": [],
+          "pivot": [
+            2.0,
+            8.0
+          ],
+          "rect": {
+            "height": 16,
+            "width": 4,
+            "x": 4,
+            "y": 0
+          }
+        },
+        {
+          "collision_shapes": [],
+          "duration": 0.125,
+          "events": [],
+          "hitboxes": [],
+          "hurtboxes": [],
+          "pivot": [
+            2.0,
+            8.0
+          ],
+          "rect": {
+            "height": 16,
+            "width": 4,
+            "x": 8,
+            "y": 0
+          }
+        },
+        {
+          "collision_shapes": [],
+          "duration": 0.125,
+          "events": [],
+          "hitboxes": [],
+          "hurtboxes": [],
+          "pivot": [
+            2.0,
+            8.0
+          ],
+          "rect": {
+            "height": 16,
+            "width": 4,
+            "x": 12,
+            "y": 0
+          }
+        }
+      ],
+      "looped": true,
+      "name": "default",
+      "ping_pong": false,
+      "tags": []
+    }
+  ],
+  "name": "SpriteSheetLab_4x1_4x2_4x1",
+  "texture": "assets/sprites/SpriteSheetLab_4x1_4x2_4x1.png"
+}

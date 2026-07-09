@@ -2,19 +2,17 @@
 
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io;
 
 use crate::engine::asset_tools::AssetTools;
 use crate::engine::camera::Camera;
+use crate::engine::project_storage::{BackupPolicy, DEFAULT_BACKUP_GENERATIONS, ProjectStorage};
 use crate::engine::scene_manager::SceneManager;
 use crate::engine::scene_serializer::SceneSerializer;
 use crate::engine::tilemap_layers::TilemapLayers;
 use crate::entities::game_object::GameObject;
 use crate::map::grid::Grid;
-
-use super::runtime_manifest_loader::write_json_atomic;
 
 #[derive(Debug, Clone, Default)]
 pub struct SceneSaveManager {
@@ -77,12 +75,11 @@ impl SceneSaveManager {
     ) -> io::Result<()> {
         let path = scene_manager.scene_path();
         let backup = path.with_extension("scene.bak");
-        if path.exists() {
-            fs::copy(&path, &backup)?;
-        }
 
         let old_data = if path.exists() {
-            SceneSerializer::migrate(AssetTools::read_json(&path)?)
+            SceneSerializer::try_migrate(AssetTools::read_json(&path)?)
+                .map_err(io::Error::from)?
+                .data
         } else {
             json!({})
         };
@@ -126,7 +123,7 @@ impl SceneSaveManager {
                 .unwrap_or_else(|| tilemap_layers.serialize())
         };
 
-        let data = json!({
+        let data = SceneSerializer::stamp(json!({
             "version": crate::engine::version::ENGINE_VERSION,
             "engine_version": crate::engine::version::ENGINE_VERSION,
             "scene_name": scene_manager.current_scene.trim_end_matches(".scene"),
@@ -148,13 +145,15 @@ impl SceneSaveManager {
             "ui_canvases": ui_canvases,
             "control_groups": old_data.get("control_groups").cloned().unwrap_or(json!({})),
             "editor_view_settings": old_data.get("editor_view_settings").cloned().unwrap_or(json!({})),
-        });
+        }))
+        .map_err(io::Error::from)?;
 
-        let res = write_json_atomic(&path, &data);
-        if res.is_err() && backup.exists() {
-            let _ = fs::copy(&backup, &path);
-        }
-        res?;
+        ProjectStorage::write_json_atomic_with_backup(
+            &path,
+            &data,
+            BackupPolicy::new(backup, DEFAULT_BACKUP_GENERATIONS),
+        )
+        .map_err(io::Error::from)?;
         self.bootstrap_from_scene(entities, tilemap_layers);
         Ok(())
     }

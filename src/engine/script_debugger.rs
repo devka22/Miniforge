@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::engine::rhai_scripting::{RhaiScriptRuntime, ScriptDebugSnapshot, ScriptTraceEntry};
+use crate::engine::luau_scripting::{LuauScriptRuntime, ScriptDebugSnapshot, ScriptTraceEntry};
 use crate::entities::game_object::GameObject;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -25,7 +25,7 @@ pub struct ScriptDebugger {
 impl ScriptDebugger {
     pub fn refresh(
         &mut self,
-        runtime: &RhaiScriptRuntime,
+        runtime: &LuauScriptRuntime,
         project_path: impl AsRef<Path>,
         entities: &[GameObject],
     ) {
@@ -33,7 +33,7 @@ impl ScriptDebugger {
         self.apply_snapshot(snapshot);
     }
 
-    pub fn reload(runtime: &mut RhaiScriptRuntime) -> usize {
+    pub fn reload(runtime: &mut LuauScriptRuntime) -> usize {
         runtime.reload_all()
     }
 

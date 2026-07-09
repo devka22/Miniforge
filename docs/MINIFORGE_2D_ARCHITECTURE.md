@@ -1,6 +1,6 @@
 # MiniForge2D Architecture
 
-MiniForge2D is a UE-inspired 2D layer for MiniForge. It does not copy Unreal code; it maps familiar editor/runtime ideas onto the existing Rust + macroquad + Rhai stack.
+MiniForge2D is a UE-inspired 2D layer for MiniForge. It does not copy Unreal code; it maps familiar editor/runtime ideas onto the existing Rust + macroquad + Luau stack.
 
 ## Core Rule
 

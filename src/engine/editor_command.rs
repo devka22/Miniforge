@@ -51,6 +51,7 @@ pub struct EditorSnapshot {
     pub tilemap_layers: TilemapLayers,
     pub grid: Grid,
     pub camera: Camera,
+    pub ui_canvases: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -67,12 +68,14 @@ impl EditorSnapshot {
         tilemap_layers: &TilemapLayers,
         grid: &Grid,
         camera: &Camera,
+        ui_canvases: &Value,
     ) -> Self {
         Self {
             entities: entities.to_vec(),
             tilemap_layers: tilemap_layers.clone(),
             grid: grid.clone(),
             camera: *camera,
+            ui_canvases: ui_canvases.clone(),
         }
     }
 
@@ -82,11 +85,13 @@ impl EditorSnapshot {
         tilemap_layers: &mut TilemapLayers,
         grid: &mut Grid,
         camera: &mut Camera,
+        ui_canvases: &mut Value,
     ) {
         *entities = self.entities.clone();
         *tilemap_layers = self.tilemap_layers.clone();
         *grid = self.grid.clone();
         *camera = self.camera;
+        *ui_canvases = self.ui_canvases.clone();
     }
 }
 

@@ -19,6 +19,18 @@ pub struct Material2D {
     pub shader: String,
     pub tint: [u8; 4],
     pub texture: Option<String>,
+    #[serde(default)]
+    pub base_color_texture: Option<String>,
+    #[serde(default)]
+    pub normal_texture: Option<String>,
+    #[serde(default)]
+    pub roughness_texture: Option<String>,
+    #[serde(default)]
+    pub metallic_texture: Option<String>,
+    #[serde(default)]
+    pub emissive_texture: Option<String>,
+    #[serde(default)]
+    pub texture_parameters: BTreeMap<String, String>,
     pub lighting: bool,
     pub fog: bool,
     pub roughness: f64,
@@ -49,6 +61,8 @@ pub struct MaterialPreview {
     pub material: String,
     pub shader: String,
     pub final_tint: [u8; 4],
+    #[serde(default)]
+    pub texture_slots: BTreeMap<String, String>,
     pub warnings: Vec<String>,
 }
 
@@ -86,8 +100,55 @@ impl MaterialLibrary {
                 supports_fog: true,
             },
         );
+        for (name, supports_lighting, supports_fog) in [
+            ("sprite_lit_2d", true, false),
+            ("water_2d", true, true),
+            ("distortion_2d", false, false),
+            ("fire_2d", false, true),
+            ("fog_2d", false, true),
+            ("outline_2d", false, false),
+            ("bloom_2d", false, false),
+            ("pixel_art_2d", false, false),
+        ] {
+            shaders.insert(
+                name.to_string(),
+                Shader2D {
+                    name: name.to_string(),
+                    source: format!("builtin://{name}"),
+                    supports_lighting,
+                    supports_fog,
+                },
+            );
+        }
         let mut materials = BTreeMap::new();
         materials.insert("Default".to_string(), Material2D::default_sprite("Default"));
+        materials.insert("LitSprite".to_string(), Material2D::lit_fog("LitSprite"));
+        materials.insert(
+            "PixelArt".to_string(),
+            Material2D {
+                shader: "pixel_art_2d".to_string(),
+                texture_parameters: BTreeMap::from([
+                    ("palette_size".to_string(), "16".to_string()),
+                    ("dither".to_string(), "bayer4x4".to_string()),
+                    ("filter".to_string(), "nearest".to_string()),
+                ]),
+                ..Material2D::default_sprite("PixelArt")
+            },
+        );
+        materials.insert(
+            "Water2D".to_string(),
+            Material2D {
+                shader: "water_2d".to_string(),
+                lighting: true,
+                fog: true,
+                tint: [55, 145, 210, 190],
+                texture_parameters: BTreeMap::from([
+                    ("wave_strength".to_string(), "0.15".to_string()),
+                    ("refraction".to_string(), "0.08".to_string()),
+                ]),
+                ..Material2D::default_sprite("Water2D")
+            },
+        );
         Self {
             shaders,
             materials,
@@ -116,6 +177,14 @@ impl MaterialLibrary {
                 .get("texture")
                 .and_then(Value::as_str)
                 .map(ToString::to_string),
+            base_color_texture: read_texture_slot(value, "base_color_texture")
+                .or_else(|| read_texture_slot(value, "albedo_texture"))
+                .or_else(|| read_texture_slot(value, "texture")),
+            normal_texture: read_texture_slot(value, "normal_texture"),
+            roughness_texture: read_texture_slot(value, "roughness_texture"),
+            metallic_texture: read_texture_slot(value, "metallic_texture"),
+            emissive_texture: read_texture_slot(value, "emissive_texture"),
+            texture_parameters: read_texture_parameters(value),
             lighting: value
                 .get("lighting")
                 .or_else(|| value.get("lighting_enabled"))
@@ -154,17 +223,25 @@ impl MaterialLibrary {
         if material.fog && !shader.is_some_and(|shader| shader.supports_fog) {
             warnings.push("Material fog enabled on shader without fog support".to_string());
         }
+        if material.normal_texture.is_some() && !material.lighting {
+            warnings.push("Normal texture assigned while lighting is disabled".to_string());
+        }
+        if material.metallic_texture.is_some() && material.shader == "sprite_default" {
+            warnings.push("Metallic texture needs a lit shader to be visible".to_string());
+        }
         let final_tint = if material.lighting && self.lighting.enabled {
             multiply_rgb(material.tint, self.lighting.ambient)
         } else {
             material.tint
         };
+        let texture_slots = material.texture_slots();
         MaterialPreview {
             material: material.name,
             shader: shader
                 .map(|shader| shader.name.clone())
                 .unwrap_or_else(|| "sprite_default".to_string()),
             final_tint,
+            texture_slots,
             warnings,
         }
     }
@@ -185,6 +262,22 @@ impl MaterialLibrary {
         }
         preview
     }
+
+    pub fn assign_texture_to_material(
+        &mut self,
+        material_name: &str,
+        slot: TextureSlot2D,
+        texture_path: &str,
+    ) -> MaterialPreview {
+        let mut material = self
+            .materials
+            .get(material_name)
+            .cloned()
+            .unwrap_or_else(|| Material2D::default_sprite(material_name));
+        material.assign_texture_slot(slot, texture_path);
+        self.upsert_material(material);
+        self.preview(material_name)
+    }
 }
 
 impl Material2D {
@@ -194,6 +287,12 @@ impl Material2D {
             shader: "sprite_default".to_string(),
             tint: [255, 255, 255, 255],
             texture: None,
+            base_color_texture: None,
+            normal_texture: None,
+            roughness_texture: None,
+            metallic_texture: None,
+            emissive_texture: None,
+            texture_parameters: BTreeMap::new(),
             lighting: false,
             fog: false,
             roughness: 0.5,
@@ -218,11 +317,87 @@ impl Material2D {
             "shader": self.shader,
             "tint": self.tint,
             "texture": self.texture,
+            "base_color_texture": self.base_color_texture,
+            "normal_texture": self.normal_texture,
+            "roughness_texture": self.roughness_texture,
+            "metallic_texture": self.metallic_texture,
+            "emissive_texture": self.emissive_texture,
+            "texture_parameters": self.texture_parameters,
             "lighting": self.lighting,
             "fog": self.fog,
             "roughness": self.roughness,
             "emission": self.emission,
         })
+    }
+
+    pub fn assign_texture_slot(&mut self, slot: TextureSlot2D, texture_path: &str) {
+        let texture_path = texture_path.to_string();
+        match slot {
+            TextureSlot2D::BaseColor => {
+                self.texture = Some(texture_path.clone());
+                self.base_color_texture = Some(texture_path);
+            }
+            TextureSlot2D::Normal => self.normal_texture = Some(texture_path),
+            TextureSlot2D::Roughness => self.roughness_texture = Some(texture_path),
+            TextureSlot2D::Metallic => self.metallic_texture = Some(texture_path),
+            TextureSlot2D::Emissive => self.emissive_texture = Some(texture_path),
+            TextureSlot2D::Custom(name) => {
+                self.texture_parameters.insert(name, texture_path);
+            }
+        }
+    }
+
+    pub fn texture_slots(&self) -> BTreeMap<String, String> {
+        let mut slots = BTreeMap::new();
+        push_slot(
+            &mut slots,
+            "base_color",
+            self.base_color_texture.as_ref().or(self.texture.as_ref()),
+        );
+        push_slot(&mut slots, "normal", self.normal_texture.as_ref());
+        push_slot(&mut slots, "roughness", self.roughness_texture.as_ref());
+        push_slot(&mut slots, "metallic", self.metallic_texture.as_ref());
+        push_slot(&mut slots, "emissive", self.emissive_texture.as_ref());
+        slots.extend(self.texture_parameters.clone());
+        slots
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextureSlot2D {
+    BaseColor,
+    Normal,
+    Roughness,
+    Metallic,
+    Emissive,
+    Custom(String),
+}
+
+impl TextureSlot2D {
+    pub fn infer_from_path(path: &str) -> Self {
+        let name = path.to_lowercase();
+        if contains_any(&name, &["normal", "_n.", "-n.", "nrm"]) {
+            Self::Normal
+        } else if contains_any(&name, &["roughness", "rough", "_r.", "-r."]) {
+            Self::Roughness
+        } else if contains_any(&name, &["metallic", "metalness", "metal"]) {
+            Self::Metallic
+        } else if contains_any(&name, &["emissive", "emission", "glow"]) {
+            Self::Emissive
+        } else {
+            Self::BaseColor
+        }
+    }
+
+    pub fn field_name(&self) -> String {
+        match self {
+            Self::BaseColor => "base_color_texture".to_string(),
+            Self::Normal => "normal_texture".to_string(),
+            Self::Roughness => "roughness_texture".to_string(),
+            Self::Metallic => "metallic_texture".to_string(),
+            Self::Emissive => "emissive_texture".to_string(),
+            Self::Custom(name) => format!("texture_parameters.{name}"),
+        }
     }
 }
 
@@ -253,4 +428,36 @@ fn multiply_rgb(mut tint: [u8; 4], ambient: [u8; 3]) -> [u8; 4] {
     tint[1] = ((tint[1] as u16 * ambient[1] as u16) / 255) as u8;
     tint[2] = ((tint[2] as u16 * ambient[2] as u16) / 255) as u8;
     tint
+}
+
+fn read_texture_slot(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+        .map(ToString::to_string)
+}
+
+fn read_texture_parameters(value: &Value) -> BTreeMap<String, String> {
+    value
+        .get("texture_parameters")
+        .and_then(Value::as_object)
+        .map(|map| {
+            map.iter()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|path| (key.clone(), path.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn push_slot(slots: &mut BTreeMap<String, String>, name: &str, value: Option<&String>) {
+    if let Some(value) = value {
+        slots.insert(name.to_string(), value.clone());
+    }
+}
+
+fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
 }

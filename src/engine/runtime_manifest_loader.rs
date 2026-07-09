@@ -1,7 +1,6 @@
 //! Loads `runtime_manifest.json` and `build_info.json` from an exported build folder.
 
 use std::fmt;
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -9,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::engine::asset_tools::AssetTools;
+use crate::engine::project_storage::ProjectStorage;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeLoadError {
@@ -157,20 +157,9 @@ impl RuntimeManifestLoader {
     }
 }
 
-/// Crash-safe atomic write: write temp then rename.
+/// Compatibility wrapper around the shared project storage service.
 pub fn write_json_atomic(path: impl AsRef<Path>, value: &Value) -> io::Result<()> {
-    let path = path.as_ref();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    let data = serde_json::to_vec_pretty(value).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("serialización JSON: {e}"),
-        )
-    })?;
-    fs::write(&tmp, data)?;
-    fs::rename(&tmp, path)?;
-    Ok(())
+    ProjectStorage::write_json_atomic(path, value)
+        .map(|_| ())
+        .map_err(io::Error::from)
 }

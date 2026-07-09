@@ -1,0 +1,17 @@
+{
+  "items": [
+    "Untagged",
+    "Player",
+    "NPC",
+    "Police",
+    "Vehicle",
+    "Contact",
+    "SavePoint",
+    "Collectible",
+    "Projectile",
+    "City",
+    "Effects",
+    "Trigger",
+    "UI"
+  ]
+}

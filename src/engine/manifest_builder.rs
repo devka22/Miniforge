@@ -20,7 +20,7 @@ impl ManifestBuilder {
             .filter(|path| {
                 matches!(
                     path.extension().and_then(|value| value.to_str()),
-                    Some("mfgraph" | "rhai")
+                    Some("mfgraph" | "luau")
                 )
             })
             .cloned()
@@ -30,7 +30,10 @@ impl ManifestBuilder {
         let scenes = walk_files(&paths.scenes)?;
         let manifest = json!({
             "engine_version": crate::engine::version::ENGINE_VERSION,
+            "engine_stream_version": crate::engine::version::ENGINE_STREAM_VERSION,
             "runtime": "rust",
+            "update_093": crate::engine::update_093::Engine093UpgradePlan::current().to_value(),
+            "update_0934": crate::engine::update_0934::Engine0934FoundationPlan::current(),
             "assets": rels(project_path, &assets),
             "scripts": rels(project_path, &scripts),
             "components": rels(project_path, &components),
@@ -67,7 +70,7 @@ fn walk_files(root: &Path) -> io::Result<Vec<PathBuf>> {
                 continue;
             }
             files.extend(walk_files(&path)?);
-        } else {
+        } else if !ignored_file(&path) {
             files.push(path);
         }
     }
@@ -80,4 +83,16 @@ fn ignored_dir(path: &Path) -> bool {
         .and_then(|value| value.to_str())
         .unwrap_or("");
     matches!(name, ".git" | "target" | "builds" | ".cache")
+}
+
+fn ignored_file(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    name == ".DS_Store"
+        || matches!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("bak" | "log" | "tmp")
+        )
 }

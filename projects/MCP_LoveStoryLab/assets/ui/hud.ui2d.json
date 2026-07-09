@@ -1,0 +1,19 @@
+{
+  "format": "miniforge.ui-canvas-2d",
+  "schema_version": 1,
+  "engine_version": "0.9.3",
+  "name": "LoveStoryHUD",
+  "reference_size": [1280, 720],
+  "scaling": "scale_with_screen",
+  "safe_area": true,
+  "screen_manager": "ScreenManager2D",
+  "screen": "HUDScreen",
+  "widgets": [
+    {"id": "HUD_Title", "type": "Label", "binding": "story.title"},
+    {"id": "HUD_Status", "type": "Label", "binding": "story.status"},
+    {"id": "HUD_Dialogue", "type": "DialogueBox", "binding": "dialogue.current"},
+    {"id": "HUD_ChoiceA", "type": "Button", "command": "dialogue_choice_0"},
+    {"id": "HUD_ChoiceB", "type": "Button", "command": "dialogue_choice_1"},
+    {"id": "HUD_Affection", "type": "ProgressBar", "binding": "story.affection"}
+  ]
+}

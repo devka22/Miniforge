@@ -2,7 +2,7 @@
 
 ## Enfoque
 
-Esta release no agrega demos grandes. Estabiliza el flujo para crear juegos 2D/RTS desde cero usando el editor actual, scripting Rhai, visual graphs, escenas, prefabs, assets, input, audio, physics, UI y export runtime.
+Esta release no agrega demos grandes. Estabiliza el flujo para crear juegos 2D/RTS desde cero usando el editor actual, scripting Luau, visual graphs, escenas, prefabs, assets, input, audio, physics, UI y export runtime.
 
 ## Cambios Principales
 
@@ -16,9 +16,9 @@ Esta release no agrega demos grandes. Estabiliza el flujo para crear juegos 2D/R
 - Guardado atomico de JSON/escenas/prefabs con backups.
 - Validacion reforzada de escenas, prefabs, referencias, scripts y graphs.
 - Visual Scripting reporta nodos invalidos sin romper Play Mode.
-- Rhai hot reload se marca al guardar desde el editor.
+- Luau hot reload se marca al guardar desde el editor.
 - GitHub Actions para fmt, check, clippy y test.
-- Tests de regresion para config, logs, edicion interna, Rhai, visual graphs, escenas/prefabs y export.
+- Tests de regresion para config, logs, edicion interna, Luau, visual graphs, escenas/prefabs y export.
 
 ## Compatibilidad
 

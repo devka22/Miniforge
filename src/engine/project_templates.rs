@@ -39,8 +39,8 @@ impl ProjectTemplates {
         let scene = AssetTools::create_scene(&project_path, "RTS_Map")?;
         AssetTools::write_json(&scene, &Self::rts_scene_data("RTS_Map"))?;
         Ok(vec![
-            AssetTools::create_rhai_script(&project_path, "RTSCameraController")?,
-            AssetTools::create_rhai_script(&project_path, "RTSUnitCommands")?,
+            AssetTools::create_luau_script(&project_path, "RTSCameraController")?,
+            AssetTools::create_luau_script(&project_path, "RTSUnitCommands")?,
             AssetTools::create_visual_graph(&project_path, "CameraController")?,
             AssetTools::create_visual_graph(&project_path, "SelectionMarquee")?,
             AssetTools::create_json(&project_path, Some(&paths.data), "EconomySystem")?,
@@ -72,8 +72,8 @@ impl ProjectTemplates {
     pub fn topdown(project_path: impl AsRef<Path>) -> io::Result<Vec<std::path::PathBuf>> {
         let paths = AssetTools::get_project_paths(&project_path);
         Ok(vec![
-            AssetTools::create_rhai_script(&project_path, "PlayerController")?,
-            AssetTools::create_rhai_script(&project_path, "EnemyBrain")?,
+            AssetTools::create_luau_script(&project_path, "PlayerController")?,
+            AssetTools::create_luau_script(&project_path, "EnemyBrain")?,
             AssetTools::create_visual_graph(&project_path, "PlayerController")?,
             AssetTools::create_json(&project_path, Some(&paths.data), "InputBindings")?,
             AssetTools::create_scene(&project_path, "TopDown_Level")?,
@@ -82,8 +82,8 @@ impl ProjectTemplates {
 
     pub fn platformer(project_path: impl AsRef<Path>) -> io::Result<Vec<std::path::PathBuf>> {
         Ok(vec![
-            AssetTools::create_rhai_script(&project_path, "PlatformerMotor")?,
-            AssetTools::create_rhai_script(&project_path, "JumpController")?,
+            AssetTools::create_luau_script(&project_path, "PlatformerMotor")?,
+            AssetTools::create_luau_script(&project_path, "JumpController")?,
             AssetTools::create_visual_graph(&project_path, "PlatformerMotor")?,
             AssetTools::create_visual_graph(&project_path, "JumpController")?,
             AssetTools::create_scene(&project_path, "Platformer_Level")?,
@@ -136,32 +136,38 @@ impl ProjectTemplates {
         AssetTools::write_json(&game, &Self::demo_game_scene("Demo_Game"))?;
         created.push(game);
 
-        created.push(AssetTools::create_rhai_script(&project_path, "DemoPlayer")?);
+        created.push(AssetTools::create_luau_script(&project_path, "DemoPlayer")?);
         AssetTools::create_file(
-            paths.scripts.join("DemoPlayer.rhai"),
-            r#"fn on_start() { ui_text("Commander ready"); }
-fn on_update(dt) {
-    if input_pressed("A") { move(-4.0 * dt, 0.0); }
-    if input_pressed("D") { move(4.0 * dt, 0.0); }
-    if input_pressed("W") { move(0.0, -4.0 * dt); }
-    if input_pressed("S") { move(0.0, 4.0 * dt); }
-}
-fn on_key_down(key) {
-    if key == "Space" { spawn("SparkBurst", entity_id, 0); play_sound("ui_confirm"); }
-    if key == "Escape" { load_scene("Demo_Menu.scene"); }
-}
-fn on_collision_enter(other) { set_ui_text("HUD_Status", "Contact: " + other); }
-fn on_destroy() { play_sound("unit_lost"); }
+            paths.scripts.join("DemoPlayer.luau"),
+            r#"function on_start()
+    ui_text("Commander ready")
+end
+function on_update(dt: number)
+    if input_pressed("A") then move(-4.0 * dt, 0.0) end
+    if input_pressed("D") then move(4.0 * dt, 0.0) end
+    if input_pressed("W") then move(0.0, -4.0 * dt) end
+    if input_pressed("S") then move(0.0, 4.0 * dt) end
+end
+function on_key_down(key: string)
+    if key == "Space" then spawn("SparkBurst", entity_id, 0) play_sound("ui_confirm") end
+    if key == "Escape" then load_scene("Demo_Menu.scene") end
+end
+function on_collision_enter(other: string)
+    set_ui_text("HUD_Status", "Contact: " .. other)
+end
+function on_destroy()
+    play_sound("unit_lost")
+end
 "#,
             true,
         )?;
 
-        created.push(AssetTools::create_rhai_script(&project_path, "DemoMenu")?);
+        created.push(AssetTools::create_luau_script(&project_path, "DemoMenu")?);
         AssetTools::create_file(
-            paths.scripts.join("DemoMenu.rhai"),
-            r#"fn on_key_down(key) {
-    if key == "Enter" { load_scene("Demo_Game.scene"); }
-}
+            paths.scripts.join("DemoMenu.luau"),
+            r#"function on_key_down(key: string)
+    if key == "Enter" then load_scene("Demo_Game.scene") end
+end
 "#,
             true,
         )?;
@@ -224,7 +230,7 @@ fn on_destroy() { play_sound("unit_lost"); }
 
     fn demo_menu_scene(scene_name: &str) -> Value {
         let mut title = GameObject::new(0.0, 0.0, Some("MenuTitle".to_string()));
-        title.script = Some("DemoMenu.rhai".to_string());
+        title.script = Some("DemoMenu.luau".to_string());
         title.add_component(default_component("UIElement").expect("UIElement"));
         if let Some(ui) = title.get_component_mut("UIElement") {
             ui.set("element_type", json!("Label"));
@@ -286,7 +292,7 @@ fn on_destroy() { play_sound("unit_lost"); }
         let mut player = GameObject::new_unit(5.0, 5.0, Some("DemoPlayer".to_string()));
         player.tag = "Player".to_string();
         player.layer = "Units".to_string();
-        player.script = Some("DemoPlayer.rhai".to_string());
+        player.script = Some("DemoPlayer.luau".to_string());
         player.add_component(default_component("Health").expect("Health"));
         player.add_component(default_component("Stats").expect("Stats"));
         player.add_component(default_component("Animator").expect("Animator"));

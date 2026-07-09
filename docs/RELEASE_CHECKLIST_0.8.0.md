@@ -13,7 +13,7 @@
 - [ ] Crear proyecto nuevo.
 - [ ] Abrir proyecto existente 0.7.x.
 - [ ] Corromper `engine_config.json` y verificar recuperacion.
-- [ ] Crear `.rhai`, abrirlo, editarlo, guardar, entrar a Play Mode.
+- [ ] Crear `.luau`, abrirlo, editarlo, guardar, entrar a Play Mode.
 - [ ] Crear `.mfgraph`, abrirlo, validar y adjuntarlo a entidad.
 - [ ] Guardar/cargar/reiniciar escena.
 - [ ] Instanciar prefab y probar recuperacion desde `.prefab.bak`.

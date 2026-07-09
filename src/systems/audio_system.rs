@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 
@@ -15,6 +15,7 @@ pub struct AudioVoice {
     pub volume: f64,
     pub looped: bool,
     pub playing: bool,
+    pub paused: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +46,7 @@ pub struct AudioSystem {
     pub music: Option<String>,
     pub bus_volumes: BTreeMap<String, f64>,
     pub last_tween: Option<Tween>,
+    started_sources: BTreeSet<u64>,
 }
 
 impl AudioSystem {
@@ -54,43 +56,72 @@ impl AudioSystem {
             return;
         }
 
+        let mut live_voice_ids = BTreeSet::new();
         for entity in entities {
             let entity_id = entity.id;
             let Some(source) = entity.get_component_mut("AudioSource") else {
                 continue;
             };
-            let Some(audio_name) = source.get("audio_name").and_then(serde_json::Value::as_str)
+            live_voice_ids.insert(entity_id);
+            let Some(audio_name) = source
+                .get("audio_name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
             else {
                 continue;
             };
-            if source.get_bool("play_on_start", false) && !source.get_bool("_started", false) {
+            if source.get_bool("play_on_start", false) && !self.started_sources.contains(&entity_id)
+            {
                 let bus = source.get_string("bus", "SFX");
                 let bus_volume = mixer.buses.get(&bus).map(|bus| bus.volume).unwrap_or(1.0);
                 self.voices.insert(
                     entity_id,
                     AudioVoice {
                         entity_id,
-                        audio_name: audio_name.to_string(),
+                        audio_name: audio_name.clone(),
                         bus,
                         volume: source.get_f64("volume", 1.0) * mixer.master_volume * bus_volume,
                         looped: source.get_bool("loop", false),
                         playing: true,
+                        paused: false,
                     },
                 );
-                source.set("_started", serde_json::json!(true));
+                self.started_sources.insert(entity_id);
+            }
+            if source.get_bool("stop_requested", false) {
+                self.voices.remove(&entity_id);
+                source.set("stop_requested", serde_json::json!(false));
+                continue;
+            }
+            if let Some(voice) = self.voices.get_mut(&entity_id) {
+                let bus_volume = mixer
+                    .buses
+                    .get(&voice.bus)
+                    .map(|bus| bus.volume)
+                    .unwrap_or(1.0);
+                voice.audio_name = audio_name;
+                voice.volume = source.get_f64("volume", 1.0)
+                    * mixer.master_volume
+                    * bus_volume
+                    * self.bus_volumes.get(&voice.bus).copied().unwrap_or(1.0);
+                voice.paused = source.get_bool("paused", false);
+                voice.playing = !voice.paused;
+                voice.looped = source.get_bool("loop", voice.looped);
             }
         }
 
-        self.voices.retain(|_, voice| voice.playing || voice.looped);
+        self.voices.retain(|entity_id, voice| {
+            live_voice_ids.contains(entity_id) && (voice.playing || voice.paused)
+        });
+        self.started_sources
+            .retain(|entity_id| live_voice_ids.contains(entity_id));
         self.stats.insert("voices".to_string(), self.voices.len());
         self.stats
             .insert("audio_commands".to_string(), self.command_log.len());
     }
 
     pub fn stop(&mut self, entity_id: u64) {
-        if let Some(voice) = self.voices.get_mut(&entity_id) {
-            voice.playing = false;
-        }
+        self.voices.remove(&entity_id);
     }
 
     pub fn play_music(&mut self, name: &str, volume: f64, fade_seconds: f64) {
@@ -206,6 +237,15 @@ impl AudioSystem {
     }
 
     fn queue_command(&mut self, command: AudioCommand) {
+        const MAX_COMMAND_HISTORY: usize = 256;
+        if self.command_log.len() >= MAX_COMMAND_HISTORY {
+            let overflow = self.command_log.len() + 1 - MAX_COMMAND_HISTORY;
+            self.command_log.drain(..overflow);
+            *self
+                .stats
+                .entry("dropped_audio_commands".to_string())
+                .or_default() += overflow;
+        }
         self.command_log.push(command);
         self.stats
             .insert("audio_commands".to_string(), self.command_log.len());

@@ -1,0 +1,9 @@
+{
+  "project_name": "MCP_IronTreaty_1836",
+  "engine_version": "0.9.1.1",
+  "engine_stream_version": "0.9.2",
+  "start_scene": "campaign_1836.scene",
+  "current_scene": "campaign_1836.scene",
+  "author": "MiniForge MCP",
+  "description": "Grand strategy RTS sandbox inspired by nineteenth-century diplomacy, industry, population, and armies."
+}

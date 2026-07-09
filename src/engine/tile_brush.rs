@@ -8,6 +8,7 @@ pub enum TileBrushMode {
     Eraser,
     Fill,
     Rectangle,
+    Line,
     Collision,
 }
 
@@ -18,6 +19,7 @@ impl TileBrushMode {
             Self::Eraser => "Eraser",
             Self::Fill => "Fill",
             Self::Rectangle => "Rect",
+            Self::Line => "Line",
             Self::Collision => "Collision",
         }
     }
@@ -27,7 +29,8 @@ impl TileBrushMode {
             Self::Pencil => Self::Eraser,
             Self::Eraser => Self::Fill,
             Self::Fill => Self::Rectangle,
-            Self::Rectangle => Self::Collision,
+            Self::Rectangle => Self::Line,
+            Self::Line => Self::Collision,
             Self::Collision => Self::Pencil,
         }
     }
@@ -87,10 +90,47 @@ impl TileBrush {
                     }
                 }
             }
+            TileBrushMode::Line => {
+                paint_line(tilemap, layer, start, end, paint_value, &mut stroke);
+            }
             TileBrushMode::Fill => flood_fill(tilemap, layer, start, paint_value, &mut stroke),
         }
 
         stroke
+    }
+}
+
+fn paint_line(
+    tilemap: &mut TilemapLayers,
+    layer: usize,
+    start: (usize, usize),
+    end: (usize, usize),
+    value: i32,
+    stroke: &mut TileBrushStroke,
+) {
+    let (mut x0, mut y0) = (start.0 as isize, start.1 as isize);
+    let (x1, y1) = (end.0 as isize, end.1 as isize);
+    let dx = (x1 - x0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let dy = -(y1 - y0).abs();
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut error = dx + dy;
+    loop {
+        if x0 >= 0 && y0 >= 0 {
+            paint_cell(tilemap, layer, x0 as usize, y0 as usize, value, stroke);
+        }
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
+        let doubled = error * 2;
+        if doubled >= dy {
+            error += dy;
+            x0 += sx;
+        }
+        if doubled <= dx {
+            error += dx;
+            y0 += sy;
+        }
     }
 }
 

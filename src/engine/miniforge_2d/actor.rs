@@ -68,6 +68,106 @@ impl Default for Transform2D {
     }
 }
 
+impl Transform2D {
+    pub fn rotation_radians(self) -> f64 {
+        self.rotation.to_radians()
+    }
+
+    pub fn translate(&mut self, dx: f64, dy: f64) {
+        self.x += dx;
+        self.y += dy;
+    }
+
+    pub fn translated(mut self, dx: f64, dy: f64) -> Self {
+        self.translate(dx, dy);
+        self
+    }
+
+    pub fn rotate_degrees(&mut self, degrees: f64) {
+        self.rotation += degrees;
+    }
+
+    pub fn rotated_degrees(mut self, degrees: f64) -> Self {
+        self.rotate_degrees(degrees);
+        self
+    }
+
+    pub fn scale_by(&mut self, scale_x: f64, scale_y: f64) {
+        self.scale_x *= scale_x;
+        self.scale_y *= scale_y;
+    }
+
+    pub fn scaled_by(mut self, scale_x: f64, scale_y: f64) -> Self {
+        self.scale_by(scale_x, scale_y);
+        self
+    }
+
+    pub fn angle_to(self, point: (f64, f64)) -> f64 {
+        (point.1 - self.y).atan2(point.0 - self.x).to_degrees()
+    }
+
+    pub fn look_at(&mut self, point: (f64, f64)) {
+        self.rotation = self.angle_to(point);
+    }
+
+    pub fn looking_at(mut self, point: (f64, f64)) -> Self {
+        self.look_at(point);
+        self
+    }
+
+    pub fn local_to_global(self, point: (f64, f64)) -> (f64, f64) {
+        let radians = self.rotation_radians();
+        let cos = radians.cos();
+        let sin = radians.sin();
+        let scaled_x = point.0 * self.scale_x;
+        let scaled_y = point.1 * self.scale_y;
+        (
+            self.x + scaled_x * cos - scaled_y * sin,
+            self.y + scaled_x * sin + scaled_y * cos,
+        )
+    }
+
+    pub fn global_to_local(self, point: (f64, f64)) -> Option<(f64, f64)> {
+        if self.scale_x.abs() <= f64::EPSILON || self.scale_y.abs() <= f64::EPSILON {
+            return None;
+        }
+        let dx = point.0 - self.x;
+        let dy = point.1 - self.y;
+        let radians = self.rotation_radians();
+        let cos = radians.cos();
+        let sin = radians.sin();
+        Some((
+            (dx * cos + dy * sin) / self.scale_x,
+            (-dx * sin + dy * cos) / self.scale_y,
+        ))
+    }
+
+    pub fn combine(parent: Self, child: Self) -> Self {
+        let (x, y) = parent.local_to_global((child.x, child.y));
+        Self {
+            x,
+            y,
+            rotation: parent.rotation + child.rotation,
+            scale_x: parent.scale_x * child.scale_x,
+            scale_y: parent.scale_y * child.scale_y,
+        }
+    }
+
+    pub fn local_from_global(global: Self, parent: Self) -> Option<Self> {
+        let (x, y) = parent.global_to_local((global.x, global.y))?;
+        if parent.scale_x.abs() <= f64::EPSILON || parent.scale_y.abs() <= f64::EPSILON {
+            return None;
+        }
+        Some(Self {
+            x,
+            y,
+            rotation: global.rotation - parent.rotation,
+            scale_x: global.scale_x / parent.scale_x,
+            scale_y: global.scale_y / parent.scale_y,
+        })
+    }
+}
+
 impl ActorDescriptor2D {
     pub fn from_entity(entity: &GameObject) -> Self {
         let class = match entity.entity_type.as_str() {

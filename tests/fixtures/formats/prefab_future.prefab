@@ -1,0 +1,10 @@
+{
+  "format": "miniforge.prefab",
+  "schema_version": 999,
+  "engine_version": "99.0.0",
+  "prefab_name": "FutureHero",
+  "entity": {
+    "name": "FutureHero",
+    "components": []
+  }
+}

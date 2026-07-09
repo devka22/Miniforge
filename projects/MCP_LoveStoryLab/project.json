@@ -1,0 +1,10 @@
+{
+  "project_name": "MCP_LoveStoryLab",
+  "engine_version": "0.9.3",
+  "engine_stream_version": "0.9.3",
+  "start_scene": "main.scene",
+  "current_scene": "main.scene",
+  "author": "MiniForge MCP",
+  "plugin_policy": "vanilla",
+  "description": "2D narrative love story laboratory for testing MiniForge gameplay, UI, audio, visual scripting, persistence, triggers and tilemap systems."
+}

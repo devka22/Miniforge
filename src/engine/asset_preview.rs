@@ -2,6 +2,7 @@ use serde_json::Value;
 
 use crate::engine::asset_database::{AssetDatabase, AssetRecord};
 use crate::engine::asset_tools::AssetTools;
+use crate::engine::editor_ui::rasterize_svg;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssetPreviewKind {
@@ -11,7 +12,7 @@ pub enum AssetPreviewKind {
     Prefab,
     Scene,
     VisualGraph,
-    RhaiScript,
+    LuauScript,
     Data,
     SpriteSheet,
     Atlas,
@@ -28,7 +29,7 @@ impl AssetPreviewKind {
             Self::Prefab => "Prefab",
             Self::Scene => "Scene",
             Self::VisualGraph => "VisualGraph",
-            Self::RhaiScript => "RhaiScript",
+            Self::LuauScript => "LuauScript",
             Self::Data => "Data",
             Self::SpriteSheet => "SpriteSheet",
             Self::Atlas => "Atlas",
@@ -110,6 +111,18 @@ impl AssetPreview {
                     peaks.iter().copied().fold(0.0f32, f32::max)
                 ));
             }
+        } else if record.asset_type == "VectorImage" {
+            match std::fs::read(&absolute)
+                .map_err(|error| error.to_string())
+                .and_then(|svg| rasterize_svg(&svg, 64, 64))
+            {
+                Ok(image) => details.push(format!(
+                    "SVG preview {}x{} (resvg/usvg)",
+                    image.width(),
+                    image.height()
+                )),
+                Err(error) => warnings.push(format!("Invalid SVG: {error}")),
+            }
         }
         if let Some(shader) = record.import_settings.get("shader").and_then(Value::as_str) {
             details.push(format!("shader {shader}"));
@@ -148,14 +161,14 @@ impl AssetDatabase {
 
 fn preview_kind(asset_type: &str) -> AssetPreviewKind {
     match asset_type {
-        "Sprite" => AssetPreviewKind::Image,
+        "Sprite" | "VectorImage" => AssetPreviewKind::Image,
         "Audio" => AssetPreviewKind::Audio,
         "AudioEvent" => AssetPreviewKind::Audio,
         "Material" | "Shader" => AssetPreviewKind::Material,
         "Prefab" => AssetPreviewKind::Prefab,
         "Scene" => AssetPreviewKind::Scene,
         "VisualGraph" => AssetPreviewKind::VisualGraph,
-        "RhaiScript" => AssetPreviewKind::RhaiScript,
+        "LuauScript" => AssetPreviewKind::LuauScript,
         "Data" | "Tilemap" | "Font" | "Video" => AssetPreviewKind::Data,
         "ParticlePreset" => AssetPreviewKind::ParticlePreset,
         "SpriteSheet" => AssetPreviewKind::SpriteSheet,

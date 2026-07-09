@@ -1,0 +1,10 @@
+{
+  "debug_mode": true,
+  "export_folder": "builds",
+  "fullscreen": false,
+  "game_name": "Letters Under Rain",
+  "start_scene": "main.scene",
+  "target_fps": 60,
+  "window_height": 720,
+  "window_width": 1280
+}

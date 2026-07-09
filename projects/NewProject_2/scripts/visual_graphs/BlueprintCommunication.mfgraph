@@ -1,0 +1,120 @@
+{
+  "editor": {
+    "canvas": {
+      "x": 0,
+      "y": 0,
+      "zoom": 1.0
+    },
+    "schema": 2
+  },
+  "kind": "MiniForgeVisualGraph",
+  "name": "BlueprintCommunication",
+  "nodes": [
+    {
+      "id": "construction",
+      "next": "setup_gate",
+      "position": {
+        "x": 48.0,
+        "y": 46.0
+      },
+      "type": "ConstructionScript"
+    },
+    {
+      "id": "setup_gate",
+      "key": "ready",
+      "next": null,
+      "position": {
+        "x": 226.0,
+        "y": 142.0
+      },
+      "type": "OpenGate"
+    },
+    {
+      "id": "start",
+      "next": "broadcast",
+      "position": {
+        "x": 404.0,
+        "y": 46.0
+      },
+      "type": "EventStart"
+    },
+    {
+      "event": "OnReady",
+      "id": "broadcast",
+      "next": "gate",
+      "position": {
+        "x": 582.0,
+        "y": 142.0
+      },
+      "type": "BroadcastEvent"
+    },
+    {
+      "event": "OnReady",
+      "id": "on_ready",
+      "next": "ready_log",
+      "position": {
+        "x": 760.0,
+        "y": 46.0
+      },
+      "type": "CustomEvent"
+    },
+    {
+      "id": "ready_log",
+      "message": "Custom event OnReady",
+      "next": null,
+      "position": {
+        "x": 938.0,
+        "y": 142.0
+      },
+      "type": "Log"
+    },
+    {
+      "id": "gate",
+      "key": "ready",
+      "next": "flip",
+      "open": true,
+      "position": {
+        "x": 1116.0,
+        "y": 46.0
+      },
+      "type": "Gate"
+    },
+    {
+      "a_next": "state_a",
+      "b_next": "state_b",
+      "id": "flip",
+      "key": "step",
+      "position": {
+        "x": 1294.0,
+        "y": 142.0
+      },
+      "type": "FlipFlop"
+    },
+    {
+      "id": "state_a",
+      "next": null,
+      "position": {
+        "x": 1472.0,
+        "y": 46.0
+      },
+      "state": "StateA",
+      "type": "SetState"
+    },
+    {
+      "id": "state_b",
+      "next": null,
+      "position": {
+        "x": 1650.0,
+        "y": 142.0
+      },
+      "state": "StateB",
+      "type": "SetState"
+    }
+  ],
+  "runtime": "rust_visual_graph",
+  "variables": {
+    "ready": true,
+    "step": false
+  },
+  "version": "0.9.3"
+}

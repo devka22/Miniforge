@@ -1,0 +1,9 @@
+[alias]
+dev = "run --quiet --bin miniforge_dev"
+dev-check = "check --locked --all-targets"
+dev-lint = ["clippy", "--locked", "--all-targets", "--", "-D", "warnings"]
+dev-test = "test --locked --all-targets"
+ship-runtime = "build --locked --profile ship --bin miniforge_runtime"
+
+[future-incompat-report]
+frequency = "always"

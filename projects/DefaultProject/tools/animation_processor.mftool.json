@@ -1,0 +1,9 @@
+{
+  "id": "animation_processor",
+  "label": "Process 2D Animations",
+  "entry": "tools/production_suite.py",
+  "menu_path": "Tools/Animation/Validate and Normalize",
+  "description": "Validate animation assets and emit a normalized production report.",
+  "trusted": true,
+  "timeout_ms": 30000
+}

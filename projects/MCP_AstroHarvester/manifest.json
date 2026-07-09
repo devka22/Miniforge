@@ -1,0 +1,20 @@
+{
+  "engine_version": "0.9.1.1",
+  "runtime": "rust",
+  "scenes": [
+    "saves/scenes/main.scene"
+  ],
+  "scripts": [
+    "scripts/PilotController.rhai",
+    "scripts/DronePatrol.rhai",
+    "scripts/visual_graphs/AstroHarvestLoop.mfgraph"
+  ],
+  "assets": [
+    "assets/data/AstroBalance.json",
+    "assets/data/GameDesignNotes.json",
+    "assets/prefabs/Pilot.prefab",
+    "assets/prefabs/EnemyDrone.prefab"
+  ],
+  "components": [],
+  "systems": []
+}

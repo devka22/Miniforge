@@ -1,0 +1,9 @@
+{
+  "id": "documentation_generator",
+  "label": "Generate Project Documentation",
+  "entry": "tools/production_suite.py",
+  "menu_path": "Tools/Production/Generate Documentation",
+  "description": "Generate Markdown documentation for scenes, assets, components and automation tools.",
+  "trusted": true,
+  "timeout_ms": 30000
+}

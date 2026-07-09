@@ -1,0 +1,114 @@
+{
+  "actions": {
+    "Move": {
+      "display_name": "Move",
+      "category": "Gameplay",
+      "devices": [
+        "keyboard",
+        "gamepad"
+      ],
+      "description": "Move Sol in top-down scenes."
+    },
+    "Interact": {
+      "display_name": "Interact",
+      "category": "Narrative",
+      "devices": [
+        "keyboard"
+      ],
+      "description": "Talk, inspect or confirm a story beat."
+    },
+    "Remember": {
+      "display_name": "Remember",
+      "category": "Narrative",
+      "devices": [
+        "keyboard"
+      ],
+      "description": "Trigger memory ability and quest graph."
+    },
+    "ChoiceA": {
+      "display_name": "Choice A",
+      "category": "Narrative",
+      "devices": [
+        "keyboard"
+      ],
+      "description": "Pick the first dialogue choice."
+    },
+    "ChoiceB": {
+      "display_name": "Choice B",
+      "category": "Narrative",
+      "devices": [
+        "keyboard"
+      ],
+      "description": "Pick the second dialogue choice."
+    },
+    "Pause": {
+      "display_name": "Pause",
+      "category": "System",
+      "devices": [
+        "keyboard"
+      ],
+      "description": "Pause story playback."
+    }
+  },
+  "bindings": {
+    "Move": [
+      "keyboard:wasd",
+      "keyboard:arrows",
+      "gamepad:left_stick"
+    ],
+    "Interact": [
+      "e",
+      "enter"
+    ],
+    "Remember": [
+      "space"
+    ],
+    "ChoiceA": [
+      "1"
+    ],
+    "ChoiceB": [
+      "2"
+    ],
+    "Pause": [
+      "escape"
+    ],
+    "move_left": [
+      "a",
+      "left"
+    ],
+    "move_right": [
+      "d",
+      "right"
+    ],
+    "move_up": [
+      "w",
+      "up"
+    ],
+    "move_down": [
+      "s",
+      "down"
+    ],
+    "interact": [
+      "e",
+      "enter"
+    ],
+    "remember": [
+      "space"
+    ],
+    "choice_a": [
+      "1"
+    ],
+    "choice_b": [
+      "2"
+    ],
+    "pause": [
+      "escape"
+    ],
+    "play": [
+      "f5"
+    ],
+    "save": [
+      "s"
+    ]
+  }
+}

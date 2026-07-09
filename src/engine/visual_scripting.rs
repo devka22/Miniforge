@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde_json::Value;
 
 use crate::engine::component::default_component;
@@ -11,13 +13,28 @@ pub struct VisualScriptRuntime {
     pub executed_nodes: usize,
     pub logs: Vec<String>,
     pub last_errors: Vec<String>,
+    started_entities: BTreeSet<u64>,
+    graph_times: BTreeMap<u64, f64>,
 }
 
 impl VisualScriptRuntime {
     pub fn update_entities(&mut self, entities: &mut [GameObject], dt: f64, mode: &str) {
+        let dt = if dt.is_finite() {
+            dt.clamp(0.0, 0.1)
+        } else {
+            0.0
+        };
         self.last_frame_graphs = 0;
         self.executed_nodes = 0;
         self.last_errors.clear();
+        let live_entities = entities
+            .iter()
+            .map(|entity| entity.id)
+            .collect::<BTreeSet<_>>();
+        self.started_entities
+            .retain(|entity_id| live_entities.contains(entity_id));
+        self.graph_times
+            .retain(|entity_id, _| live_entities.contains(entity_id));
         for entity in entities {
             let Some(script) = entity.get_component("VisualScript").cloned() else {
                 continue;
@@ -39,25 +56,44 @@ impl VisualScriptRuntime {
                 ));
                 continue;
             }
-            let started = script.get_bool("_started", false);
+            let started = self.started_entities.contains(&entity.id);
             if !started {
                 if graph_has_entry(&nodes, "construction", "ConstructionScript") {
                     self.execute_chain(entity, &nodes, "construction", dt);
                 }
                 self.execute_chain(entity, &nodes, "start", dt);
+                self.started_entities.insert(entity.id);
             } else {
                 self.execute_chain(entity, &nodes, "update", dt);
-            }
-            if let Some(script_mut) = entity.get_component_mut("VisualScript") {
-                script_mut.set("_started", serde_json::json!(true));
             }
         }
     }
 
     fn execute_chain(&mut self, entity: &mut GameObject, nodes: &[Value], start_id: &str, dt: f64) {
+        const FRAME_NODE_BUDGET: usize = 4096;
+        if self.executed_nodes >= FRAME_NODE_BUDGET {
+            if !self
+                .last_errors
+                .iter()
+                .any(|error| error.contains("presupuesto global"))
+            {
+                self.last_errors.push(format!(
+                    "{}: VisualScript alcanzo el presupuesto global de {FRAME_NODE_BUDGET} nodos.",
+                    entity.name
+                ));
+            }
+            return;
+        }
         let mut current = entry_node(nodes, start_id);
         let mut guard = 0;
         while let Some(node) = current {
+            if self.executed_nodes >= FRAME_NODE_BUDGET {
+                self.last_errors.push(format!(
+                    "{}: VisualScript alcanzo el presupuesto global de {FRAME_NODE_BUDGET} nodos.",
+                    entity.name
+                ));
+                break;
+            }
             guard += 1;
             if guard > 128 {
                 self.last_errors.push(format!(
@@ -522,7 +558,7 @@ impl VisualScriptRuntime {
                     GameAPI::set_quest_objective_progress(entity, quest, objective, progress);
                 }
                 "TriggerAbility" => {
-                    let now = advance_graph_time(entity, dt);
+                    let now = self.advance_graph_time(entity.id, dt);
                     let fired = GameAPI::trigger_ability(entity, now);
                     if node.get("true_next").is_some() || node.get("false_next").is_some() {
                         next_override = branch_next(node, fired);
@@ -622,6 +658,12 @@ impl VisualScriptRuntime {
                 found
             });
         }
+    }
+
+    fn advance_graph_time(&mut self, entity_id: u64, dt: f64) -> f64 {
+        let time = self.graph_times.entry(entity_id).or_default();
+        *time += dt.max(0.0);
+        *time
     }
 }
 
@@ -728,16 +770,6 @@ fn set_graph_variable(entity: &mut GameObject, name: &str, value: Value) {
         .unwrap_or_default();
     vars.insert(name.to_string(), value);
     script.set("variables", Value::Object(vars));
-}
-
-fn advance_graph_time(entity: &mut GameObject, dt: f64) -> f64 {
-    let key = "__graph_time";
-    let next = graph_variable(entity, key)
-        .and_then(|value| value.as_f64())
-        .unwrap_or(0.0)
-        + dt.max(0.0);
-    set_graph_variable(entity, key, serde_json::json!(next));
-    next
 }
 
 fn branch_next(node: &Value, passed: bool) -> Option<String> {

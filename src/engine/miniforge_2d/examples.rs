@@ -8,16 +8,24 @@ use crate::engine::miniforge_2d::blueprint::minimal_blueprint_graph;
 use crate::engine::miniforge_2d::blueprint_library::BlueprintLibrary2D;
 use crate::engine::miniforge_2d::editor_layout::EditorLayout2D;
 use crate::engine::miniforge_2d::gameplay::GameFramework2D;
+use crate::engine::miniforge_2d::gameplay_ability::minimal_ability_system;
+use crate::engine::miniforge_2d::massive_world2d::{
+    RuntimeBudgetStats2D, SaveSharding2D, SpawnDirector2D, SpawnRule2D, minimal_massive_world2d,
+};
 use crate::engine::miniforge_2d::packaging2d::minimal_package_manifest;
 use crate::engine::miniforge_2d::paper2d::minimal_paper2d_assets;
+use crate::engine::miniforge_2d::particles2d::minimal_particle_system;
 use crate::engine::miniforge_2d::physics2d::minimal_physics_config;
 use crate::engine::miniforge_2d::project_settings2d::ProjectSettings2D;
 use crate::engine::miniforge_2d::rts_tools::RtsTools2D;
 use crate::engine::miniforge_2d::scene_view::SceneView2D;
 use crate::engine::miniforge_2d::sequencer2d::minimal_sequencer;
+use crate::engine::miniforge_2d::tilemap_editor2d::minimal_tilemap_editor;
 use crate::engine::miniforge_2d::toolbar::{Toolbar2D, ToolbarStatus2D};
 use crate::engine::miniforge_2d::ui_designer::UiDesigner2D;
 use crate::engine::miniforge_2d::ui_framework::minimal_ui_canvas;
+use crate::engine::render_3d::{HybridScene3DStarter, Render3DCompatibilityPlan};
+use crate::render::backend::RenderBackendConfig;
 
 pub fn minimal_examples() -> BTreeMap<String, Value> {
     BTreeMap::from([
@@ -34,6 +42,7 @@ pub fn minimal_examples() -> BTreeMap<String, Value> {
             "game_framework".to_string(),
             json!(GameFramework2D::default()),
         ),
+        ("ability_system".to_string(), minimal_ability_system()),
         (
             "blueprint_graph".to_string(),
             json!(minimal_blueprint_graph()),
@@ -42,7 +51,10 @@ pub fn minimal_examples() -> BTreeMap<String, Value> {
         ("details_inspector".to_string(), details_inspector_example()),
         ("world_outliner".to_string(), world_outliner_example()),
         ("scene_view_2d".to_string(), json!(SceneView2D::default())),
+        ("hybrid_3d_rendering".to_string(), hybrid_3d_example()),
         ("paper2d".to_string(), minimal_paper2d_assets()),
+        ("tilemap_editor2d".to_string(), minimal_tilemap_editor()),
+        ("particles2d".to_string(), minimal_particle_system()),
         (
             "animation_blueprint".to_string(),
             json!(minimal_animation_blueprint()),
@@ -63,6 +75,7 @@ pub fn minimal_examples() -> BTreeMap<String, Value> {
             "rts_tools".to_string(),
             json!(RtsTools2D::default().minimal_demo_scene()),
         ),
+        ("massive_world2d".to_string(), massive_world2d_example()),
         ("asset_registry".to_string(), asset_registry_example()),
         ("plugin_system".to_string(), plugin_system_example()),
         (
@@ -135,6 +148,65 @@ fn world_outliner_example() -> Value {
     })
 }
 
+fn hybrid_3d_example() -> Value {
+    let config = RenderBackendConfig {
+        enable_3d: true,
+        hybrid_2d_3d: true,
+        depth_buffer: true,
+        mesh_batching: true,
+        ..RenderBackendConfig::default()
+    };
+    json!({
+        "runtime": "miniforge_hybrid_2d_3d",
+        "compatibility_plan": Render3DCompatibilityPlan::from_config(&config),
+        "starter_scene": HybridScene3DStarter::minimal(),
+        "components": [
+            {"component_type": "Transform3D"},
+            {"component_type": "MeshRenderer3D", "mesh": "builtin:cube", "material": "Default3D"},
+            {"component_type": "Billboard3D", "sprite": "assets/sprites/player.png"},
+            {"component_type": "Camera3D", "renders_2d_overlay": true},
+            {"component_type": "HybridScene3D", "physics_mode": "2d_gameplay"}
+        ]
+    })
+}
+
+fn massive_world2d_example() -> Value {
+    let (partition, budget, pool) = minimal_massive_world2d();
+    let mut saves = SaveSharding2D::new(4, "saves/profile/global.json");
+    saves.mark_dirty(0, 0);
+    saves.mark_dirty(4, -1);
+    json!({
+        "world_partition": partition,
+        "runtime_budget": budget,
+        "current_stats": RuntimeBudgetStats2D {
+            entities: 12000,
+            visible_sprites: 3500,
+            particles: 9000,
+            draw_calls: 240,
+            loaded_chunks: 25,
+            script_ms: 2.4,
+            physics_ms: 2.1,
+            ui_ms: 0.8,
+            memory_mb: 640.0,
+        },
+        "object_pool": pool,
+        "spawn_director": SpawnDirector2D {
+            max_spawn_per_tick: 4,
+            rules: vec![SpawnRule2D {
+                prefab: "assets/prefabs/enemy.prefab".to_string(),
+                tag: "Enemy".to_string(),
+                min_distance_from_camera: 12.0,
+                max_distance_from_camera: 24.0,
+                max_alive: 80,
+                weight: 1.0,
+                cooldown_frames: 30,
+                last_spawn_frame: 0,
+            }],
+        },
+        "save_shards": saves.flush_plan(),
+    })
+}
+
 fn asset_registry_example() -> Value {
     json!({
         "assets": [
@@ -160,6 +232,6 @@ fn pie_example() -> Value {
         "restore_on_stop": true,
         "start_paused": false,
         "simulate_controllers": true,
-        "runtime": "macroquad+rhai"
+        "runtime": "macroquad+luau"
     })
 }

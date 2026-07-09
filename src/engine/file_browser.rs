@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 
 use crate::engine::asset_tools::AssetTools;
+use crate::engine::editor_ui::{move_to_trash, open_in_default_application};
 use crate::engine::script_editor::ScriptEditor;
 
 #[derive(Debug, Clone)]
@@ -206,12 +207,21 @@ impl FileBrowser {
             self.pending_delete = Some(asset.path.clone());
             return Ok(false);
         }
-        if asset.path.is_dir() {
-            fs::remove_dir_all(&asset.path)?;
-        } else if asset.path.exists() {
-            fs::remove_file(&asset.path)?;
+        if asset.path.exists() {
+            move_to_trash(&asset.path).map_err(io::Error::other)?;
         }
         self.pending_delete = None;
+        self.selected_asset = None;
+        Ok(true)
+    }
+
+    /// Opens the selected file with the operating system's associated app, or
+    /// reveals a selected directory in the platform file manager.
+    pub fn open_selected_externally(&self) -> io::Result<bool> {
+        let Some(asset) = &self.selected_asset else {
+            return Ok(false);
+        };
+        open_in_default_application(&asset.path).map_err(io::Error::other)?;
         Ok(true)
     }
 
@@ -253,11 +263,11 @@ impl FileBrowser {
     }
 
     pub fn create_script(&self, name: &str) -> io::Result<PathBuf> {
-        AssetTools::create_rhai_script(&self.project_path, name)
+        AssetTools::create_luau_script(&self.project_path, name)
     }
 
-    pub fn create_rhai_script(&self, name: &str) -> io::Result<PathBuf> {
-        AssetTools::create_rhai_script(&self.project_path, name)
+    pub fn create_luau_script(&self, name: &str) -> io::Result<PathBuf> {
+        AssetTools::create_luau_script(&self.project_path, name)
     }
 
     pub fn create_visual_graph(&self, name: &str) -> io::Result<PathBuf> {
@@ -381,7 +391,7 @@ fn asset_type(path: &Path) -> String {
         "wav" | "mp3" | "ogg" | "flac" => "Audio",
         "prefab" => "Prefab",
         "scene" => "Scene",
-        "rhai" => "RhaiScript",
+        "luau" => "LuauScript",
         "mfgraph" => "VisualGraph",
         "json" | "txt" | "csv" | "ron" | "toml" => "Data",
         "glsl" | "wgsl" => "Shader",

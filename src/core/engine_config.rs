@@ -115,7 +115,7 @@ impl EngineConfig {
 
 fn default_config(project_path: &Path) -> Value {
     json!({
-        "config_version": 2,
+        "config_version": 3,
         "engine_name": "MiniForge",
         "engine_alt_name": "MiniForge",
         "engine_version": ENGINE_VERSION,
@@ -135,6 +135,44 @@ fn default_config(project_path: &Path) -> Value {
             "open_created_assets": true,
             "script_hot_reload": true,
             "fallback_assets": true
+        },
+        "rendering": {
+            "backend": "macroquad",
+            "experimental_wgpu": false,
+            "prefer_metal_on_macos": true,
+            "metal": {
+                "prefer_metal_on_macos": true,
+                "use_memoryless_targets": true,
+                "use_argument_buffers_future": false,
+                "allow_compute_particles": false,
+                "allow_compute_tile_visibility": false,
+                "allow_compute_flow_fields": false
+            },
+            "vsync": true,
+            "pixel_perfect": true,
+            "render_scale": 1.0,
+            "max_texture_size": 8192,
+            "sprite_batching": true,
+            "tilemap_chunk_batching": true,
+            "view_frustum_culling": true,
+            "occlusion_culling": true,
+            "lod_enabled": true,
+            "backface_culling": true,
+            "backface_culling_3d": true,
+            "gpu_particles": false,
+            "post_processing": true,
+            "enable_3d": false,
+            "hybrid_2d_3d": false,
+            "depth_buffer": false,
+            "mesh_batching": false,
+            "shadow_maps_3d": false
+        },
+        "runtime": {
+            "quality_preset": "balanced",
+            "performance_class": "desktop",
+            "graphics_quality": "medium",
+            "system_audit_on_export": true,
+            "scheduler_budget_ms": 16.67
         }
     })
 }

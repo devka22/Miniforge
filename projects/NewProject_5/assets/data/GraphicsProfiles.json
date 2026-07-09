@@ -1,0 +1,50 @@
+{
+  "active": "medium",
+  "profiles": {
+    "low": {
+      "description": "FPS primero: luces sin sombras y menos entidades dibujadas.",
+      "lighting_enabled": true,
+      "shadow_lights_enabled": false,
+      "light_sample_budget": 18,
+      "light_caster_padding": 0.0,
+      "max_shadow_lights": 0,
+      "max_source_cores": 18,
+      "max_drawn_entities": 260,
+      "minimap_entity_budget": 32
+    },
+    "medium": {
+      "description": "Equilibrado para ciudad amplia con raycast lighting selectivo.",
+      "lighting_enabled": true,
+      "shadow_lights_enabled": true,
+      "light_sample_budget": 28,
+      "light_caster_padding": 0.5,
+      "max_shadow_lights": 8,
+      "max_source_cores": 42,
+      "max_drawn_entities": 520,
+      "minimap_entity_budget": 58
+    },
+    "high": {
+      "description": "Mas calidad visual con mas sombras y sprites visibles.",
+      "lighting_enabled": true,
+      "shadow_lights_enabled": true,
+      "light_sample_budget": 44,
+      "light_caster_padding": 1.0,
+      "max_shadow_lights": 14,
+      "max_source_cores": 72,
+      "max_drawn_entities": 900,
+      "minimap_entity_budget": 84
+    },
+    "ultra": {
+      "description": "Capturas o equipos potentes.",
+      "lighting_enabled": true,
+      "shadow_lights_enabled": true,
+      "light_sample_budget": 72,
+      "light_caster_padding": 1.4,
+      "max_shadow_lights": 32,
+      "max_source_cores": 128,
+      "max_drawn_entities": 1600,
+      "minimap_entity_budget": 140
+    }
+  },
+  "runtime_override": "MINIFORGE_GRAPHICS_QUALITY=low|medium|high|ultra"
+}

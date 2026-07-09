@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::engine::component::{Component, component_from_data, default_component};
-use crate::engine::entity_id::{generate_entity_id, generate_entity_name};
+use crate::engine::entity_id::{
+    generate_entity_id, generate_entity_name, register_existing_entity_id, register_existing_name,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct GameObject {
@@ -29,6 +31,8 @@ pub struct GameObject {
     pub script: Option<String>,
     pub tag: String,
     pub layer: String,
+    #[serde(default)]
+    pub editor_group: Option<String>,
     pub parent_id: Option<u64>,
     pub local_x: f64,
     pub local_y: f64,
@@ -48,6 +52,13 @@ pub struct GameObject {
     pub components: Vec<Component>,
     #[serde(default)]
     pub scripts: Vec<Value>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ComponentBundleReport {
+    pub added: Vec<String>,
+    pub existing: Vec<String>,
+    pub missing: Vec<String>,
 }
 
 impl GameObject {
@@ -98,6 +109,7 @@ impl GameObject {
             script: None,
             tag: "Untagged".to_string(),
             layer: "Default".to_string(),
+            editor_group: None,
             parent_id: None,
             local_x: 0.0,
             local_y: 0.0,
@@ -129,6 +141,34 @@ impl GameObject {
         }
         self.components.push(component);
         self.components.last_mut().expect("component just pushed")
+    }
+
+    pub fn ensure_components(&mut self, component_types: &[&str]) -> ComponentBundleReport {
+        let mut report = ComponentBundleReport::default();
+        for component_type in component_types {
+            if self.get_component(component_type).is_some() {
+                report.existing.push((*component_type).to_string());
+                continue;
+            }
+            if let Some(component) = default_component(component_type) {
+                self.add_component(component);
+                report.added.push((*component_type).to_string());
+            } else {
+                report.missing.push((*component_type).to_string());
+            }
+        }
+        report
+    }
+
+    pub fn component_types(&self) -> Vec<String> {
+        self.components
+            .iter()
+            .map(|component| component.component_type.clone())
+            .collect()
+    }
+
+    pub fn is_runtime_active(&self) -> bool {
+        self.enabled && self.active
     }
 
     pub fn get_component(&self, component_type: &str) -> Option<&Component> {
@@ -284,6 +324,7 @@ impl GameObject {
             "script": self.script,
             "tag": self.tag,
             "layer": self.layer,
+            "editor_group": self.editor_group,
             "state": self.state,
             "command": self.command,
             "path": self.path,
@@ -330,7 +371,10 @@ impl GameObject {
 
         if preserve_id && let Some(id) = data.get("id").and_then(Value::as_u64) {
             object.id = id;
+            register_existing_entity_id(id);
         }
+
+        register_existing_name(&object.name);
 
         if let Some(position) = data.get("position").and_then(Value::as_array)
             && position.len() >= 2
@@ -396,6 +440,10 @@ impl GameObject {
             .and_then(Value::as_str)
             .unwrap_or("Default")
             .to_string();
+        object.editor_group = data
+            .get("editor_group")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
         object.parent_id = data.get("parent_id").and_then(Value::as_u64);
         object.local_x = data.get("local_x").and_then(Value::as_f64).unwrap_or(0.0);
         object.local_y = data.get("local_y").and_then(Value::as_f64).unwrap_or(0.0);

@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::engine::asset_tools::AssetTools;
 use crate::engine::camera::Camera;
-use crate::engine::runtime_manifest_loader::write_json_atomic;
+use crate::engine::project_storage::{BackupPolicy, DEFAULT_BACKUP_GENERATIONS, ProjectStorage};
 use crate::engine::scene_serializer::SceneSerializer;
 use crate::engine::tilemap_layers::TilemapLayers;
 use crate::entities::game_object::GameObject;
@@ -33,7 +33,11 @@ pub struct SceneTransition {
 
 impl SceneManager {
     pub fn new(project_path: impl AsRef<Path>) -> Self {
-        let current_scene = "main.scene".to_string();
+        Self::new_with_start_scene(project_path, "main.scene")
+    }
+
+    pub fn new_with_start_scene(project_path: impl AsRef<Path>, start_scene: &str) -> Self {
+        let current_scene = normalize_scene_name(start_scene);
         Self {
             project_path: project_path.as_ref().to_path_buf(),
             loaded_scenes: vec![current_scene.clone()],
@@ -143,7 +147,7 @@ impl SceneManager {
         brush_size: usize,
         grid: &Grid,
     ) -> io::Result<()> {
-        let data = json!({
+        let data = SceneSerializer::stamp(json!({
             "version": crate::engine::version::ENGINE_VERSION,
             "engine_version": crate::engine::version::ENGINE_VERSION,
             "scene_name": self.current_scene.trim_end_matches(".scene"),
@@ -163,17 +167,17 @@ impl SceneManager {
             },
             "settings": {},
             "ui_canvases": json!([]),
-        });
+        }))
+        .map_err(io::Error::from)?;
         let path = self.scene_path();
         let backup = path.with_extension("scene.bak");
-        if path.exists() {
-            let _ = fs::copy(&path, &backup);
-        }
-        let result = write_json_atomic(&path, &data);
-        if result.is_err() && backup.exists() {
-            let _ = fs::copy(&backup, &path);
-        }
-        result
+        ProjectStorage::write_json_atomic_with_backup(
+            &path,
+            &data,
+            BackupPolicy::new(backup, DEFAULT_BACKUP_GENERATIONS),
+        )
+        .map(|_| ())
+        .map_err(io::Error::from)
     }
 
     pub fn load_current_scene_data(&self) -> io::Result<Value> {
@@ -185,29 +189,7 @@ impl SceneManager {
         if !path.exists() {
             return Ok(json!({}));
         }
-        match AssetTools::read_json(&path) {
-            Ok(data) => Ok(SceneSerializer::migrate(data)),
-            Err(error) => {
-                let backup = path.with_extension("scene.bak");
-                if backup.exists() {
-                    let data = AssetTools::read_json(&backup).map_err(|backup_error| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "Escena invalida y backup ilegible: {} | {error}; backup: {backup_error}",
-                                path.display()
-                            ),
-                        )
-                    })?;
-                    Ok(SceneSerializer::migrate(data))
-                } else {
-                    Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("Escena invalida: {} | {error}", path.display()),
-                    ))
-                }
-            }
-        }
+        load_scene_document_with_backup(&path)
     }
 
     pub fn load_current_scene(&self) -> io::Result<Vec<GameObject>> {
@@ -392,6 +374,44 @@ impl SceneManager {
         self.loaded_scenes = vec![scene_name.clone()];
         self.scene_stack = vec![scene_name];
     }
+}
+
+fn load_scene_document_with_backup(path: &Path) -> io::Result<Value> {
+    let primary_error = match AssetTools::read_json(path) {
+        Ok(data) => match SceneSerializer::try_migrate(data) {
+            Ok(report) => return Ok(report.data),
+            Err(error) if error.is_future_version() => return Err(io::Error::from(error)),
+            Err(error) => error.to_string(),
+        },
+        Err(error) => error.to_string(),
+    };
+    let backup = path.with_extension("scene.bak");
+    if !backup.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Escena invalida: {} | {primary_error}", path.display()),
+        ));
+    }
+    let backup_data = AssetTools::read_json(&backup).map_err(|backup_error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Escena invalida y backup ilegible: {} | {primary_error}; backup: {backup_error}",
+                path.display()
+            ),
+        )
+    })?;
+    SceneSerializer::try_migrate(backup_data)
+        .map(|report| report.data)
+        .map_err(|backup_error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Escena invalida y backup incompatible: {} | {primary_error}; backup: {backup_error}",
+                    path.display()
+                ),
+            )
+        })
 }
 
 pub fn normalize_scene_name(name: &str) -> String {

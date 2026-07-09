@@ -1,0 +1,27 @@
+{
+  "active_tool": "Select",
+  "brush_size": 1,
+  "camera": {
+    "x": 1920.0,
+    "y": 0.0,
+    "zoom": 1.0
+  },
+  "control_groups": {},
+  "editor_view_settings": {},
+  "engine_version": "0.9.3",
+  "entities": [],
+  "grid": {
+    "chunk_size": 8,
+    "height": 40,
+    "tile_size": 32,
+    "width": 60
+  },
+  "mode": "EDITOR",
+  "scene_name": "scene_8",
+  "settings": {},
+  "tile_brush": 0,
+  "tilemap_layers": [],
+  "tiles": [],
+  "ui_canvases": [],
+  "version": "0.9.3"
+}

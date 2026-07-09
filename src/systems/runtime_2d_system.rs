@@ -25,7 +25,11 @@ impl Runtime2DSystem {
         let mut fall_respawns = 0;
 
         if mode == "PLAY" {
-            let dt = dt.clamp(0.0, 0.05);
+            let dt = if dt.is_finite() {
+                dt.clamp(0.0, 0.05)
+            } else {
+                0.0
+            };
             checkpoint_activations = activate_checkpoints(entities);
             for entity in entities.iter_mut().filter(|entity| entity.enabled) {
                 if update_character_controller(entity, dt) {
@@ -123,6 +127,38 @@ impl Runtime2DSystem {
         camera.y += shake.1;
         camera.clamp_to_bounds();
         self.stats.insert("camera_follows".to_string(), 1);
+    }
+
+    pub fn advance_camera_shakes(&mut self, entities: &mut [GameObject], dt: f64, mode: &str) {
+        if mode != "PLAY" {
+            self.stats.insert("camera_shakes".to_string(), 0);
+            return;
+        }
+        let dt = if dt.is_finite() {
+            dt.clamp(0.0, 0.1)
+        } else {
+            0.0
+        };
+        let mut active = 0;
+        for entity in entities {
+            let Some(shake) = entity.get_component_mut("CameraShake") else {
+                continue;
+            };
+            if !shake.get_bool("active", false) {
+                continue;
+            }
+            let duration = shake.get_f64("duration", 0.25).max(0.0001);
+            let elapsed = shake.get_f64("elapsed", 0.0) + dt;
+            let trauma = (1.0 - elapsed / duration).clamp(0.0, 1.0);
+            shake.set_f64("elapsed", elapsed);
+            shake.set_f64("trauma", trauma);
+            if elapsed >= duration {
+                shake.set("active", json!(false));
+            } else {
+                active += 1;
+            }
+        }
+        self.stats.insert("camera_shakes".to_string(), active);
     }
 }
 

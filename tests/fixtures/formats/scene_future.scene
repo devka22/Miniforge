@@ -1,0 +1,9 @@
+{
+  "format": "miniforge.scene",
+  "schema_version": 999,
+  "engine_version": "99.0.0",
+  "scene_name": "FutureLevel",
+  "camera": {},
+  "entities": [],
+  "ui_canvases": []
+}

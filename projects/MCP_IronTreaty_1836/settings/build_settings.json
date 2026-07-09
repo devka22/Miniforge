@@ -1,0 +1,10 @@
+{
+  "debug_mode": true,
+  "export_folder": "builds",
+  "fullscreen": false,
+  "game_name": "Iron Treaty 1836",
+  "start_scene": "campaign_1836.scene",
+  "target_fps": 60,
+  "window_height": 820,
+  "window_width": 1400
+}

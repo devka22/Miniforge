@@ -13,7 +13,11 @@ pub struct RTSSystem {
 
 impl RTSSystem {
     pub fn update_entities(&mut self, entities: &mut Vec<GameObject>, dt: f64, mode: &str) {
-        let dt = dt.clamp(0.0, 0.1);
+        let dt = if dt.is_finite() {
+            dt.clamp(0.0, 0.1)
+        } else {
+            0.0
+        };
         if mode != "PLAY" {
             self.stats = self.collect_stats(entities, 0, 0, 0, 0, TacticalCombatReport::default());
             return;

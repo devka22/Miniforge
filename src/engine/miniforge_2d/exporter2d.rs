@@ -24,6 +24,9 @@ pub fn export_layout(profile: PackageProfile2D, game_name: &str) -> ExportLayout
     let profile_dir = match profile {
         PackageProfile2D::Debug => "debug",
         PackageProfile2D::Release => "release",
+        PackageProfile2D::Shipping => "shipping",
+        PackageProfile2D::WebFuture => "web_future",
+        PackageProfile2D::MacosAppFuture => "macos_app_future",
     };
     let root = format!("build/{profile_dir}/{game_name}");
     ExportLayout2D {
@@ -32,10 +35,19 @@ pub fn export_layout(profile: PackageProfile2D, game_name: &str) -> ExportLayout
         runtime_manifest: format!("{root}/runtime_manifest.json"),
         build_info: format!("{root}/build_info.json"),
         root,
-        folders: ["assets", "scenes", "scripts", "graphs", "config"]
-            .iter()
-            .map(|folder| folder.to_string())
-            .collect(),
+        folders: [
+            "assets",
+            "scenes",
+            "scripts",
+            "graphs",
+            "ui",
+            "timelines",
+            "config",
+            "plugins",
+        ]
+        .iter()
+        .map(|folder| folder.to_string())
+        .collect(),
     }
 }
 

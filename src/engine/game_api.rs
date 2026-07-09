@@ -359,6 +359,54 @@ impl GameAPI {
         true
     }
 
+    pub fn set_ui_progress(entity: &mut GameObject, value: f64, max: f64) -> bool {
+        if entity.get_component("UIElement").is_none() {
+            let _ = Self::add_component(entity, "UIElement", None);
+        }
+        let Some(component) = entity.get_component_mut("UIElement") else {
+            return false;
+        };
+        component.set("element_type", json!("ProgressBar"));
+        component.set_f64("progress", value.max(0.0));
+        component.set_f64("max_progress", max.max(0.0001));
+        true
+    }
+
+    pub fn set_ui_visible(entity: &mut GameObject, visible: bool) -> bool {
+        entity.visible = visible;
+        if entity.get_component("UIElement").is_none() {
+            let _ = Self::add_component(entity, "UIElement", None);
+        }
+        let Some(component) = entity.get_component_mut("UIElement") else {
+            return false;
+        };
+        component.set("visible", json!(visible));
+        true
+    }
+
+    pub fn set_tag(entity: &mut GameObject, tag: &str) {
+        entity.tag = tag.to_string();
+        if let Some(component) = entity.get_component_mut("Actor2D") {
+            component.set("tag", json!(tag));
+        }
+    }
+
+    pub fn set_layer(entity: &mut GameObject, layer: &str) {
+        entity.layer = layer.to_string();
+        if let Some(component) = entity.get_component_mut("Actor2D") {
+            component.set("layer", json!(layer));
+        }
+    }
+
+    pub fn set_enabled(entity: &mut GameObject, enabled: bool) {
+        entity.enabled = enabled;
+        entity.active = enabled;
+    }
+
+    pub fn set_visible(entity: &mut GameObject, visible: bool) {
+        entity.visible = visible;
+    }
+
     pub fn remove_component(entity: &mut GameObject, component_type: &str) {
         entity.remove_component(component_type);
     }

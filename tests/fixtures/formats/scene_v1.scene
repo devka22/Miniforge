@@ -1,0 +1,29 @@
+{
+  "format": "miniforge.scene",
+  "schema_version": 1,
+  "version": "0.8.0",
+  "engine_version": "0.9.3.4",
+  "scene_name": "LegacyLevel",
+  "mode": "EDITOR",
+  "active_tool": "Select",
+  "tile_brush": 0,
+  "brush_size": 1,
+  "camera": {
+    "x": 4,
+    "y": 8,
+    "zoom": 2.0
+  },
+  "control_groups": {},
+  "grid": null,
+  "tiles": [],
+  "tilemap_layers": [],
+  "settings": {},
+  "entities": [
+    {
+      "id": 42,
+      "name": "LegacyEntity"
+    }
+  ],
+  "editor_view_settings": {},
+  "ui_canvases": []
+}

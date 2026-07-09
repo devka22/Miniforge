@@ -1,0 +1,19 @@
+{
+  "name": "LoveLabCharacters",
+  "texture": "assets/sprites/LoveLabCharacters.png",
+  "animations": [
+    {
+      "name": "idle",
+      "fps": 4.0,
+      "looped": true,
+      "ping_pong": true,
+      "tags": ["love_lab", "character", "idle"],
+      "frames": [
+        { "rect": { "x": 0, "y": 0, "width": 32, "height": 32 }, "duration": 0.25, "pivot": [16.0, 16.0], "hitboxes": [], "hurtboxes": [], "collision_shapes": [], "events": [] },
+        { "rect": { "x": 32, "y": 0, "width": 32, "height": 32 }, "duration": 0.25, "pivot": [16.0, 16.0], "hitboxes": [], "hurtboxes": [], "collision_shapes": [], "events": [] },
+        { "rect": { "x": 64, "y": 0, "width": 32, "height": 32 }, "duration": 0.25, "pivot": [16.0, 16.0], "hitboxes": [], "hurtboxes": [], "collision_shapes": [], "events": [] },
+        { "rect": { "x": 96, "y": 0, "width": 32, "height": 32 }, "duration": 0.25, "pivot": [16.0, 16.0], "hitboxes": [], "hurtboxes": [], "collision_shapes": [], "events": [] }
+      ]
+    }
+  ]
+}

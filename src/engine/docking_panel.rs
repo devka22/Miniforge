@@ -1,6 +1,8 @@
 use egui::{CornerRadius, Visuals};
 use egui_dock::DockState;
 
+use crate::engine::editor_ui::{EditorIcon, install_phosphor_fonts};
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DockingPanel {
     pub id: String,
@@ -56,6 +58,25 @@ impl EditorDockTab {
             Self::Profiler => "Profiler",
             Self::PlayWindow => "Play Window",
         }
+    }
+
+    pub fn icon(self) -> EditorIcon {
+        match self {
+            Self::World => EditorIcon::Scene,
+            Self::Hierarchy => EditorIcon::Graph,
+            Self::Inspector => EditorIcon::Component,
+            Self::ContentBrowser => EditorIcon::Folder,
+            Self::ScriptEditor => EditorIcon::Script,
+            Self::BlueprintEditor => EditorIcon::Graph,
+            Self::Prefabs => EditorIcon::Prefab,
+            Self::Console => EditorIcon::Warning,
+            Self::Profiler => EditorIcon::Validate,
+            Self::PlayWindow => EditorIcon::Play,
+        }
+    }
+
+    pub fn display_title(self) -> String {
+        self.icon().label(self.title())
     }
 }
 
@@ -147,6 +168,7 @@ impl EguiDockingWorkspace {
     }
 
     pub fn apply_egui_visuals(&self, ctx: &egui::Context) {
+        install_phosphor_fonts(ctx);
         ctx.set_visuals(self.theme.egui_visuals.clone());
     }
 }

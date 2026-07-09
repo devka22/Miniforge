@@ -1,0 +1,41 @@
+{
+  "cell_height": 16,
+  "cell_width": 4,
+  "image_height": 16,
+  "image_width": 16,
+  "import_warnings": [],
+  "margin": 0,
+  "padding": 0,
+  "slices": [
+    {
+      "height": 16,
+      "index": 0,
+      "width": 4,
+      "x": 0,
+      "y": 0
+    },
+    {
+      "height": 16,
+      "index": 1,
+      "width": 4,
+      "x": 4,
+      "y": 0
+    },
+    {
+      "height": 16,
+      "index": 2,
+      "width": 4,
+      "x": 8,
+      "y": 0
+    },
+    {
+      "height": 16,
+      "index": 3,
+      "width": 4,
+      "x": 12,
+      "y": 0
+    }
+  ],
+  "source": "/Users/gustavomalaga/Library/Mobile Documents/com~apple~CloudDocs/mini motor/projects/NewProject_2/assets/sprites/SpriteSheetLab_4x1.png",
+  "source_format": "png"
+}

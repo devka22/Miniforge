@@ -1,0 +1,36 @@
+{
+  "decisions": [
+    {
+      "id": "subsidize_steel",
+      "title": "Subsidize Steelworks",
+      "cost": {
+        "Gold": 120
+      },
+      "effects": {
+        "factory_throughput": 0.15
+      }
+    },
+    {
+      "id": "mobilize_reserves",
+      "title": "Mobilize Reserves",
+      "cost": {
+        "Grain": 60
+      },
+      "effects": {
+        "regiments": 2,
+        "militancy": 0.05
+      }
+    },
+    {
+      "id": "trade_mission",
+      "title": "Cyran Trade Mission",
+      "cost": {
+        "Gold": 80
+      },
+      "effects": {
+        "relation_CYR": 25,
+        "tariff_income": 0.05
+      }
+    }
+  ]
+}

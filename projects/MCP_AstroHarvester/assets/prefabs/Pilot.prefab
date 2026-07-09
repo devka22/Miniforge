@@ -1,0 +1,106 @@
+{
+  "version": "0.9.1.1",
+  "engine_version": "0.9.1.1",
+  "prefab_name": "Pilot",
+  "entity": {
+    "type": "Unit",
+    "id": 9000,
+    "name": "Pilot",
+    "enabled": true,
+    "active": true,
+    "visible": true,
+    "locked": false,
+    "x": 0,
+    "y": 0,
+    "position": [
+      0,
+      0
+    ],
+    "rotation": 0,
+    "scale": [
+      1,
+      1
+    ],
+    "scale_x": 1,
+    "scale_y": 1,
+    "size": [
+      1,
+      1
+    ],
+    "width": 1,
+    "height": 1,
+    "speed": 4.5,
+    "radius": 0.5,
+    "sprite_name": null,
+    "sprite_guid": null,
+    "script": null,
+    "tag": "Player",
+    "layer": "Units",
+    "state": "IDLE",
+    "command": "IDLE",
+    "path": [],
+    "parent_id": null,
+    "local_x": 0,
+    "local_y": 0,
+    "prefab_source": null,
+    "prefab_guid": null,
+    "is_prefab_instance": false,
+    "scene_name": null,
+    "patrol_points": [],
+    "patrol_index": 0,
+    "follow_target_id": null,
+    "guard_target_id": null,
+    "attack_move_target": null,
+    "gather_target_id": null,
+    "components": [
+      {
+        "component_type": "Transform",
+        "enabled": true,
+        "x": 0,
+        "y": 0,
+        "rotation": 0,
+        "scale_x": 1,
+        "scale_y": 1
+      },
+      {
+        "component_type": "Selectable",
+        "enabled": true,
+        "selectable": true,
+        "selection_radius": 0.55
+      },
+      {
+        "component_type": "SpriteRenderer",
+        "enabled": true,
+        "tint": [
+          90,
+          190,
+          255
+        ],
+        "visible": true,
+        "sorting_order": 0
+      },
+      {
+        "component_type": "Collider2D",
+        "enabled": true,
+        "shape": "rect",
+        "width": 1,
+        "height": 1,
+        "radius": 0.5,
+        "is_trigger": false
+      },
+      {
+        "component_type": "Health",
+        "enabled": true
+      },
+      {
+        "component_type": "Stats",
+        "enabled": true
+      },
+      {
+        "component_type": "NavAgent",
+        "enabled": true
+      }
+    ],
+    "scripts": []
+  }
+}

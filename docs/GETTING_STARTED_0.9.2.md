@@ -1,8 +1,14 @@
 # MiniForge 0.9.2 Getting Started
 
-Esta guia resume el flujo recomendado para aprender MiniForge y crear juegos 2D o RTS usando el editor, scripts Rhai y blueprints `.mfgraph`.
+Esta guia resume el flujo recomendado para aprender MiniForge y crear juegos 2D o RTS usando el editor, scripts Luau y blueprints `.mfgraph`.
 
 ## 1. Abrir El Motor
+
+```bash
+cargo run --bin miniforge_editor
+```
+
+Si quieres saltar el launcher y abrir directo el proyecto default:
 
 ```bash
 cargo run --bin miniforge_editor -- --project projects/DefaultProject --no-launcher
@@ -22,7 +28,7 @@ El launcher permite crear proyectos, elegir ubicacion libre, abrir recientes y r
 - `Inspector`: transform y componentes del seleccionado.
 - `Scene`: edicion visual con herramientas `Select`, `Move`, `Rotate`, `Scale` y `Paint`.
 - `Browser`: assets, scripts, prefabs, escenas, materiales y graphs.
-- `Programming`: scripts Rhai, blueprints, templates, validador y tabs.
+- `Programming`: scripts Luau, blueprints, templates, validador y tabs.
 - `Prefabs`, `Scenes`, `Sprites`, `Console` y `Profiler`: flujo de contenido, escena, sprites, errores y rendimiento.
 - `Ctrl+P`: paleta de comandos con busqueda difusa. Prueba `inventory`, `quest`, `rts`, `sprite`, `package`.
 
@@ -51,11 +57,11 @@ Nodos utiles:
 - Quests/habilidades: `AddQuest`, `QuestProgress`, `TriggerAbility`, `RechargeAbility`.
 - Flujo: `Sequence`, `Gate`, `DoOnce`, `FlipFlop`, `BranchVariable`, `BranchHealth`.
 
-## 5. Scripts Rhai
+## 5. Scripts Luau
 
-Los scripts `.rhai` se guardan en `scripts/`. Eventos disponibles:
+Los scripts `.luau` se guardan en `scripts/`. Eventos disponibles:
 
-```rhai
+```luau
 fn on_start() {
     set_position(3.0, 4.0);
 }
@@ -65,7 +71,7 @@ fn on_update(dt) {
 }
 ```
 
-Usa Rhai para comportamiento especifico y blueprints para flujos visuales de gameplay.
+Usa Luau para comportamiento especifico y blueprints para flujos visuales de gameplay.
 
 ## 6. Inventarios, Economia Y RTS
 
@@ -93,9 +99,9 @@ Para RTS, combina `EconomyWallet`, `ProductionRecipeBook`, `ProductionQueue`, `W
 ## 8. Debug
 
 - La consola separa info, warning y error por canal.
-- Los errores Rhai y VisualScript no cierran el editor; quedan en consola y panel Programming.
+- Los errores Luau y VisualScript no cierran el editor; quedan en consola y panel Programming.
 - `Validate project` revisa estructura, assets, escenas, prefabs y graphs.
-- `Profiler` muestra costos por sistemas como Gameplay, VisualGraph, Rhai, RTS y Physics.
+- `Profiler` muestra costos por sistemas como Gameplay, VisualGraph, Luau, RTS y Physics.
 
 ## 9. Ruta Recomendada Para Aprender
 

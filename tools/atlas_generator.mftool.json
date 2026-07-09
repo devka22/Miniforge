@@ -1,0 +1,9 @@
+{
+  "id": "atlas_generator",
+  "label": "Generate Paged Sprite Atlases",
+  "entry": "tools/production_suite.py",
+  "menu_path": "Tools/Sprites/Generate Paged Atlases",
+  "description": "Pack large sprite collections into 4096px paged atlases with extrusion metadata.",
+  "trusted": true,
+  "timeout_ms": 120000
+}

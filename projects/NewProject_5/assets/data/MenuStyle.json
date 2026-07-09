@@ -1,0 +1,25 @@
+{
+  "name": "Neon noir dossier",
+  "palette": [
+    "cyan signage",
+    "pink neon",
+    "warm sodium",
+    "deep ink",
+    "police blue"
+  ],
+  "layout": "compact GTA-style gameplay HUD plus full-screen pause dossier",
+  "motion_hooks": [
+    "pause toggle",
+    "mission title refresh",
+    "wanted bloom",
+    "minimap sweep",
+    "wanted stars"
+  ],
+  "dynamic_fields": [
+    "mission title",
+    "district",
+    "dispatch heat",
+    "reputation",
+    "objective waypoint"
+  ]
+}

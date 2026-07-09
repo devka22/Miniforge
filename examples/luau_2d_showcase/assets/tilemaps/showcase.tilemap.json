@@ -1,0 +1,16 @@
+{
+  "width": 24,
+  "height": 14,
+  "tile_width": 16,
+  "tile_height": 16,
+  "chunk_width": 8,
+  "chunk_height": 8,
+  "layers": [
+    {"name": "Ground", "visible": true, "collision": false, "navigation": false, "tiles": []},
+    {"name": "Collision", "visible": false, "collision": true, "navigation": false, "tiles": []},
+    {"name": "Navigation", "visible": false, "collision": false, "navigation": true, "tiles": []}
+  ],
+  "autotiles": [{"name": "GrassEdge", "source_tile": 2, "variants": [2, 3, 4, 5]}],
+  "animated_tiles": [{"tile_id": 6, "frames": [6, 7, 8], "fps": 6.0}],
+  "dirty_chunks": []
+}

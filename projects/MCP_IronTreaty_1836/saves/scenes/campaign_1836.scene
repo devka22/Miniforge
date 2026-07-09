@@ -1,0 +1,2919 @@
+{
+  "version": "0.9.1.1",
+  "engine_version": "0.9.1.1",
+  "scene_name": "campaign_1836",
+  "mode": "EDITOR",
+  "active_tool": "Select",
+  "tile_brush": 0,
+  "brush_size": 1,
+  "camera": {
+    "x": 390,
+    "y": 270,
+    "zoom": 0.92
+  },
+  "control_groups": {},
+  "grid": {
+    "width": 80,
+    "height": 48,
+    "tile_size": 32,
+    "chunk_size": 8
+  },
+  "tiles": [],
+  "tilemap_layers": [],
+  "settings": {
+    "genre": "grand_strategy_rts",
+    "start_year": 1836,
+    "tick_rate": "monthly",
+    "victory_conditions": [
+      "great_power_rank",
+      "industrial_score",
+      "war_score"
+    ],
+    "generated_by": "miniforge-mcp"
+  },
+  "entities": [
+    {
+      "type": "GameObject",
+      "id": 1,
+      "name": "CampaignRules",
+      "enabled": true,
+      "active": true,
+      "visible": false,
+      "locked": true,
+      "x": 0,
+      "y": 0,
+      "position": [
+        0,
+        0
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 3.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": "CampaignController.rhai",
+      "tag": "Untagged",
+      "layer": "EditorOnly",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 0,
+          "y": 0,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            255,
+            255,
+            255
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "GameMode2D",
+          "enabled": true,
+          "start_scene": "saves/scenes/campaign_1836.scene",
+          "rules": {
+            "tick_mode": "monthly",
+            "victory": "great_power_rank"
+          }
+        },
+        {
+          "component_type": "GameState2D",
+          "enabled": true,
+          "phase": "campaign",
+          "score": {
+            "prestige": 14,
+            "industry": 21,
+            "military": 12
+          }
+        },
+        {
+          "component_type": "WorldPartition2D",
+          "enabled": true,
+          "cell_size": 8,
+          "streaming_enabled": false
+        },
+        {
+          "component_type": "RuntimeBudget2D",
+          "enabled": true,
+          "max_entities": 25000,
+          "max_visible_sprites": 6000,
+          "max_script_ms": 6
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 10,
+      "name": "Nation_ALB",
+      "enabled": true,
+      "active": true,
+      "visible": false,
+      "locked": true,
+      "x": 0,
+      "y": 0,
+      "position": [
+        0,
+        0
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 3.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": null,
+      "tag": "Nation",
+      "layer": "EditorOnly",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 0,
+          "y": 0,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            255,
+            255,
+            255
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "Nation2D",
+          "enabled": true,
+          "nation_tag": "ALB",
+          "display_name": "Albian Union",
+          "capital_province": "albion",
+          "government": "constitutional_monarchy",
+          "treasury": 1600,
+          "prestige": 14,
+          "primary_culture": "albian",
+          "accepted_cultures": []
+        },
+        {
+          "component_type": "EconomyWallet",
+          "enabled": true,
+          "resources": {
+            "Gold": 1600,
+            "Grain": 180,
+            "Coal": 70,
+            "Iron": 55
+          },
+          "capacity": 999999
+        },
+        {
+          "component_type": "Diplomacy2D",
+          "enabled": true,
+          "relations": {
+            "ALB": 100,
+            "BOR": -10,
+            "CYR": 5
+          },
+          "rivals": [
+            "BOR"
+          ],
+          "alliances": []
+        },
+        {
+          "component_type": "ResearchTree2D",
+          "enabled": true,
+          "current_research": "organized_factories",
+          "progress": 0.42,
+          "points_per_month": 2
+        },
+        {
+          "component_type": "Team",
+          "enabled": true,
+          "team_id": 10,
+          "team_name": "Albian Union",
+          "color": [
+            80,
+            150,
+            255
+          ]
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 11,
+      "name": "Nation_BOR",
+      "enabled": true,
+      "active": true,
+      "visible": false,
+      "locked": true,
+      "x": 0,
+      "y": 0,
+      "position": [
+        0,
+        0
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 3.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": null,
+      "tag": "Nation",
+      "layer": "EditorOnly",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 0,
+          "y": 0,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            255,
+            255,
+            255
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "Nation2D",
+          "enabled": true,
+          "nation_tag": "BOR",
+          "display_name": "Boreal Empire",
+          "capital_province": "borgrad",
+          "government": "absolute_monarchy",
+          "treasury": 1300,
+          "prestige": 9,
+          "primary_culture": "boreal",
+          "accepted_cultures": []
+        },
+        {
+          "component_type": "EconomyWallet",
+          "enabled": true,
+          "resources": {
+            "Gold": 1300,
+            "Grain": 180,
+            "Coal": 70,
+            "Iron": 55
+          },
+          "capacity": 999999
+        },
+        {
+          "component_type": "Diplomacy2D",
+          "enabled": true,
+          "relations": {
+            "ALB": 20,
+            "BOR": 100,
+            "CYR": 5
+          },
+          "rivals": [
+            "ALB"
+          ],
+          "alliances": []
+        },
+        {
+          "component_type": "ResearchTree2D",
+          "enabled": true,
+          "current_research": "professional_army",
+          "progress": 0.24,
+          "points_per_month": 1.4
+        },
+        {
+          "component_type": "Team",
+          "enabled": true,
+          "team_id": 11,
+          "team_name": "Boreal Empire",
+          "color": [
+            255,
+            100,
+            90
+          ]
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 12,
+      "name": "Nation_CYR",
+      "enabled": true,
+      "active": true,
+      "visible": false,
+      "locked": true,
+      "x": 0,
+      "y": 0,
+      "position": [
+        0,
+        0
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 3.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": null,
+      "tag": "Nation",
+      "layer": "EditorOnly",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 0,
+          "y": 0,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            255,
+            255,
+            255
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "Nation2D",
+          "enabled": true,
+          "nation_tag": "CYR",
+          "display_name": "Cyran Republic",
+          "capital_province": "cyrhaven",
+          "government": "republic",
+          "treasury": 900,
+          "prestige": 5,
+          "primary_culture": "cyran",
+          "accepted_cultures": [
+            "cyran",
+            "borderfolk"
+          ]
+        },
+        {
+          "component_type": "EconomyWallet",
+          "enabled": true,
+          "resources": {
+            "Gold": 900,
+            "Grain": 180,
+            "Coal": 70,
+            "Iron": 55
+          },
+          "capacity": 999999
+        },
+        {
+          "component_type": "Diplomacy2D",
+          "enabled": true,
+          "relations": {
+            "ALB": 20,
+            "BOR": -10,
+            "CYR": 100
+          },
+          "rivals": [],
+          "alliances": [
+            "ALB"
+          ]
+        },
+        {
+          "component_type": "ResearchTree2D",
+          "enabled": true,
+          "current_research": "professional_army",
+          "progress": 0.24,
+          "points_per_month": 1.4
+        },
+        {
+          "component_type": "Team",
+          "enabled": true,
+          "team_id": 12,
+          "team_name": "Cyran Republic",
+          "color": [
+            120,
+            220,
+            150
+          ]
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 100,
+      "name": "Province_albion",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 6,
+      "y": 7,
+      "position": [
+        6,
+        7
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        2.2,
+        1.4
+      ],
+      "width": 2.2,
+      "height": 1.4,
+      "speed": 3.5,
+      "radius": 1,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": "ProvincePulse.rhai",
+      "tag": "Province",
+      "layer": "Ground",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 6,
+          "y": 7,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            80,
+            150,
+            255
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "Province2D",
+          "enabled": true,
+          "province_id": "albion",
+          "display_name": "Albion",
+          "owner_tag": "ALB",
+          "controller_tag": "ALB",
+          "terrain": "plains",
+          "population": 420000,
+          "resource": "grain",
+          "infrastructure": 1.1,
+          "literacy": 0.32,
+          "factory_slots": 1,
+          "supply_limit": 12
+        },
+        {
+          "component_type": "PopulationPops2D",
+          "enabled": true,
+          "pops": [
+            {
+              "type": "farmers",
+              "size": 243599.99999999997,
+              "militancy": 0.06,
+              "consciousness": 0.15,
+              "wealth": 0.32
+            },
+            {
+              "type": "laborers",
+              "size": 92400,
+              "militancy": 0.08,
+              "consciousness": 0.22,
+              "wealth": 0.28
+            },
+            {
+              "type": "craftsmen",
+              "size": 50400,
+              "militancy": 0.1,
+              "consciousness": 0.3,
+              "wealth": 0.42
+            },
+            {
+              "type": "bureaucrats",
+              "size": 12600,
+              "militancy": 0.02,
+              "consciousness": 0.36,
+              "wealth": 0.7
+            }
+          ]
+        },
+        {
+          "component_type": "Market2D",
+          "enabled": true,
+          "market_id": "albion_market",
+          "goods": {
+            "grain": {
+              "stockpile": 140,
+              "price": 1,
+              "demand": 80,
+              "supply": 130
+            },
+            "coal": {
+              "stockpile": 20,
+              "price": 2.2,
+              "demand": 65,
+              "supply": 15
+            },
+            "iron": {
+              "stockpile": 18,
+              "price": 2.6,
+              "demand": 70,
+              "supply": 12
+            }
+          }
+        },
+        {
+          "component_type": "Factory2D",
+          "enabled": true,
+          "factory_id": "albion_workshop",
+          "good": "canned_food",
+          "workers": 29400.000000000004,
+          "throughput": 1.15,
+          "profit": 12
+        },
+        {
+          "component_type": "ObjectiveMarker",
+          "enabled": true,
+          "label": "Albion",
+          "color": [
+            80,
+            150,
+            255
+          ],
+          "pulse": true
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 101,
+      "name": "Province_whitecliff",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 9,
+      "y": 5,
+      "position": [
+        9,
+        5
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        2.2,
+        1.4
+      ],
+      "width": 2.2,
+      "height": 1.4,
+      "speed": 3.5,
+      "radius": 1,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": "ProvincePulse.rhai",
+      "tag": "Province",
+      "layer": "Ground",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 9,
+          "y": 5,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            95,
+            165,
+            255
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "Province2D",
+          "enabled": true,
+          "province_id": "whitecliff",
+          "display_name": "Whitecliff",
+          "owner_tag": "ALB",
+          "controller_tag": "ALB",
+          "terrain": "hills",
+          "population": 260000,
+          "resource": "coal",
+          "infrastructure": 1.1,
+          "literacy": 0.32,
+          "factory_slots": 2,
+          "supply_limit": 12
+        },
+        {
+          "component_type": "PopulationPops2D",
+          "enabled": true,
+          "pops": [
+            {
+              "type": "farmers",
+              "size": 150800,
+              "militancy": 0.06,
+              "consciousness": 0.15,
+              "wealth": 0.32
+            },
+            {
+              "type": "laborers",
+              "size": 57200,
+              "militancy": 0.08,
+              "consciousness": 0.22,
+              "wealth": 0.28
+            },
+            {
+              "type": "craftsmen",
+              "size": 31200,
+              "militancy": 0.1,
+              "consciousness": 0.3,
+              "wealth": 0.42
+            },
+            {
+              "type": "bureaucrats",
+              "size": 7800,
+              "militancy": 0.02,
+              "consciousness": 0.36,
+              "wealth": 0.7
+            }
+          ]
+        },
+        {
+          "component_type": "Market2D",
+          "enabled": true,
+          "market_id": "whitecliff_market",
+          "goods": {
+            "grain": {
+              "stockpile": 55,
+              "price": 1,
+              "demand": 80,
+              "supply": 45
+            },
+            "coal": {
+              "stockpile": 90,
+              "price": 2.2,
+              "demand": 65,
+              "supply": 80
+            },
+            "iron": {
+              "stockpile": 18,
+              "price": 2.6,
+              "demand": 70,
+              "supply": 12
+            }
+          }
+        },
+        {
+          "component_type": "Factory2D",
+          "enabled": true,
+          "factory_id": "whitecliff_workshop",
+          "good": "steel",
+          "workers": 18200,
+          "throughput": 1.15,
+          "profit": 12
+        },
+        {
+          "component_type": "ObjectiveMarker",
+          "enabled": true,
+          "label": "Whitecliff",
+          "color": [
+            95,
+            165,
+            255
+          ],
+          "pulse": true
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 102,
+      "name": "Province_ironvale",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 10,
+      "y": 9,
+      "position": [
+        10,
+        9
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        2.2,
+        1.4
+      ],
+      "width": 2.2,
+      "height": 1.4,
+      "speed": 3.5,
+      "radius": 1,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": "ProvincePulse.rhai",
+      "tag": "Province",
+      "layer": "Ground",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 10,
+          "y": 9,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            75,
+            135,
+            230
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "Province2D",
+          "enabled": true,
+          "province_id": "ironvale",
+          "display_name": "Ironvale",
+          "owner_tag": "ALB",
+          "controller_tag": "ALB",
+          "terrain": "hills",
+          "population": 310000,
+          "resource": "iron",
+          "infrastructure": 1.1,
+          "literacy": 0.32,
+          "factory_slots": 2,
+          "supply_limit": 12
+        },
+        {
+          "component_type": "PopulationPops2D",
+          "enabled": true,
+          "pops": [
+            {
+              "type": "farmers",
+              "size": 179800,
+              "militancy": 0.06,
+              "consciousness": 0.15,
+              "wealth": 0.32
+            },
+            {
+              "type": "laborers",
+              "size": 68200,
+              "militancy": 0.08,
+              "consciousness": 0.22,
+              "wealth": 0.28
+            },
+            {
+              "type": "craftsmen",
+              "size": 37200,
+              "militancy": 0.1,
+              "consciousness": 0.3,
+              "wealth": 0.42
+            },
+            {
+              "type": "bureaucrats",
+              "size": 9300,
+              "militancy": 0.02,
+              "consciousness": 0.36,
+              "wealth": 0.7
+            }
+          ]
+        },
+        {
+          "component_type": "Market2D",
+          "enabled": true,
+          "market_id": "ironvale_market",
+          "goods": {
+            "grain": {
+              "stockpile": 55,
+              "price": 1,
+              "demand": 80,
+              "supply": 45
+            },
+            "coal": {
+              "stockpile": 20,
+              "price": 2.2,
+              "demand": 65,
+              "supply": 15
+            },
+            "iron": {
+              "stockpile": 80,
+              "price": 2.6,
+              "demand": 70,
+              "supply": 70
+            }
+          }
+        },
+        {
+          "component_type": "Factory2D",
+          "enabled": true,
+          "factory_id": "ironvale_workshop",
+          "good": "steel",
+          "workers": 21700.000000000004,
+          "throughput": 1.15,
+          "profit": 12
+        },
+        {
+          "component_type": "ObjectiveMarker",
+          "enabled": true,
+          "label": "Ironvale",
+          "color": [
+            75,
+            135,
+            230
+          ],
+          "pulse": true
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 103,
+      "name": "Province_borgrad",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 17,
+      "y": 7,
+      "position": [
+        17,
+        7
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        2.2,
+        1.4
+      ],
+      "width": 2.2,
+      "height": 1.4,
+      "speed": 3.5,
+      "radius": 1,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": "ProvincePulse.rhai",
+      "tag": "Province",
+      "layer": "Ground",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 17,
+          "y": 7,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            255,
+            100,
+            90
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "Province2D",
+          "enabled": true,
+          "province_id": "borgrad",
+          "display_name": "Borgrad",
+          "owner_tag": "BOR",
+          "controller_tag": "BOR",
+          "terrain": "plains",
+          "population": 520000,
+          "resource": "coal",
+          "infrastructure": 1.1,
+          "literacy": 0.24,
+          "factory_slots": 2,
+          "supply_limit": 12
+        },
+        {
+          "component_type": "PopulationPops2D",
+          "enabled": true,
+          "pops": [
+            {
+              "type": "farmers",
+              "size": 301600,
+              "militancy": 0.06,
+              "consciousness": 0.15,
+              "wealth": 0.32
+            },
+            {
+              "type": "laborers",
+              "size": 114400,
+              "militancy": 0.08,
+              "consciousness": 0.22,
+              "wealth": 0.28
+            },
+            {
+              "type": "craftsmen",
+              "size": 62400,
+              "militancy": 0.1,
+              "consciousness": 0.3,
+              "wealth": 0.42
+            },
+            {
+              "type": "bureaucrats",
+              "size": 15600,
+              "militancy": 0.02,
+              "consciousness": 0.36,
+              "wealth": 0.7
+            }
+          ]
+        },
+        {
+          "component_type": "Market2D",
+          "enabled": true,
+          "market_id": "borgrad_market",
+          "goods": {
+            "grain": {
+              "stockpile": 55,
+              "price": 1,
+              "demand": 80,
+              "supply": 45
+            },
+            "coal": {
+              "stockpile": 90,
+              "price": 2.2,
+              "demand": 65,
+              "supply": 80
+            },
+            "iron": {
+              "stockpile": 18,
+              "price": 2.6,
+              "demand": 70,
+              "supply": 12
+            }
+          }
+        },
+        {
+          "component_type": "Factory2D",
+          "enabled": true,
+          "factory_id": "borgrad_workshop",
+          "good": "steel",
+          "workers": 36400,
+          "throughput": 0.95,
+          "profit": 12
+        },
+        {
+          "component_type": "ObjectiveMarker",
+          "enabled": true,
+          "label": "Borgrad",
+          "color": [
+            255,
+            100,
+            90
+          ],
+          "pulse": true
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 104,
+      "name": "Province_frostmarch",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 20,
+      "y": 5,
+      "position": [
+        20,
+        5
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        2.2,
+        1.4
+      ],
+      "width": 2.2,
+      "height": 1.4,
+      "speed": 3.5,
+      "radius": 1,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": "ProvincePulse.rhai",
+      "tag": "Province",
+      "layer": "Ground",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 20,
+          "y": 5,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            245,
+            90,
+            85
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "Province2D",
+          "enabled": true,
+          "province_id": "frostmarch",
+          "display_name": "Frostmarch",
+          "owner_tag": "BOR",
+          "controller_tag": "BOR",
+          "terrain": "mountains",
+          "population": 230000,
+          "resource": "iron",
+          "infrastructure": 0.7,
+          "literacy": 0.24,
+          "factory_slots": 2,
+          "supply_limit": 6
+        },
+        {
+          "component_type": "PopulationPops2D",
+          "enabled": true,
+          "pops": [
+            {
+              "type": "farmers",
+              "size": 133400,
+              "militancy": 0.06,
+              "consciousness": 0.15,
+              "wealth": 0.32
+            },
+            {
+              "type": "laborers",
+              "size": 50600,
+              "militancy": 0.08,
+              "consciousness": 0.22,
+              "wealth": 0.28
+            },
+            {
+              "type": "craftsmen",
+              "size": 27600,
+              "militancy": 0.1,
+              "consciousness": 0.3,
+              "wealth": 0.42
+            },
+            {
+              "type": "bureaucrats",
+              "size": 6900,
+              "militancy": 0.02,
+              "consciousness": 0.36,
+              "wealth": 0.7
+            }
+          ]
+        },
+        {
+          "component_type": "Market2D",
+          "enabled": true,
+          "market_id": "frostmarch_market",
+          "goods": {
+            "grain": {
+              "stockpile": 55,
+              "price": 1,
+              "demand": 80,
+              "supply": 45
+            },
+            "coal": {
+              "stockpile": 20,
+              "price": 2.2,
+              "demand": 65,
+              "supply": 15
+            },
+            "iron": {
+              "stockpile": 80,
+              "price": 2.6,
+              "demand": 70,
+              "supply": 70
+            }
+          }
+        },
+        {
+          "component_type": "Factory2D",
+          "enabled": true,
+          "factory_id": "frostmarch_workshop",
+          "good": "steel",
+          "workers": 16100.000000000002,
+          "throughput": 0.95,
+          "profit": 12
+        },
+        {
+          "component_type": "ObjectiveMarker",
+          "enabled": true,
+          "label": "Frostmarch",
+          "color": [
+            245,
+            90,
+            85
+          ],
+          "pulse": true
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 105,
+      "name": "Province_redriver",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 19,
+      "y": 10,
+      "position": [
+        19,
+        10
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        2.2,
+        1.4
+      ],
+      "width": 2.2,
+      "height": 1.4,
+      "speed": 3.5,
+      "radius": 1,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": "ProvincePulse.rhai",
+      "tag": "Province",
+      "layer": "Ground",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 19,
+          "y": 10,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            230,
+            85,
+            80
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "Province2D",
+          "enabled": true,
+          "province_id": "redriver",
+          "display_name": "Red River",
+          "owner_tag": "BOR",
+          "controller_tag": "BOR",
+          "terrain": "plains",
+          "population": 360000,
+          "resource": "grain",
+          "infrastructure": 1.1,
+          "literacy": 0.24,
+          "factory_slots": 1,
+          "supply_limit": 12
+        },
+        {
+          "component_type": "PopulationPops2D",
+          "enabled": true,
+          "pops": [
+            {
+              "type": "farmers",
+              "size": 208800,
+              "militancy": 0.06,
+              "consciousness": 0.15,
+              "wealth": 0.32
+            },
+            {
+              "type": "laborers",
+              "size": 79200,
+              "militancy": 0.08,
+              "consciousness": 0.22,
+              "wealth": 0.28
+            },
+            {
+              "type": "craftsmen",
+              "size": 43200,
+              "militancy": 0.1,
+              "consciousness": 0.3,
+              "wealth": 0.42
+            },
+            {
+              "type": "bureaucrats",
+              "size": 10800,
+              "militancy": 0.02,
+              "consciousness": 0.36,
+              "wealth": 0.7
+            }
+          ]
+        },
+        {
+          "component_type": "Market2D",
+          "enabled": true,
+          "market_id": "redriver_market",
+          "goods": {
+            "grain": {
+              "stockpile": 140,
+              "price": 1,
+              "demand": 80,
+              "supply": 130
+            },
+            "coal": {
+              "stockpile": 20,
+              "price": 2.2,
+              "demand": 65,
+              "supply": 15
+            },
+            "iron": {
+              "stockpile": 18,
+              "price": 2.6,
+              "demand": 70,
+              "supply": 12
+            }
+          }
+        },
+        {
+          "component_type": "Factory2D",
+          "enabled": true,
+          "factory_id": "redriver_workshop",
+          "good": "canned_food",
+          "workers": 25200.000000000004,
+          "throughput": 0.95,
+          "profit": 12
+        },
+        {
+          "component_type": "ObjectiveMarker",
+          "enabled": true,
+          "label": "Red River",
+          "color": [
+            230,
+            85,
+            80
+          ],
+          "pulse": true
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 106,
+      "name": "Province_cyrhaven",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 13,
+      "y": 13,
+      "position": [
+        13,
+        13
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        2.2,
+        1.4
+      ],
+      "width": 2.2,
+      "height": 1.4,
+      "speed": 3.5,
+      "radius": 1,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": "ProvincePulse.rhai",
+      "tag": "Province",
+      "layer": "Ground",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 13,
+          "y": 13,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            120,
+            220,
+            150
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "Province2D",
+          "enabled": true,
+          "province_id": "cyrhaven",
+          "display_name": "Cyrhaven",
+          "owner_tag": "CYR",
+          "controller_tag": "CYR",
+          "terrain": "coast",
+          "population": 300000,
+          "resource": "grain",
+          "infrastructure": 1.1,
+          "literacy": 0.18,
+          "factory_slots": 1,
+          "supply_limit": 12
+        },
+        {
+          "component_type": "PopulationPops2D",
+          "enabled": true,
+          "pops": [
+            {
+              "type": "farmers",
+              "size": 174000,
+              "militancy": 0.06,
+              "consciousness": 0.15,
+              "wealth": 0.32
+            },
+            {
+              "type": "laborers",
+              "size": 66000,
+              "militancy": 0.08,
+              "consciousness": 0.22,
+              "wealth": 0.28
+            },
+            {
+              "type": "craftsmen",
+              "size": 36000,
+              "militancy": 0.1,
+              "consciousness": 0.3,
+              "wealth": 0.42
+            },
+            {
+              "type": "bureaucrats",
+              "size": 9000,
+              "militancy": 0.02,
+              "consciousness": 0.36,
+              "wealth": 0.7
+            }
+          ]
+        },
+        {
+          "component_type": "Market2D",
+          "enabled": true,
+          "market_id": "cyrhaven_market",
+          "goods": {
+            "grain": {
+              "stockpile": 140,
+              "price": 1,
+              "demand": 80,
+              "supply": 130
+            },
+            "coal": {
+              "stockpile": 20,
+              "price": 2.2,
+              "demand": 65,
+              "supply": 15
+            },
+            "iron": {
+              "stockpile": 18,
+              "price": 2.6,
+              "demand": 70,
+              "supply": 12
+            }
+          }
+        },
+        {
+          "component_type": "Factory2D",
+          "enabled": true,
+          "factory_id": "cyrhaven_workshop",
+          "good": "canned_food",
+          "workers": 21000.000000000004,
+          "throughput": 0.95,
+          "profit": 12
+        },
+        {
+          "component_type": "ObjectiveMarker",
+          "enabled": true,
+          "label": "Cyrhaven",
+          "color": [
+            120,
+            220,
+            150
+          ],
+          "pulse": true
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 107,
+      "name": "Province_glassport",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 15,
+      "y": 15,
+      "position": [
+        15,
+        15
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        2.2,
+        1.4
+      ],
+      "width": 2.2,
+      "height": 1.4,
+      "speed": 3.5,
+      "radius": 1,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": "ProvincePulse.rhai",
+      "tag": "Province",
+      "layer": "Ground",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 15,
+          "y": 15,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            105,
+            205,
+            140
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "Province2D",
+          "enabled": true,
+          "province_id": "glassport",
+          "display_name": "Glassport",
+          "owner_tag": "CYR",
+          "controller_tag": "CYR",
+          "terrain": "coast",
+          "population": 180000,
+          "resource": "coal",
+          "infrastructure": 1.1,
+          "literacy": 0.18,
+          "factory_slots": 2,
+          "supply_limit": 12
+        },
+        {
+          "component_type": "PopulationPops2D",
+          "enabled": true,
+          "pops": [
+            {
+              "type": "farmers",
+              "size": 104400,
+              "militancy": 0.06,
+              "consciousness": 0.15,
+              "wealth": 0.32
+            },
+            {
+              "type": "laborers",
+              "size": 39600,
+              "militancy": 0.08,
+              "consciousness": 0.22,
+              "wealth": 0.28
+            },
+            {
+              "type": "craftsmen",
+              "size": 21600,
+              "militancy": 0.1,
+              "consciousness": 0.3,
+              "wealth": 0.42
+            },
+            {
+              "type": "bureaucrats",
+              "size": 5400,
+              "militancy": 0.02,
+              "consciousness": 0.36,
+              "wealth": 0.7
+            }
+          ]
+        },
+        {
+          "component_type": "Market2D",
+          "enabled": true,
+          "market_id": "glassport_market",
+          "goods": {
+            "grain": {
+              "stockpile": 55,
+              "price": 1,
+              "demand": 80,
+              "supply": 45
+            },
+            "coal": {
+              "stockpile": 90,
+              "price": 2.2,
+              "demand": 65,
+              "supply": 80
+            },
+            "iron": {
+              "stockpile": 18,
+              "price": 2.6,
+              "demand": 70,
+              "supply": 12
+            }
+          }
+        },
+        {
+          "component_type": "Factory2D",
+          "enabled": true,
+          "factory_id": "glassport_workshop",
+          "good": "steel",
+          "workers": 12600.000000000002,
+          "throughput": 0.95,
+          "profit": 12
+        },
+        {
+          "component_type": "ObjectiveMarker",
+          "enabled": true,
+          "label": "Glassport",
+          "color": [
+            105,
+            205,
+            140
+          ],
+          "pulse": true
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "Unit",
+      "id": 200,
+      "name": "First Albian Army",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 8,
+      "y": 8,
+      "position": [
+        8,
+        8
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 4.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": null,
+      "tag": "Player",
+      "layer": "Units",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 8,
+          "y": 8,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            120,
+            190,
+            255
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "ArmyStack2D",
+          "enabled": true,
+          "army_id": "first_albian_army",
+          "owner_tag": "ALB",
+          "province_id": "albion",
+          "regiments": [
+            {
+              "type": "infantry",
+              "strength": 3000,
+              "organization": 0.9,
+              "morale": 0.8
+            },
+            {
+              "type": "artillery",
+              "strength": 1000,
+              "organization": 0.7,
+              "morale": 0.75
+            }
+          ],
+          "supply": 0.92,
+          "dig_in": 0.15
+        },
+        {
+          "component_type": "Health",
+          "enabled": true,
+          "max_health": 100,
+          "health": 100
+        },
+        {
+          "component_type": "Commandable",
+          "enabled": true,
+          "can_move": true,
+          "can_attack": true,
+          "command_tags": [
+            "move",
+            "attack_move",
+            "hold"
+          ]
+        },
+        {
+          "component_type": "Vision",
+          "enabled": true,
+          "radius": 6
+        },
+        {
+          "component_type": "ThreatSource",
+          "enabled": true,
+          "strength": 6,
+          "radius": 4.5
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "Unit",
+      "id": 201,
+      "name": "Boreal Guard",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 17,
+      "y": 8,
+      "position": [
+        17,
+        8
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 4.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": null,
+      "tag": "Enemy",
+      "layer": "Units",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 17,
+          "y": 8,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            255,
+            125,
+            110
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "ArmyStack2D",
+          "enabled": true,
+          "army_id": "boreal_guard",
+          "owner_tag": "BOR",
+          "province_id": "borgrad",
+          "regiments": [
+            {
+              "type": "infantry",
+              "strength": 4000,
+              "organization": 0.82,
+              "morale": 0.86
+            },
+            {
+              "type": "cavalry",
+              "strength": 1000,
+              "organization": 0.76,
+              "morale": 0.8
+            }
+          ],
+          "supply": 0.92,
+          "dig_in": 0.15
+        },
+        {
+          "component_type": "Health",
+          "enabled": true,
+          "max_health": 100,
+          "health": 100
+        },
+        {
+          "component_type": "Commandable",
+          "enabled": true,
+          "can_move": true,
+          "can_attack": true,
+          "command_tags": [
+            "move",
+            "attack_move",
+            "hold"
+          ]
+        },
+        {
+          "component_type": "Vision",
+          "enabled": true,
+          "radius": 6
+        },
+        {
+          "component_type": "ThreatSource",
+          "enabled": true,
+          "strength": 6,
+          "radius": 4.5
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "Unit",
+      "id": 202,
+      "name": "Cyran Volunteers",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 14,
+      "y": 13,
+      "position": [
+        14,
+        13
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 4.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": null,
+      "tag": "Enemy",
+      "layer": "Units",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 14,
+          "y": 13,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            145,
+            235,
+            170
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "ArmyStack2D",
+          "enabled": true,
+          "army_id": "cyran_volunteers",
+          "owner_tag": "CYR",
+          "province_id": "cyrhaven",
+          "regiments": [
+            {
+              "type": "infantry",
+              "strength": 2500,
+              "organization": 0.68,
+              "morale": 0.72
+            }
+          ],
+          "supply": 0.92,
+          "dig_in": 0.15
+        },
+        {
+          "component_type": "Health",
+          "enabled": true,
+          "max_health": 100,
+          "health": 100
+        },
+        {
+          "component_type": "Commandable",
+          "enabled": true,
+          "can_move": true,
+          "can_attack": true,
+          "command_tags": [
+            "move",
+            "attack_move",
+            "hold"
+          ]
+        },
+        {
+          "component_type": "Vision",
+          "enabled": true,
+          "radius": 6
+        },
+        {
+          "component_type": "ThreatSource",
+          "enabled": true,
+          "strength": 3,
+          "radius": 4.5
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 300,
+      "name": "NorthernCoalRoute",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": false,
+      "x": 12,
+      "y": 5,
+      "position": [
+        12,
+        5
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 3.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": null,
+      "tag": "Trade",
+      "layer": "Ground",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 12,
+          "y": 5,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            250,
+            220,
+            120
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "TradeRoute2D",
+          "enabled": true,
+          "route_id": "northern_coal",
+          "from_market": "whitecliff_market",
+          "to_market": "borgrad_market",
+          "good": "coal",
+          "volume": 42,
+          "capacity": 90,
+          "profit": 18,
+          "risk": 0.22
+        },
+        {
+          "component_type": "ObjectiveMarker",
+          "enabled": true,
+          "label": "Coal Route",
+          "color": [
+            250,
+            220,
+            120
+          ]
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 400,
+      "name": "HUD_Campaign",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": true,
+      "x": 0,
+      "y": 0,
+      "position": [
+        0,
+        0
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 3.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": null,
+      "tag": "Untagged",
+      "layer": "UI",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 0,
+          "y": 0,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            255,
+            255,
+            255
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "UIElement",
+          "enabled": true,
+          "element_type": "Label",
+          "text": "Iron Treaty 1836: administra poblacion, industria, ejercitos y diplomacia.",
+          "x": 24,
+          "y": 24,
+          "width": 680,
+          "height": 34,
+          "color": [
+            20,
+            24,
+            32
+          ],
+          "text_color": [
+            235,
+            244,
+            255
+          ],
+          "opacity": 0.95,
+          "text_align": "left",
+          "padding": 8,
+          "border_radius": 7
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 401,
+      "name": "HUD_Tip",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": true,
+      "x": 0,
+      "y": 0,
+      "position": [
+        0,
+        0
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 3.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": null,
+      "tag": "Untagged",
+      "layer": "UI",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 0,
+          "y": 0,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            255,
+            255,
+            255
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "UIElement",
+          "enabled": true,
+          "element_type": "Label",
+          "text": "Selecciona provincias/ejercitos. El contenido vive en componentes editables y datos JSON.",
+          "x": 24,
+          "y": 64,
+          "width": 690,
+          "height": 34,
+          "color": [
+            20,
+            24,
+            32
+          ],
+          "text_color": [
+            235,
+            244,
+            255
+          ],
+          "opacity": 0.95,
+          "text_align": "left",
+          "padding": 8,
+          "border_radius": 7
+        }
+      ],
+      "scripts": []
+    },
+    {
+      "type": "GameObject",
+      "id": 402,
+      "name": "HUD_Date",
+      "enabled": true,
+      "active": true,
+      "visible": true,
+      "locked": true,
+      "x": 0,
+      "y": 0,
+      "position": [
+        0,
+        0
+      ],
+      "rotation": 0,
+      "scale": [
+        1,
+        1
+      ],
+      "scale_x": 1,
+      "scale_y": 1,
+      "size": [
+        1,
+        1
+      ],
+      "width": 1,
+      "height": 1,
+      "speed": 3.5,
+      "radius": 0.5,
+      "sprite_name": null,
+      "sprite_guid": null,
+      "script": null,
+      "tag": "Untagged",
+      "layer": "UI",
+      "state": "IDLE",
+      "command": "IDLE",
+      "path": [],
+      "parent_id": null,
+      "local_x": 0,
+      "local_y": 0,
+      "prefab_source": null,
+      "prefab_guid": null,
+      "is_prefab_instance": false,
+      "scene_name": null,
+      "patrol_points": [],
+      "patrol_index": 0,
+      "follow_target_id": null,
+      "guard_target_id": null,
+      "attack_move_target": null,
+      "gather_target_id": null,
+      "components": [
+        {
+          "component_type": "Transform",
+          "enabled": true,
+          "x": 0,
+          "y": 0,
+          "rotation": 0,
+          "scale_x": 1,
+          "scale_y": 1
+        },
+        {
+          "component_type": "Selectable",
+          "enabled": true,
+          "selectable": true,
+          "selection_radius": 0.55
+        },
+        {
+          "component_type": "SpriteRenderer",
+          "enabled": true,
+          "tint": [
+            255,
+            255,
+            255
+          ],
+          "visible": true,
+          "sorting_order": 0
+        },
+        {
+          "component_type": "Collider2D",
+          "enabled": true,
+          "shape": "rect",
+          "width": 1,
+          "height": 1,
+          "radius": 0.5,
+          "is_trigger": false
+        },
+        {
+          "component_type": "UIElement",
+          "enabled": true,
+          "element_type": "Label",
+          "text": "Enero 1836 - Pausado",
+          "x": 24,
+          "y": 104,
+          "width": 260,
+          "height": 34,
+          "color": [
+            20,
+            24,
+            32
+          ],
+          "text_color": [
+            235,
+            244,
+            255
+          ],
+          "opacity": 0.95,
+          "text_align": "left",
+          "padding": 8,
+          "border_radius": 7
+        }
+      ],
+      "scripts": []
+    }
+  ],
+  "editor_view_settings": {},
+  "ui_canvases": []
+}
