@@ -2426,11 +2426,28 @@ fn templates_validator_and_prefabs_are_real_backend() {
 
     let mut entity = GameObject::new(3.0, 4.0, Some("Hero Prefab!".to_string()));
     entity.tag = "Player".to_string();
+    entity.script = Some("PlayerController.luau".to_string());
+    fs::write(
+        AssetTools::get_project_paths(&tmp)
+            .scripts
+            .join("PlayerController.luau"),
+        "function on_update(dt) end",
+    )
+    .unwrap();
     let manager = PrefabManager::new(&tmp);
+    manager.ensure_prefab_settings().unwrap();
     let prefab_path = manager.save_prefab(&mut entity, None).unwrap();
     assert_eq!(
         prefab_path.file_name().and_then(|value| value.to_str()),
         Some("heroprefab.prefab")
+    );
+    let prefab_doc = manager.load_prefab_document(&prefab_path).unwrap();
+    let dependency_report = manager.dependency_report(&prefab_doc);
+    assert!(dependency_report.is_ready());
+    assert!(
+        dependency_report
+            .required_scripts
+            .contains(&"PlayerController.luau".to_string())
     );
 
     let mut entities = Vec::new();

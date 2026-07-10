@@ -1,42 +1,67 @@
 {
-    "prefab_name": "untagged_prefab.prefab",
-    "entity": {
-        "type": "Unit",
-        "x": 22.0,
-        "y": 11.0,
+  "prefab_name": "untagged_prefab.prefab",
+  "entity": {
+    "type": "Unit",
+    "x": 22,
+    "y": 11,
+    "speed": 3.5,
+    "radius": 0.45,
+    "sprite_name": null,
+    "tag": "Untagged",
+    "layer": "Default",
+    "components": [
+      {
+        "type": "Transform",
+        "enabled": true,
+        "x": 22,
+        "y": 11,
+        "rotation": 0,
+        "scale": 1
+      },
+      {
+        "type": "Selectable",
+        "enabled": true,
+        "selectable": true
+      },
+      {
+        "type": "RTSMovement",
+        "enabled": true,
         "speed": 3.5,
-        "radius": 0.45,
+        "allow_pathfinding": true,
+        "separation": true
+      },
+      {
+        "type": "SpriteRenderer",
+        "enabled": true,
         "sprite_name": null,
-        "tag": "Untagged",
-        "layer": "Default",
-        "components": [
-            {
-                "type": "Transform",
-                "enabled": true,
-                "x": 22.0,
-                "y": 11.0,
-                "rotation": 0.0,
-                "scale": 1.0
-            },
-            {
-                "type": "Selectable",
-                "enabled": true,
-                "selectable": true
-            },
-            {
-                "type": "RTSMovement",
-                "enabled": true,
-                "speed": 3.5,
-                "allow_pathfinding": true,
-                "separation": true
-            },
-            {
-                "type": "SpriteRenderer",
-                "enabled": true,
-                "sprite_name": null,
-                "visible": true
-            }
-        ],
-        "scripts": []
-    }
+        "visible": true
+      }
+    ],
+    "scripts": []
+  },
+  "format": "miniforge.prefab",
+  "schema_version": 2,
+  "engine_version": "0.9.3.4",
+  "version": "0.9.3.4",
+  "scripts": {
+    "required": [],
+    "embedded": [],
+    "policy": "validate_on_instantiate"
+  },
+  "settings": {
+    "required": [
+      "settings/input_map.json",
+      "settings/layers.json",
+      "settings/runtime_config.json",
+      "settings/tags.json"
+    ],
+    "defaults": {},
+    "policy": "merge_missing"
+  },
+  "dependencies": [],
+  "metadata": {
+    "component_count": 4,
+    "script_count": 0,
+    "source": "repo_upgrade"
+  }
 }

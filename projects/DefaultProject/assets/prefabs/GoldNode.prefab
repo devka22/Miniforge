@@ -8,11 +8,11 @@
       {
         "component_type": "Transform",
         "enabled": true,
-        "rotation": 0.0,
-        "scale_x": 1.0,
-        "scale_y": 1.0,
+        "rotation": 0,
+        "scale_x": 1,
+        "scale_y": 1,
         "x": 21.75,
-        "y": 5.0
+        "y": 5
       },
       {
         "component_type": "Selectable",
@@ -45,11 +45,11 @@
         "height": 1.3,
         "is_trigger": false,
         "material": {
-          "bounciness": 0.0,
+          "bounciness": 0,
           "friction": 0.25
         },
-        "offset_x": 0.0,
-        "offset_y": 0.0,
+        "offset_x": 0,
+        "offset_y": 0,
         "points": [
           [
             -0.5,
@@ -73,12 +73,12 @@
         "width": 1.3
       },
       {
-        "amount": 500.0,
+        "amount": 500,
         "component_type": "ResourceNode",
         "enabled": true,
-        "gather_rate": 10.0,
+        "gather_rate": 10,
         "harvest_radius": 1.25,
-        "max_amount": 500.0,
+        "max_amount": 500,
         "resource_type": "Gold"
       },
       {
@@ -90,7 +90,7 @@
         "component_type": "ObjectiveMarker",
         "enabled": true,
         "label": "Objective",
-        "max_distance": 9999.0,
+        "max_distance": 9999,
         "pulse": true,
         "target_id": null,
         "visible": true
@@ -104,8 +104,8 @@
     "id": 14,
     "is_prefab_instance": false,
     "layer": "Default",
-    "local_x": 0.0,
-    "local_y": 0.0,
+    "local_x": 0,
+    "local_y": 0,
     "locked": false,
     "name": "GoldNode",
     "parent_id": null,
@@ -114,18 +114,18 @@
     "patrol_points": [],
     "position": [
       21.75,
-      5.0
+      5
     ],
     "prefab_guid": null,
     "prefab_source": null,
     "radius": 0.45,
-    "rotation": 0.0,
+    "rotation": 0,
     "scale": [
-      1.0,
-      1.0
+      1,
+      1
     ],
-    "scale_x": 1.0,
-    "scale_y": 1.0,
+    "scale_x": 1,
+    "scale_y": 1,
     "scene_name": null,
     "script": null,
     "scripts": [],
@@ -142,7 +142,7 @@
     "visible": true,
     "width": 1.3,
     "x": 21.75,
-    "y": 5.0
+    "y": 5
   },
   "guid": "5c506aaa551aade5",
   "include_children": false,
@@ -154,5 +154,23 @@
   },
   "prefab_name": "GoldNode",
   "variant": false,
-  "version": "0.8.0"
+  "version": "0.8.0",
+  "format": "miniforge.prefab",
+  "schema_version": 2,
+  "engine_version": "0.9.3.4",
+  "scripts": {
+    "required": [],
+    "embedded": [],
+    "policy": "validate_on_instantiate"
+  },
+  "settings": {
+    "required": [
+      "settings/input_map.json",
+      "settings/layers.json",
+      "settings/runtime_config.json",
+      "settings/tags.json"
+    ],
+    "defaults": {},
+    "policy": "merge_missing"
+  }
 }

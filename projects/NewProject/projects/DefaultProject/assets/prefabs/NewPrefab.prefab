@@ -1,24 +1,48 @@
 {
-    "version": "0.5.6",
-    "prefab_name": "NewPrefab",
-    "entity": {
-        "type": "Unit",
-        "name": "NewPrefab",
-        "enabled": true,
-        "visible": true,
-        "locked": false,
-        "x": 0,
-        "y": 0,
-        "speed": 3.5,
-        "radius": 0.45,
-        "sprite_name": null,
-        "tag": "Untagged",
-        "layer": "Default",
-        "state": "IDLE",
-        "command": "IDLE",
-        "prefab_source": null,
-        "is_prefab_instance": false,
-        "components": [],
-        "scripts": []
-    }
+  "version": "0.5.6",
+  "prefab_name": "NewPrefab",
+  "entity": {
+    "type": "Unit",
+    "name": "NewPrefab",
+    "enabled": true,
+    "visible": true,
+    "locked": false,
+    "x": 0,
+    "y": 0,
+    "speed": 3.5,
+    "radius": 0.45,
+    "sprite_name": null,
+    "tag": "Untagged",
+    "layer": "Default",
+    "state": "IDLE",
+    "command": "IDLE",
+    "prefab_source": null,
+    "is_prefab_instance": false,
+    "components": [],
+    "scripts": []
+  },
+  "format": "miniforge.prefab",
+  "schema_version": 2,
+  "engine_version": "0.9.3.4",
+  "scripts": {
+    "required": [],
+    "embedded": [],
+    "policy": "validate_on_instantiate"
+  },
+  "settings": {
+    "required": [
+      "settings/input_map.json",
+      "settings/layers.json",
+      "settings/runtime_config.json",
+      "settings/tags.json"
+    ],
+    "defaults": {},
+    "policy": "merge_missing"
+  },
+  "dependencies": [],
+  "metadata": {
+    "component_count": 0,
+    "script_count": 0,
+    "source": "repo_upgrade"
+  }
 }

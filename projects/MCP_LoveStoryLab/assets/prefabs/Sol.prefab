@@ -1,9 +1,9 @@
 {
   "format": "miniforge.prefab",
-  "schema_version": 1,
+  "schema_version": 2,
   "guid": "prefab-love-sol-0001",
   "version": "0.9.3",
-  "engine_version": "0.9.3",
+  "engine_version": "0.9.3.4",
   "prefab_name": "Sol",
   "entity": {
     "type": "GameObject",
@@ -80,11 +80,11 @@
           230
         ],
         "visible": true,
-        "sorting_order": 0
-        ,"sprite_path": "assets/sprites/LoveLabCharacters.sprite.json"
-        ,"sprite_frames": "assets/animations/LoveLabCharacters.spriteframes"
-        ,"active_animation": "idle"
-        ,"use_2d_animation": true
+        "sorting_order": 0,
+        "sprite_path": "assets/sprites/LoveLabCharacters.sprite.json",
+        "sprite_frames": "assets/animations/LoveLabCharacters.spriteframes",
+        "active_animation": "idle",
+        "use_2d_animation": true
       },
       {
         "component_type": "Collider2D",
@@ -112,5 +112,28 @@
       }
     ],
     "scripts": []
+  },
+  "scripts": {
+    "required": [
+      "SolController.luau"
+    ],
+    "embedded": [],
+    "policy": "validate_on_instantiate"
+  },
+  "settings": {
+    "required": [
+      "settings/input_map.json",
+      "settings/layers.json",
+      "settings/runtime_config.json",
+      "settings/tags.json"
+    ],
+    "defaults": {},
+    "policy": "merge_missing"
+  },
+  "dependencies": [],
+  "metadata": {
+    "component_count": 7,
+    "script_count": 1,
+    "source": "repo_upgrade"
   }
 }

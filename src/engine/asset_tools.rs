@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::engine::prefab_serializer::{PREFAB_FORMAT, PREFAB_SCHEMA_VERSION};
+use crate::engine::prefab_serializer::{
+    DEFAULT_PREFAB_SETTINGS, PREFAB_FORMAT, PREFAB_SCHEMA_VERSION,
+};
 use crate::engine::project_storage::ProjectStorage;
 use crate::engine::scene_serializer::{SCENE_FORMAT, SCENE_SCHEMA_VERSION};
 use crate::engine::version::{ENGINE_STREAM_VERSION, ENGINE_VERSION};
@@ -56,6 +58,23 @@ impl ProjectPaths {
             ("builds".to_string(), self.builds.clone()),
         ])
     }
+}
+
+fn prefab_scripts_manifest<const N: usize>(required: [&str; N]) -> Value {
+    let required = required.into_iter().collect::<Vec<_>>();
+    json!({
+        "required": required,
+        "embedded": [],
+        "policy": "validate_on_instantiate",
+    })
+}
+
+fn prefab_settings_manifest() -> Value {
+    json!({
+        "required": DEFAULT_PREFAB_SETTINGS,
+        "defaults": {},
+        "policy": "merge_missing",
+    })
 }
 
 pub struct AssetTools;
@@ -293,6 +312,18 @@ impl AssetTools {
                 "fullscreen": false,
                 "debug_mode": true,
                 "export_folder": "builds",
+            }),
+        )?;
+        Self::write_json_if_missing(
+            paths.settings.join("prefab_settings.json"),
+            &json!({
+                "schema_version": 1,
+                "auto_collect_scripts": true,
+                "auto_collect_settings": true,
+                "required_settings": DEFAULT_PREFAB_SETTINGS,
+                "missing_script_policy": "warn",
+                "missing_setting_policy": "warn",
+                "apply_overrides_policy": "explicit",
             }),
         )?;
         Self::write_json_if_missing(
@@ -538,6 +569,14 @@ return {script_name}
             "version": ENGINE_VERSION,
             "engine_version": ENGINE_VERSION,
             "prefab_name": prefab_name,
+            "scripts": prefab_scripts_manifest([]),
+            "settings": prefab_settings_manifest(),
+            "dependencies": [],
+            "metadata": {
+                "component_count": 0,
+                "script_count": 0,
+                "source": "asset_template",
+            },
             "entity": {
                 "type": "Unit",
                 "name": prefab_name,
@@ -613,6 +652,14 @@ return {script_name}
             "version": ENGINE_VERSION,
             "engine_version": ENGINE_VERSION,
             "prefab_name": enemy_name,
+            "scripts": prefab_scripts_manifest(["EnemyBrain.luau"]),
+            "settings": prefab_settings_manifest(),
+            "dependencies": [],
+            "metadata": {
+                "component_count": 5,
+                "script_count": 1,
+                "source": "asset_template",
+            },
             "entity": {
                 "type": "Unit",
                 "name": enemy_name,
@@ -649,6 +696,14 @@ return {script_name}
             "engine_version": ENGINE_VERSION,
             "kind": "MiniForgeUIPrefab",
             "name": ui_name,
+            "scripts": prefab_scripts_manifest([]),
+            "settings": prefab_settings_manifest(),
+            "dependencies": [],
+            "metadata": {
+                "component_count": 2,
+                "script_count": 0,
+                "source": "asset_template",
+            },
             "entity": {
                 "type": "GameObject",
                 "name": ui_name,

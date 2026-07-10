@@ -1,6 +1,6 @@
 {
   "format": "miniforge.prefab",
-  "schema_version": 1,
+  "schema_version": 2,
   "version": "0.8.0",
   "engine_version": "0.9.3.4",
   "prefab_name": "LegacyHero",
@@ -8,5 +8,26 @@
     "id": 7,
     "name": "LegacyHero",
     "components": []
+  },
+  "scripts": {
+    "required": [],
+    "embedded": [],
+    "policy": "validate_on_instantiate"
+  },
+  "settings": {
+    "required": [
+      "settings/input_map.json",
+      "settings/layers.json",
+      "settings/runtime_config.json",
+      "settings/tags.json"
+    ],
+    "defaults": {},
+    "policy": "merge_missing"
+  },
+  "dependencies": [],
+  "metadata": {
+    "component_count": 0,
+    "script_count": 0,
+    "source": "prefab_pipeline"
   }
 }

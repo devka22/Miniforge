@@ -1,3 +1,4 @@
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -5,19 +6,41 @@ use serde_json::{Value, json};
 
 use crate::engine::asset_database::new_asset_guid;
 use crate::engine::asset_tools::AssetTools;
-use crate::engine::prefab_serializer::PrefabSerializer;
+use crate::engine::input_map::InputMap;
+use crate::engine::prefab_serializer::{
+    DEFAULT_PREFAB_SETTINGS, PrefabSerializer, collect_entity_scripts,
+};
 use crate::engine::project_storage::{BackupPolicy, DEFAULT_BACKUP_GENERATIONS, ProjectStorage};
+use crate::engine::runtime_config::RuntimeConfig;
+use crate::engine::tags_layers_manager::TagsLayersManager;
 use crate::entities::game_object::GameObject;
 
 #[derive(Debug, Clone)]
 pub struct PrefabManager {
+    pub project_path: PathBuf,
     pub prefabs_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrefabDependencyReport {
+    pub required_scripts: Vec<String>,
+    pub required_settings: Vec<String>,
+    pub missing_scripts: Vec<String>,
+    pub missing_settings: Vec<String>,
+}
+
+impl PrefabDependencyReport {
+    pub fn is_ready(&self) -> bool {
+        self.missing_scripts.is_empty() && self.missing_settings.is_empty()
+    }
 }
 
 impl PrefabManager {
     pub fn new(project_path: impl AsRef<Path>) -> Self {
+        let project_path = project_path.as_ref().to_path_buf();
         Self {
-            prefabs_path: AssetTools::get_project_paths(project_path).prefabs,
+            prefabs_path: AssetTools::get_project_paths(&project_path).prefabs,
+            project_path,
         }
     }
 
@@ -59,11 +82,24 @@ impl PrefabManager {
         } else {
             new_asset_guid(&path.to_string_lossy())
         };
+        let entity_data = entity.serialize();
+        let required_scripts = collect_entity_scripts(&entity_data);
         let data = PrefabSerializer::stamp(json!({
             "version": crate::engine::version::ENGINE_VERSION,
             "guid": guid,
             "prefab_name": path.file_name().and_then(|value| value.to_str()).unwrap_or("prefab"),
-            "entity": entity.serialize(),
+            "entity": entity_data,
+            "scripts": {
+                "required": required_scripts,
+                "embedded": [],
+                "policy": "validate_on_instantiate",
+            },
+            "settings": {
+                "required": DEFAULT_PREFAB_SETTINGS,
+                "defaults": {},
+                "policy": "merge_missing",
+            },
+            "dependencies": [],
         }))
         .map_err(io::Error::from)?;
         ProjectStorage::write_json_atomic_with_backup(
@@ -94,7 +130,7 @@ impl PrefabManager {
         if !path.as_ref().exists() {
             return Ok(None);
         }
-        let data = load_prefab_document_with_backup(path.as_ref())?;
+        let data = self.load_prefab_document(path.as_ref())?;
         let prefab_guid = data
             .get("guid")
             .and_then(Value::as_str)
@@ -134,6 +170,97 @@ impl PrefabManager {
             .map(|_| ())
             .map_err(io::Error::from)
     }
+
+    pub fn load_prefab_document(&self, path: impl AsRef<Path>) -> io::Result<Value> {
+        load_prefab_document_with_backup(path.as_ref())
+    }
+
+    pub fn dependency_report(&self, data: &Value) -> PrefabDependencyReport {
+        let report = PrefabSerializer::try_migrate(data.clone()).ok();
+        let data = report.as_ref().map(|report| &report.data).unwrap_or(data);
+        let required_scripts = data
+            .get("scripts")
+            .and_then(|scripts| scripts.get("required"))
+            .and_then(Value::as_array)
+            .map(|items| string_array(items))
+            .unwrap_or_default();
+        let required_settings = data
+            .get("settings")
+            .and_then(|settings| settings.get("required"))
+            .and_then(Value::as_array)
+            .map(|items| string_array(items))
+            .unwrap_or_default();
+        let missing_scripts = required_scripts
+            .iter()
+            .filter(|script| !self.resolve_script(script).exists())
+            .cloned()
+            .collect();
+        let missing_settings = required_settings
+            .iter()
+            .filter(|setting| !self.resolve_project_relative(setting).exists())
+            .cloned()
+            .collect();
+        PrefabDependencyReport {
+            required_scripts,
+            required_settings,
+            missing_scripts,
+            missing_settings,
+        }
+    }
+
+    pub fn ensure_prefab_settings(&self) -> io::Result<PathBuf> {
+        let paths = AssetTools::get_project_paths(&self.project_path);
+        fs::create_dir_all(&paths.settings)?;
+        let settings_path = paths.settings.join("prefab_settings.json");
+        if !settings_path.exists() {
+            AssetTools::write_json(
+                &settings_path,
+                &json!({
+                    "schema_version": 1,
+                    "auto_collect_scripts": true,
+                    "auto_collect_settings": true,
+                    "required_settings": DEFAULT_PREFAB_SETTINGS,
+                    "missing_script_policy": "warn",
+                    "missing_setting_policy": "warn",
+                    "apply_overrides_policy": "explicit",
+                }),
+            )?;
+        }
+        RuntimeConfig::new(paths.settings.join("runtime_config.json"))?;
+        InputMap::new(paths.settings.join("input_map.json"))?;
+        TagsLayersManager::new(&paths.settings)?;
+        Ok(settings_path)
+    }
+
+    fn resolve_script(&self, script: &str) -> PathBuf {
+        let path = Path::new(script);
+        if path.is_absolute() {
+            return path.to_path_buf();
+        }
+        if script.starts_with("scripts/") {
+            return self.project_path.join(script);
+        }
+        AssetTools::get_project_paths(&self.project_path)
+            .scripts
+            .join(script)
+    }
+
+    fn resolve_project_relative(&self, relative: &str) -> PathBuf {
+        let path = Path::new(relative);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.project_path.join(relative)
+        }
+    }
+}
+
+fn string_array(items: &[Value]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(Value::as_str)
+        .map(ToString::to_string)
+        .collect()
 }
 
 fn load_prefab_document_with_backup(path: &Path) -> io::Result<Value> {

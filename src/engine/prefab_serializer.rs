@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde_json::{Map, Value, json};
 
 use crate::engine::document_schema::{
@@ -7,7 +9,14 @@ use crate::engine::document_schema::{
 use crate::engine::version::ENGINE_VERSION;
 
 pub const PREFAB_FORMAT: &str = "miniforge.prefab";
-pub const PREFAB_SCHEMA_VERSION: u32 = 1;
+pub const PREFAB_SCHEMA_VERSION: u32 = 2;
+
+pub const DEFAULT_PREFAB_SETTINGS: &[&str] = &[
+    "settings/input_map.json",
+    "settings/tags.json",
+    "settings/layers.json",
+    "settings/runtime_config.json",
+];
 
 pub struct PrefabSerializer;
 
@@ -31,7 +40,7 @@ impl PrefabSerializer {
             ));
         }
         let mut changed = false;
-        if from_version == 0 {
+        if from_version < 2 {
             let map = require_object(&mut data, "prefab")?;
             if let Some(format) = map.get("format").and_then(Value::as_str)
                 && format != PREFAB_FORMAT
@@ -43,6 +52,7 @@ impl PrefabSerializer {
                 ));
             }
             apply_prefab_header(map);
+            normalize_prefab_manifest(map);
             changed = true;
         }
         Self::validate(&data)?;
@@ -85,6 +95,9 @@ impl PrefabSerializer {
                 "entity.components must be an array",
             ));
         }
+        validate_manifest_object(data, "scripts")?;
+        validate_manifest_object(data, "settings")?;
+        validate_string_array(data.get("dependencies"), "dependencies")?;
         Ok(())
     }
 
@@ -102,6 +115,177 @@ fn apply_prefab_header(map: &mut Map<String, Value>) {
     map.insert("engine_version".to_string(), json!(ENGINE_VERSION));
     map.entry("version".to_string())
         .or_insert(json!(ENGINE_VERSION));
+    normalize_prefab_manifest(map);
+}
+
+fn normalize_prefab_manifest(map: &mut Map<String, Value>) {
+    let entity = map.get("entity").cloned().unwrap_or_else(|| json!({}));
+    let required_scripts = collect_entity_scripts(&entity);
+    let scripts = map.entry("scripts").or_insert_with(|| {
+        json!({
+            "required": required_scripts,
+            "embedded": [],
+            "policy": "validate_on_instantiate",
+        })
+    });
+    if let Some(scripts) = scripts.as_object_mut() {
+        merge_string_array(scripts, "required", &required_scripts);
+        scripts
+            .entry("embedded".to_string())
+            .or_insert_with(|| json!([]));
+        scripts
+            .entry("policy".to_string())
+            .or_insert_with(|| json!("validate_on_instantiate"));
+    }
+
+    let settings = map.entry("settings").or_insert_with(|| {
+        json!({
+            "required": DEFAULT_PREFAB_SETTINGS,
+            "defaults": {},
+            "policy": "merge_missing",
+        })
+    });
+    if let Some(settings) = settings.as_object_mut() {
+        merge_string_array(settings, "required", DEFAULT_PREFAB_SETTINGS);
+        settings
+            .entry("defaults".to_string())
+            .or_insert_with(|| json!({}));
+        settings
+            .entry("policy".to_string())
+            .or_insert_with(|| json!("merge_missing"));
+    }
+
+    map.entry("dependencies".to_string())
+        .or_insert_with(|| json!([]));
+    let component_count = entity
+        .get("components")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    let script_count = collect_entity_scripts(&entity).len();
+    let metadata = map.entry("metadata").or_insert_with(|| json!({}));
+    if let Some(metadata) = metadata.as_object_mut() {
+        metadata
+            .entry("component_count".to_string())
+            .or_insert_with(|| json!(component_count));
+        metadata
+            .entry("script_count".to_string())
+            .or_insert_with(|| json!(script_count));
+        metadata
+            .entry("source".to_string())
+            .or_insert_with(|| json!("prefab_pipeline"));
+    }
+}
+
+pub fn collect_entity_scripts(entity: &Value) -> Vec<String> {
+    let mut scripts = BTreeSet::new();
+    if let Some(path) = entity.get("script").and_then(Value::as_str) {
+        insert_script_path(&mut scripts, path);
+    }
+    if let Some(items) = entity.get("scripts").and_then(Value::as_array) {
+        for item in items {
+            if let Some(path) = item.as_str() {
+                insert_script_path(&mut scripts, path);
+            }
+            if let Some(path) = item
+                .get("path")
+                .or_else(|| item.get("script"))
+                .or_else(|| item.get("source"))
+                .and_then(Value::as_str)
+            {
+                insert_script_path(&mut scripts, path);
+            }
+        }
+    }
+    if let Some(components) = entity.get("components").and_then(Value::as_array) {
+        for component in components {
+            let component_type = component
+                .get("component_type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if !component_type.contains("script")
+                && !component_type.contains("luau")
+                && !component_type.contains("rhai")
+            {
+                continue;
+            }
+            for key in ["path", "script", "script_path", "source", "file"] {
+                if let Some(path) = component.get(key).and_then(Value::as_str) {
+                    insert_script_path(&mut scripts, path);
+                }
+            }
+        }
+    }
+    scripts.into_iter().collect()
+}
+
+fn insert_script_path(scripts: &mut BTreeSet<String>, path: &str) {
+    let path = path.trim();
+    if path.is_empty() {
+        return;
+    }
+    if matches!(
+        std::path::Path::new(path)
+            .extension()
+            .and_then(|value| value.to_str()),
+        Some("luau" | "rhai" | "mfgraph")
+    ) {
+        scripts.insert(path.replace('\\', "/"));
+    }
+}
+
+fn merge_string_array(map: &mut Map<String, Value>, key: &str, required: &[impl AsRef<str>]) {
+    let mut values = map
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    for value in required {
+        let value = value.as_ref().trim();
+        if !value.is_empty() {
+            values.insert(value.replace('\\', "/"));
+        }
+    }
+    map.insert(
+        key.to_string(),
+        json!(values.into_iter().collect::<Vec<_>>()),
+    );
+}
+
+fn validate_manifest_object(data: &Value, key: &str) -> Result<(), SchemaError> {
+    let Some(manifest) = data.get(key).and_then(Value::as_object) else {
+        return Err(SchemaError::new(
+            "prefab",
+            SchemaErrorKind::InvalidField,
+            format!("{key} must be an object"),
+        ));
+    };
+    validate_string_array(manifest.get("required"), &format!("{key}.required"))
+}
+
+fn validate_string_array(value: Option<&Value>, path: &str) -> Result<(), SchemaError> {
+    let Some(values) = value.and_then(Value::as_array) else {
+        return Err(SchemaError::new(
+            "prefab",
+            SchemaErrorKind::InvalidField,
+            format!("{path} must be an array"),
+        ));
+    };
+    if values.iter().any(|item| item.as_str().is_none()) {
+        return Err(SchemaError::new(
+            "prefab",
+            SchemaErrorKind::InvalidField,
+            format!("{path} must only contain strings"),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -146,5 +330,35 @@ mod tests {
         ));
         let error = PrefabSerializer::try_migrate(broken).expect_err("broken schema");
         assert_eq!(error.kind, SchemaErrorKind::InvalidField);
+    }
+
+    #[test]
+    fn prefab_schema_v2_tracks_required_scripts_and_settings() {
+        let prefab = serde_json::json!({
+            "version": "0.9.3",
+            "prefab_name": "Enemy",
+            "entity": {
+                "name": "Enemy",
+                "script": "EnemyBrain.luau",
+                "components": []
+            }
+        });
+        let migrated = PrefabSerializer::try_migrate(prefab).expect("migrates prefab");
+        assert_eq!(migrated.to_version, PREFAB_SCHEMA_VERSION);
+        assert_eq!(migrated.data["schema_version"], 2);
+        assert!(
+            migrated.data["scripts"]["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item == "EnemyBrain.luau")
+        );
+        assert!(
+            migrated.data["settings"]["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item == "settings/runtime_config.json")
+        );
     }
 }

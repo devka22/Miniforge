@@ -52,6 +52,8 @@ fn scene_and_prefab_savers_emit_current_schema_headers() {
     let prefab = AssetTools::read_json(prefab_path).expect("prefab JSON");
     assert_eq!(prefab["format"], PREFAB_FORMAT);
     assert_eq!(prefab["schema_version"], PREFAB_SCHEMA_VERSION);
+    assert!(prefab["scripts"]["required"].is_array());
+    assert!(prefab["settings"]["required"].is_array());
 }
 
 #[test]

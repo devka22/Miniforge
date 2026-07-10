@@ -88,7 +88,7 @@ impl ProjectValidator {
         self.validate_json_files(project_path);
         self.validate_program_assets(&paths.scripts);
         self.validate_scenes(&paths.scenes);
-        self.validate_prefabs(&paths.prefabs);
+        self.validate_prefabs(project_path, &paths.prefabs);
         self.validate_2d_documents(project_path);
         self.validate_plugins(project_path);
         self.validate_duplicate_guids(project_path);
@@ -312,7 +312,7 @@ impl ProjectValidator {
         }
     }
 
-    fn validate_prefabs(&mut self, prefabs: &Path) {
+    fn validate_prefabs(&mut self, project_path: &Path, prefabs: &Path) {
         for path in walk_files(prefabs) {
             if path.extension().and_then(|value| value.to_str()) != Some("prefab") {
                 continue;
@@ -338,6 +338,7 @@ impl ProjectValidator {
                                 path.display()
                             ));
                         }
+                        self.validate_prefab_dependencies(project_path, &data, &path);
                         self.validate_references_in_value(&data, &path);
                     }
                     Err(error) => self.errors.push(format!(
@@ -348,6 +349,46 @@ impl ProjectValidator {
                 Err(error) => self
                     .errors
                     .push(format!("Prefab invalido: {} | {error}", path.display())),
+            }
+        }
+    }
+
+    fn validate_prefab_dependencies(&mut self, project_path: &Path, data: &Value, path: &Path) {
+        for script in data
+            .get("scripts")
+            .and_then(|scripts| scripts.get("required"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            let script_path = if script.starts_with("scripts/") {
+                project_path.join(script)
+            } else {
+                AssetTools::get_project_paths(project_path)
+                    .scripts
+                    .join(script)
+            };
+            if !script_path.exists() {
+                self.warnings.push(format!(
+                    "Prefab requiere script ausente: {} -> {script}",
+                    path.display()
+                ));
+            }
+        }
+        for setting in data
+            .get("settings")
+            .and_then(|settings| settings.get("required"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            if !project_path.join(setting).exists() {
+                self.warnings.push(format!(
+                    "Prefab requiere setting ausente: {} -> {setting}",
+                    path.display()
+                ));
             }
         }
     }

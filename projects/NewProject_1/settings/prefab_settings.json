@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "auto_collect_scripts": true,
+  "auto_collect_settings": true,
+  "required_settings": [
+    "settings/input_map.json",
+    "settings/layers.json",
+    "settings/runtime_config.json",
+    "settings/tags.json"
+  ],
+  "missing_script_policy": "warn",
+  "missing_setting_policy": "warn",
+  "apply_overrides_policy": "explicit"
+}

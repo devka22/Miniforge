@@ -1,9 +1,9 @@
 {
   "format": "miniforge.prefab",
-  "schema_version": 1,
+  "schema_version": 2,
   "guid": "prefab-love-memory-trigger-0001",
   "version": "0.9.3",
-  "engine_version": "0.9.3",
+  "engine_version": "0.9.3.4",
   "prefab_name": "MemoryTrigger",
   "entity": {
     "type": "GameObject",
@@ -102,5 +102,26 @@
       }
     ],
     "scripts": []
+  },
+  "scripts": {
+    "required": [],
+    "embedded": [],
+    "policy": "validate_on_instantiate"
+  },
+  "settings": {
+    "required": [
+      "settings/input_map.json",
+      "settings/layers.json",
+      "settings/runtime_config.json",
+      "settings/tags.json"
+    ],
+    "defaults": {},
+    "policy": "merge_missing"
+  },
+  "dependencies": [],
+  "metadata": {
+    "component_count": 5,
+    "script_count": 0,
+    "source": "repo_upgrade"
   }
 }

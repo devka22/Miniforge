@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::engine::asset_tools::AssetTools;
-use crate::engine::prefab_serializer::PrefabSerializer;
+use crate::engine::prefab_serializer::{
+    DEFAULT_PREFAB_SETTINGS, PrefabSerializer, collect_entity_scripts,
+};
 use crate::entities::game_object::GameObject;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -43,6 +45,8 @@ impl AdvancedPrefabSystem {
         let filename = format!("{}.prefab", AssetTools::safe_name(&entity.name, "Prefab"));
         let path = AssetTools::unique_path(&paths.prefabs, &filename);
         let guid = crate::engine::asset_database::stable_guid(&path.to_string_lossy());
+        let entity_data = entity.serialize();
+        let scripts = collect_entity_scripts(&entity_data);
         let data = PrefabSerializer::stamp(json!({
             "version": crate::engine::version::ENGINE_VERSION,
             "kind": "MiniForgeAdvancedPrefab",
@@ -51,7 +55,17 @@ impl AdvancedPrefabSystem {
             "include_children": include_children,
             "dependencies": dependencies,
             "variant": false,
-            "entity": entity.serialize(),
+            "scripts": {
+                "required": scripts,
+                "embedded": [],
+                "policy": "validate_on_instantiate",
+            },
+            "settings": {
+                "required": DEFAULT_PREFAB_SETTINGS,
+                "defaults": {},
+                "policy": "merge_missing",
+            },
+            "entity": entity_data,
             "metadata": {
                 "component_count": entity.components.len(),
                 "script_count": entity.scripts.len(),
@@ -83,6 +97,8 @@ impl AdvancedPrefabSystem {
         );
         let path = AssetTools::unique_path(paths.prefabs, &filename);
         let guid = crate::engine::asset_database::stable_guid(&path.to_string_lossy());
+        let entity_data = entity.serialize();
+        let scripts = collect_entity_scripts(&entity_data);
         let data = PrefabSerializer::stamp(json!({
             "version": crate::engine::version::ENGINE_VERSION,
             "kind": "MiniForgeAdvancedPrefab",
@@ -92,7 +108,18 @@ impl AdvancedPrefabSystem {
             "parent_source": entity.prefab_source,
             "variant": true,
             "overrides": self.calculate_override_count(entity, None),
-            "entity": entity.serialize(),
+            "scripts": {
+                "required": scripts,
+                "embedded": [],
+                "policy": "validate_on_instantiate",
+            },
+            "settings": {
+                "required": DEFAULT_PREFAB_SETTINGS,
+                "defaults": {},
+                "policy": "merge_missing",
+            },
+            "dependencies": [],
+            "entity": entity_data,
         }))
         .map_err(io::Error::from)?;
         AssetTools::write_json(&path, &data)?;
