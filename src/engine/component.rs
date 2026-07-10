@@ -886,6 +886,43 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "scale_x": 1.0,
             "scale_y": 1.0,
         }),
+        "Node2D" => json!({
+            "node_path": ".",
+            "owner_path": null,
+            "process_mode": "inherit",
+            "process_priority": 0,
+            "unique_name_in_owner": false,
+            "editor_description": "",
+        }),
+        "SceneTreeNode" => json!({
+            "path": ".",
+            "parent_path": null,
+            "owner_scene": null,
+            "instanced": false,
+            "editable_children": true,
+        }),
+        "GroupMembership" => json!({
+            "groups": [],
+            "persistent": true,
+            "editor_only": false,
+        }),
+        "SignalEmitter" => json!({
+            "signals": ["ready", "process", "input_event"],
+            "connections": [],
+        }),
+        "PackedSceneInstance" => json!({
+            "scene_path": null,
+            "scene_guid": null,
+            "root_path": ".",
+            "editable_children": true,
+            "instance_state": "linked",
+        }),
+        "ResourceReference" => json!({
+            "resource_path": null,
+            "resource_guid": null,
+            "resource_type": "Resource",
+            "preload": false,
+        }),
         "Actor2D" => json!({
             "class": "Actor2D",
             "guid": null,
@@ -2042,6 +2079,12 @@ pub fn default_component(component_type: &str) -> Option<Component> {
 
 pub fn advanced_component_types() -> &'static [&'static str] {
     &[
+        "Node2D",
+        "SceneTreeNode",
+        "GroupMembership",
+        "SignalEmitter",
+        "PackedSceneInstance",
+        "ResourceReference",
         "Actor2D",
         "GameMode2D",
         "GameState2D",
@@ -2160,6 +2203,11 @@ pub fn advanced_component_types() -> &'static [&'static str] {
 
 pub fn advanced_component_category(component_type: &str) -> Option<&'static str> {
     Some(match component_type {
+        "Node2D" | "SceneTreeNode" => "SceneTree",
+        "GroupMembership" => "Groups",
+        "SignalEmitter" => "Signals",
+        "PackedSceneInstance" => "SceneInstancing",
+        "ResourceReference" => "Assets",
         "Actor2D" => "Core",
         "GameMode2D" | "GameState2D" | "PlayerState2D" | "Pawn2D" | "Controller2D"
         | "PlayerController2D" => "Gameplay",

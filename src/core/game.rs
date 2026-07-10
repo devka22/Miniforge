@@ -237,6 +237,16 @@ fn push_configured(configured: &mut Vec<String>, name: &str, changed: bool) {
     }
 }
 
+fn ensure_scene_node_components(entity: &mut GameObject) {
+    for component_type in ["Node2D", "SceneTreeNode"] {
+        if entity.get_component(component_type).is_none()
+            && let Some(component) = default_component(component_type)
+        {
+            entity.add_component(component);
+        }
+    }
+}
+
 fn configure_complex_foundation_player(entity: &mut GameObject, entity_id: u64) -> Vec<String> {
     let mut configured = Vec::new();
 
@@ -1357,6 +1367,7 @@ impl Game {
     pub fn spawn_game_object(&mut self, name: &str, x: f64, y: f64) -> u64 {
         let before = self.capture_editor_snapshot();
         let mut entity = GameObject::new(x, y, Some(name.to_string()));
+        ensure_scene_node_components(&mut entity);
         entity.width = 1.0;
         entity.height = 1.0;
         entity.sync_to_components();
@@ -1367,6 +1378,35 @@ impl Game {
         self.mark_scene_dirty("Spawn GameObject");
         self.push_editor_command(
             "Create GameObject",
+            EditorCommandKind::CreateEntity { entity_id: id },
+            before,
+        );
+        id
+    }
+
+    pub fn spawn_scene_node(
+        &mut self,
+        name: &str,
+        component_types: &[&str],
+        x: f64,
+        y: f64,
+    ) -> u64 {
+        let before = self.capture_editor_snapshot();
+        let mut entity = GameObject::new(x, y, Some(name.to_string()));
+        ensure_scene_node_components(&mut entity);
+        for component_type in component_types {
+            if let Some(component) = default_component(component_type) {
+                entity.add_component(component);
+            }
+        }
+        entity.sync_to_components();
+        let id = entity.id;
+        self.runtime_world.units.push(entity);
+        self.select_entity(id);
+        self.sync_world();
+        self.mark_scene_dirty("Spawn Scene Node");
+        self.push_editor_command(
+            "Create Scene Node",
             EditorCommandKind::CreateEntity { entity_id: id },
             before,
         );

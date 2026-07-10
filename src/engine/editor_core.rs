@@ -400,6 +400,54 @@ impl EditorCore {
                     message: "Scene saved".to_string(),
                 }
             }
+            "scene.audit_tree" => {
+                let tree = game.runtime_world.scene_tree();
+                let signal_bus = game.runtime_world.signal_bus();
+                let signal_report = signal_bus.validate();
+                for warning in tree.warnings.iter().take(8) {
+                    game.console.log(warning.clone(), "SCENE_TREE");
+                }
+                for missing in signal_report.missing_targets.iter().take(8) {
+                    game.console
+                        .log(format!("Signal target missing: {missing}"), "SCENE_TREE");
+                }
+                let message = format!(
+                    "SceneTree audit: {} nodes, {} roots, {} groups, {} signal connections",
+                    tree.nodes.len(),
+                    tree.roots.len(),
+                    tree.groups.len(),
+                    signal_bus.connections.len()
+                );
+                game.console.log(message.clone(), "SCENE_TREE");
+                CommandOutcome {
+                    changed: false,
+                    message,
+                }
+            }
+            "scene.pack_selected" => {
+                let project_path = project_path.ok_or_else(EditorCoreError::no_project)?;
+                let root_id = game.selected_units.first().copied().ok_or_else(|| {
+                    EditorCoreError::new(
+                        EditorCoreErrorKind::InvalidArgument,
+                        "Select an entity before packing a scene branch",
+                    )
+                })?;
+                let packed =
+                    game.runtime_world
+                        .pack_scene_from_root(root_id)
+                        .map_err(|message| {
+                            EditorCoreError::new(EditorCoreErrorKind::CommandFailed, message)
+                        })?;
+                let path = write_packed_scene_asset(&project_path, &packed.root_name, &packed)?;
+                game.asset_database.scan()?;
+                CommandOutcome {
+                    changed: true,
+                    message: format!(
+                        "Packed scene branch {}",
+                        project_relative(&project_path, &path)
+                    ),
+                }
+            }
             "edit.undo" => {
                 let label = game
                     .undo_editor_command()
@@ -425,8 +473,20 @@ impl EditorCore {
                     message: format!("Created entity #{id}"),
                 }
             }
+            "object.create_node2d" => {
+                let id = game.spawn_scene_node("Node2D", &[], 0.0, 0.0);
+                CommandOutcome {
+                    changed: true,
+                    message: format!("Created Node2D #{id}"),
+                }
+            }
             "object.create_sprite_actor" => {
-                let id = game.spawn_game_object("SpriteActor", 0.0, 0.0);
+                let id = game.spawn_scene_node(
+                    "SpriteActor",
+                    &["SpriteRenderer", "Animator2D"],
+                    0.0,
+                    0.0,
+                );
                 let _ = game.add_component_to_entity(id, "SpriteRenderer");
                 let _ = game.add_component_to_entity(id, "Animator2D");
                 CommandOutcome {
@@ -435,11 +495,30 @@ impl EditorCore {
                 }
             }
             "object.create_camera" => {
-                let id = game.spawn_game_object("CameraRig", 0.0, 0.0);
+                let id = game.spawn_scene_node("CameraRig", &["Camera2D"], 0.0, 0.0);
                 let _ = game.add_component_to_entity(id, "Camera2D");
                 CommandOutcome {
                     changed: true,
                     message: format!("Created CameraRig #{id}"),
+                }
+            }
+            "object.create_area2d" => {
+                let id = game.spawn_scene_node("Area2D", &["Area2D"], 0.0, 0.0);
+                CommandOutcome {
+                    changed: true,
+                    message: format!("Created Area2D #{id}"),
+                }
+            }
+            "object.create_character_body2d" => {
+                let id = game.spawn_scene_node(
+                    "CharacterBody2D",
+                    &["CharacterBody2D", "Rigidbody2D", "CharacterController2D"],
+                    0.0,
+                    0.0,
+                );
+                CommandOutcome {
+                    changed: true,
+                    message: format!("Created CharacterBody2D #{id}"),
                 }
             }
             "object.create_ui_text" => {
@@ -816,9 +895,17 @@ fn default_command_descriptors() -> Vec<CommandDescriptor> {
             Some("Cmd/Ctrl+S"),
         ),
         command("scene.save", "Save Scene", "Scene", None),
+        command("scene.audit_tree", "Audit Scene Tree", "Scene", None),
+        command(
+            "scene.pack_selected",
+            "Pack Selected Scene Branch",
+            "Scene",
+            None,
+        ),
         command("edit.undo", "Undo", "Edit", Some("Cmd/Ctrl+Z")),
         command("edit.redo", "Redo", "Edit", Some("Cmd/Ctrl+Shift+Z")),
         command("entity.create_empty", "Create Empty Entity", "Entity", None),
+        command("object.create_node2d", "Create Node2D", "Objects", None),
         command(
             "object.create_sprite_actor",
             "Create Sprite Actor",
@@ -826,6 +913,13 @@ fn default_command_descriptors() -> Vec<CommandDescriptor> {
             None,
         ),
         command("object.create_camera", "Create Camera Rig", "Objects", None),
+        command("object.create_area2d", "Create Area2D", "Objects", None),
+        command(
+            "object.create_character_body2d",
+            "Create CharacterBody2D",
+            "Objects",
+            None,
+        ),
         command("object.create_ui_text", "Create HUD Text", "Objects", None),
         command("project.audit", "Run Project Audit", "Project", None),
         command("play.enter", "Enter Play Mode", "Play", Some("F5")),
@@ -1021,6 +1115,37 @@ fn write_render_2d_profile_report(project_path: &Path) -> Result<PathBuf, Editor
     });
     fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
     Ok(output)
+}
+
+fn write_packed_scene_asset(
+    project_path: &Path,
+    root_name: &str,
+    packed: &crate::engine::packed_scene::PackedScene2D,
+) -> Result<PathBuf, EditorCoreError> {
+    let stem = sanitize_asset_stem(root_name);
+    let path = unique_project_file(project_path, "assets/packed_scenes", &stem, "mpscene.json")?;
+    fs::write(&path, serde_json::to_vec_pretty(packed)?)?;
+    Ok(path)
+}
+
+fn sanitize_asset_stem(name: &str) -> String {
+    let stem = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string();
+    if stem.is_empty() {
+        "PackedScene".to_string()
+    } else {
+        stem
+    }
 }
 
 fn collect_project_sprite_sources(

@@ -196,6 +196,7 @@ Los datos adicionales se aplanan sobre el objeto. `default_component` crea defau
 Familias del registry:
 
 - Core: `Transform`, `Actor2D`.
+- SceneTree: `Node2D`, `SceneTreeNode`, `GroupMembership`, `SignalEmitter`, `PackedSceneInstance`, `ResourceReference`.
 - Rendering: `SpriteRenderer`, `Light2D`, `ShadowCaster2D`, `NormalMap2D`, `Material2D`, `ParallaxLayer`.
 - Rendering3D: `Transform3D`, `MeshRenderer3D`, `Material3D`, `Billboard3D`, `HybridScene3D`.
 - Camera: `Camera2D`, `Camera3D`, `CameraFollow`, `CameraShake`.
@@ -582,4 +583,3 @@ Incluye:
 - source manifest.
 
 `RuntimeManifestLoader` valida builds exportados y detecta assets faltantes.
-

@@ -107,6 +107,8 @@ La capa Qt llama comandos por ID mediante `editorController.executeCommand(comma
 
 - `project.save`
 - `scene.save`
+- `scene.audit_tree`
+- `scene.pack_selected`
 - `edit.undo`
 - `edit.redo`
 - `project.audit`
@@ -119,8 +121,11 @@ La capa Qt llama comandos por ID mediante `editorController.executeCommand(comma
 - `sprite.export_atlas_pages`
 - `sprite.optimize_palette`
 - `luau.new_controller`
+- `object.create_node2d`
 - `object.create_sprite_actor`
 - `object.create_camera`
+- `object.create_area2d`
+- `object.create_character_body2d`
 - `object.create_ui_text`
 
 `EditorCore` tambien expone datos paginados para entidades, assets, comandos, consola, readiness y snapshots de viewport.
@@ -147,6 +152,8 @@ La recomendacion es empezar con `topdown`, `platformer` o `rts` si se quiere val
 - `Selectable`
 - `SpriteRenderer`
 - `Collider2D`
+
+Los comandos modernos de `EditorCore` para escena agregan ademas `Node2D` y `SceneTreeNode`, de modo que el objeto entra al indice de rutas/grupos/senales sin romper compatibilidad con escenas antiguas.
 
 `GameObject::new_unit` crea una unidad con:
 
@@ -185,6 +192,21 @@ Al cargar una escena, el editor:
 - reconstruye el mundo y toma snapshots de history.
 
 El serializador migra escenas legacy con `objects` hacia `entities`. Versiones futuras se rechazan para evitar perdida silenciosa.
+
+### SceneTree Y NodePath
+
+El editor puede construir un `SceneTreeIndex` desde las entidades abiertas:
+
+- rutas absolutas: `/World/Player/Camera`.
+- rutas relativas: `../HUD`, `./WeaponSocket`.
+- grupos: `GroupMembership.groups`, `editor_group`, `tag:*` y `layer:*`.
+- auditoria: `scene.audit_tree` escribe resumen y warnings en consola.
+
+Las claves `node_path`, `target_path`, `root_path`, `owner_path` y `parent_path` se validan al guardar. Si una conexion `SignalEmitter` apunta a un target inexistente o no define metodo, la validacion lo reporta antes de exportar.
+
+### PackedScene2D
+
+`scene.pack_selected` toma la entidad seleccionada como root, empaqueta root+hijos en `assets/packed_scenes/*.mpscene.json`, preserva la jerarquia y deja el asset index listo para usarlo desde content browser. Al instanciar, `PackedScene2D` remapea IDs y puede aplicar offset de posicion y prefijo de nombre.
 
 ## Prefabs
 
@@ -397,4 +419,3 @@ Demo completa:
 - Si la camara no sigue: verificar `CameraFollow.target_id` y viewport settings.
 - Si hay colisiones raras: revisar `Collider2D`, `Rigidbody2D`, `collision_layer`, `collision_mask`, one-way y tilemap `Collision`.
 - Si el export falla: corregir errores de `ProjectValidator` antes de empaquetar.
-

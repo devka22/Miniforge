@@ -590,6 +590,9 @@ fn detect_asset_type(path: &Path) -> String {
     if filename.ends_with(".shader.json") {
         return "Shader".to_string();
     }
+    if filename.ends_with(".mpscene.json") {
+        return "PackedScene2D".to_string();
+    }
     let path_text = path.to_string_lossy().to_lowercase();
     let image_like = matches!(
         path.extension()
@@ -668,6 +671,7 @@ fn default_import_settings(path: &Path) -> Value {
         "VisualGraph" => json!({"runtime": "rust_visual_graph", "include_in_build": true}),
         "SpriteSheet" => json!({"include_in_build": true, "grid": {"w": 32, "h": 32}}),
         "SpriteFrames2D" => json!({"include_in_build": true, "fps": 8, "runtime": "flipbook"}),
+        "PackedScene2D" => json!({"include_in_build": true, "editable_children": true}),
         "AnimationBlueprint2D" | "FlipbookAnimation2D" => {
             json!({"include_in_build": true, "runtime": "animator2d"})
         }
@@ -723,6 +727,10 @@ fn labels_for(path: &Path, asset_type: &str) -> Vec<String> {
     let path_text = path.to_string_lossy().to_lowercase();
     if path_text.contains("/prefabs/") {
         labels.push("prefab-library".to_string());
+    }
+    if asset_type == "PackedScene2D" {
+        labels.push("scene-instancing".to_string());
+        labels.push("2d".to_string());
     }
     if path_text.contains("/visual_graphs/") {
         labels.push("in-engine-code".to_string());
