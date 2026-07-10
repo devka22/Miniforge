@@ -103,12 +103,31 @@ Para cambios de runtime, ejecutar tambien:
 cargo run --bin miniforge_dev --features editor -- export projects/DefaultProject
 ```
 
+Para cambios en la capa de escena inspirada en Godot, cubrir al menos:
+
+```bash
+cargo check --features editor
+cargo check --no-default-features --features runtime
+cargo test --features editor --lib
+```
+
+Archivos principales:
+
+- `src/engine/node_path.rs`
+- `src/engine/scene_tree.rs`
+- `src/engine/scene_signal.rs`
+- `src/engine/packed_scene.rs`
+- `src/engine/scene_validator.rs`
+- `src/engine/project_validator.rs`
+- `src/engine/editor_core.rs`
+
 ## Pruebas
 
 El repositorio incluye tests para:
 
 - schema versioning.
 - update 0.9.3 y 0.9.3.4.
+- `NodePath`, `SceneTreeIndex`, `SceneSignalBus` y `PackedScene2D`.
 - Luau scripting e API 2D.
 - scripting avanzado.
 - Python automation y efectos.
@@ -540,4 +559,3 @@ Antes de publicar una version:
 13. Probar `miniforge_runtime`.
 14. Revisar readiness score y acciones.
 15. Actualizar version/documentacion consolidada.
-

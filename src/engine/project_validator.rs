@@ -8,6 +8,8 @@ use crate::engine::asset_tools::AssetTools;
 use crate::engine::miniforge_2d::blueprint::supported_node_kinds;
 use crate::engine::prefab_serializer::PrefabSerializer;
 use crate::engine::scene_serializer::SceneSerializer;
+use crate::engine::scene_signal::SceneSignalBus;
+use crate::engine::scene_tree::SceneTreeIndex;
 use crate::engine::version::ENGINE_VERSION;
 use crate::entities::game_object::GameObject;
 
@@ -93,6 +95,7 @@ impl ProjectValidator {
         self.validate_plugins(project_path);
         self.validate_duplicate_guids(project_path);
         self.validate_asset_references(entities, asset_database);
+        self.validate_scene_tree_context(entities);
         self.validate_build_settings(&paths.settings, &paths.scenes);
         self.errors.is_empty()
     }
@@ -309,6 +312,34 @@ impl ProjectValidator {
                     }
                 }
             }
+        }
+    }
+
+    fn validate_scene_tree_context(&mut self, entities: &[GameObject]) {
+        if entities.is_empty() {
+            return;
+        }
+        let tree = SceneTreeIndex::build(entities);
+        for warning in &tree.warnings {
+            self.warnings.push(format!("SceneTree: {warning}"));
+        }
+        let signals = SceneSignalBus::from_entities(entities, &tree);
+        let signal_report = signals.validate();
+        for missing in signal_report.missing_targets {
+            self.errors
+                .push(format!("SceneTree signal target no resuelto: {missing}"));
+        }
+        for empty in signal_report.empty_methods {
+            self.errors
+                .push(format!("SceneTree signal method vacio: {empty}"));
+        }
+        if entities
+            .iter()
+            .any(|entity| entity.get_component("Node2D").is_none())
+        {
+            self.warnings.push(
+                "Hay entidades sin Node2D; se soportan por compatibilidad, pero el editor moderno usa Node2D para paths/grupos/senales.".to_string(),
+            );
         }
     }
 

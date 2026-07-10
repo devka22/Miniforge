@@ -1,5 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::engine::packed_scene::PackedScene2D;
+use crate::engine::scene_signal::SceneSignalBus;
+use crate::engine::scene_tree::SceneTreeIndex;
 use crate::engine::spatial_index::{SpatialEntry, SpatialIndex};
 use crate::entities::game_object::GameObject;
 
@@ -126,6 +129,33 @@ impl RuntimeWorld {
         layer: Option<&str>,
     ) -> Vec<SpatialEntry> {
         self.spatial_index.query_radius(x, y, radius, tag, layer)
+    }
+
+    pub fn scene_tree(&self) -> SceneTreeIndex {
+        SceneTreeIndex::build(&self.units)
+    }
+
+    pub fn node_path_for(&self, entity_id: u64) -> Option<String> {
+        self.scene_tree()
+            .path_for(entity_id)
+            .map(ToString::to_string)
+    }
+
+    pub fn resolve_node_path(&self, current_id: Option<u64>, path: &str) -> Option<u64> {
+        self.scene_tree().resolve_path(current_id, path)
+    }
+
+    pub fn entities_in_group(&self, group: &str) -> Vec<u64> {
+        self.scene_tree().ids_in_group(group)
+    }
+
+    pub fn signal_bus(&self) -> SceneSignalBus {
+        let tree = self.scene_tree();
+        SceneSignalBus::from_entities(&self.units, &tree)
+    }
+
+    pub fn pack_scene_from_root(&self, root_id: u64) -> Result<PackedScene2D, String> {
+        PackedScene2D::pack_from_root(&self.units, root_id)
     }
 
     pub fn validate(&self) -> WorldValidationReport {

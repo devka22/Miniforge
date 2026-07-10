@@ -93,9 +93,32 @@ Operaciones importantes:
 - `entity`, `entity_mut`, `push`, `remove`, `replace_entities`.
 - `mark_changed`, `rebuild_index`, `index_is_current`.
 - `query_radius` con filtros por tag/layer.
+- `scene_tree`, `node_path_for`, `resolve_node_path`, `entities_in_group`.
+- `signal_bus` para construir conexiones de senales desde componentes.
+- `pack_scene_from_root` para empaquetar una rama de entidades como `PackedScene2D`.
 - `validate`, que detecta IDs duplicados, padres colgantes y ciclos de jerarquia.
 
 Regla actual: todo cambio estructural debe marcar el mundo como cambiado y reconstruir indice antes de consultas espaciales confiables.
+
+## SceneTree, NodePath, Senales Y PackedScene2D
+
+La capa nueva de escena toma ideas probadas de Godot y las adapta al modelo Rust/data-first de MiniForge:
+
+- `engine::node_path::NodePath`: parsea rutas absolutas como `/Root/Camera` y relativas como `../HUD`. Normaliza `.` y `..`.
+- `engine::scene_tree::SceneTreeIndex`: construye un indice desde `RuntimeWorld.units` con raices, hijos, paths estables, grupos y warnings de nombres duplicados o padres faltantes.
+- `engine::scene_signal::SceneSignalBus`: lee componentes `SignalEmitter`, resuelve `target_id` o `target_path`, valida conexiones y produce `SceneSignalDispatch` para que Luau, visual graphs o runtime Rust ejecuten la accion.
+- `engine::packed_scene::PackedScene2D`: empaqueta una rama root+hijos, remapea IDs al instanciar y conserva parenting/local transforms.
+
+Componentes asociados:
+
+- `Node2D`: metadata de nodo 2D, process mode, prioridad y descripcion de editor.
+- `SceneTreeNode`: path/owner/estado de instancia para herramientas.
+- `GroupMembership`: grupos persistentes adicionales a `tag:*`, `layer:*` y `editor_group`.
+- `SignalEmitter`: lista de senales y conexiones serializables.
+- `PackedSceneInstance`: vincula una instancia con su asset de escena empaquetada.
+- `ResourceReference`: referencia GUID/path a recursos serializables.
+
+`SceneValidator` y `ProjectValidator` validan ahora `NodePath` conocidos (`node_path`, `target_path`, `root_path`, `owner_path`, `parent_path`) y conexiones de `SignalEmitter`. Las conexiones sin target o sin metodo bloquean guardado/export cuando aparecen en contexto de escena.
 
 ## GameObject Y Component
 
@@ -120,6 +143,7 @@ Los valores con claves que empiezan con `_` son runtime-only y no se persisten e
 Componentes base:
 
 - `Transform`, `SpriteRenderer`, `Selectable`, `MovementComponent`, `AudioSource`, `Rigidbody2D`, `Collider2D`, `Animator`, `VisualScript`, `UIElement`.
+- Escena/data model: `Node2D`, `SceneTreeNode`, `GroupMembership`, `SignalEmitter`, `PackedSceneInstance`, `ResourceReference`.
 
 MiniForge2D y gameplay:
 
@@ -293,4 +317,3 @@ Servicios principales:
 - Luau tiene scheduler configurable, hot reload, memoria limitada y cola de comandos.
 - Qt/QML puede operar sobre `EditorCore` via FFI C.
 - Export/runtime manifest ahora incluye readiness, backend plan y assets faltantes.
-
