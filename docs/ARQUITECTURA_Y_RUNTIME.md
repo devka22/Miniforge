@@ -100,6 +100,8 @@ Operaciones importantes:
 
 Regla actual: todo cambio estructural debe marcar el mundo como cambiado y reconstruir indice antes de consultas espaciales confiables.
 
+El host Luau crea un snapshot por batch de eventos con indices por id, nombre y tag, mas un `SpatialIndex` propio. Esto evita scans completos cuando scripts de mundo abierto usan `Entity.find`, `Entity.all_with_tag` o `Entity.nearby` para trafico, policia, contactos, pickups y peatones.
+
 ## SceneTree, NodePath, Senales Y PackedScene2D
 
 La capa nueva de escena toma ideas probadas de Godot y las adapta al modelo Rust/data-first de MiniForge:
@@ -196,7 +198,7 @@ Tanto `Game::run_headless_once` como `EngineRuntime::run_headless_once` siguen e
 16. `RuntimeWorld.mark_changed` y `RuntimeWorld.rebuild_index`.
 17. Diagnosticos, counters y metricas de profiler.
 
-La version runtime registra tiempos por sistema con `Profiler` y metricas como entidades, scripts Luau, fixed ticks, frame budget, fixed step saturation y celdas espaciales.
+La version runtime registra tiempos por sistema con `Profiler` y metricas como entidades, scripts Luau, fixed ticks, frame budget, fixed step saturation, celdas espaciales, uso del scheduler Luau y consultas `Entity.nearby` indexadas/lineales.
 
 ## Sistemas
 
@@ -314,6 +316,6 @@ Servicios principales:
 - `AssetDatabase` conserva GUIDs y reconcilia assets movidos por hash de contenido.
 - `EngineRuntime` existe como composition root runtime-only.
 - `miniforge_2d` agrega catalogo amplio: UI Designer, Sequencer, Physics2D, AI, Packaging, RTS Tools, Massive World y render hibrido.
-- Luau tiene scheduler configurable, hot reload, memoria limitada y cola de comandos.
+- Luau tiene scheduler configurable, hot reload, memoria limitada, cola de comandos, politicas automaticas de mundo abierto y consultas `nearby` aceleradas por indice espacial.
 - Qt/QML puede operar sobre `EditorCore` via FFI C.
 - Export/runtime manifest ahora incluye readiness, backend plan y assets faltantes.

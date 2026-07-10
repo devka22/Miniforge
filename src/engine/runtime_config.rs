@@ -57,7 +57,9 @@ impl RuntimeConfig {
                 "max_update_scripts_per_frame": 100000,
                 "default_update_interval": 0.0,
                 "distant_update_interval": 0.75,
-                "budget_bypass_priority": 100
+                "budget_bypass_priority": 100,
+                "prioritize_by_distance": true,
+                "open_world_auto_policy": true
             },
             "graphics": {
                 "quality": "medium",

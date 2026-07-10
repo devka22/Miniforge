@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 
 use crate::engine::camera::Camera;
 use crate::engine::game_api::GameAPI;
+use crate::engine::spatial_index::{SpatialEntry, SpatialIndex};
 use crate::entities::game_object::GameObject;
 use crate::systems::physics_system::{
     BoxCastQuery, CircleCastQuery, PhysicsQueryFilter, PhysicsSystem, RaycastHit,
@@ -349,6 +350,8 @@ pub struct ScriptSchedulerConfig {
     pub default_update_interval: f64,
     pub distant_update_interval: f64,
     pub budget_bypass_priority: i64,
+    pub prioritize_by_distance: bool,
+    pub open_world_auto_policy: bool,
 }
 
 impl Default for ScriptSchedulerConfig {
@@ -359,6 +362,8 @@ impl Default for ScriptSchedulerConfig {
             default_update_interval: 0.0,
             distant_update_interval: 0.75,
             budget_bypass_priority: 100,
+            prioritize_by_distance: true,
+            open_world_auto_policy: true,
         }
     }
 }
@@ -366,6 +371,41 @@ impl Default for ScriptSchedulerConfig {
 #[derive(Debug, Clone, Copy, Default)]
 struct ScriptUpdateState {
     next_update_time: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScriptSchedulerFrameStats {
+    pub update_candidates: usize,
+    pub update_budget_used: usize,
+    pub skipped_disabled: usize,
+    pub skipped_budget: usize,
+    pub skipped_interval: usize,
+    pub distance_throttled: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScriptQueryFrameStats {
+    pub nearby_queries: usize,
+    pub nearby_indexed: usize,
+    pub nearby_linear_scans: usize,
+    pub nearby_candidates: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScriptSimulationClass {
+    Critical,
+    Police,
+    Vehicle,
+    Pedestrian,
+    Pickup,
+    Background,
+    Default,
+}
+
+impl Default for ScriptSimulationClass {
+    fn default() -> Self {
+        Self::Default
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -376,6 +416,7 @@ struct ScriptUpdatePolicy {
     max_distance: Option<f64>,
     distant_update_interval: Option<f64>,
     priority: i64,
+    simulation_class: ScriptSimulationClass,
 }
 
 impl Default for ScriptUpdatePolicy {
@@ -387,6 +428,7 @@ impl Default for ScriptUpdatePolicy {
             max_distance: None,
             distant_update_interval: None,
             priority: 0,
+            simulation_class: ScriptSimulationClass::Default,
         }
     }
 }
@@ -398,7 +440,36 @@ struct ScriptHostState {
     inputs_pressed: BTreeSet<String>,
     time: ScriptTimeState,
     world_entities: Vec<GameObject>,
+    world_entity_ids: BTreeMap<u64, usize>,
+    world_entity_names: BTreeMap<String, usize>,
+    world_entity_tags: BTreeMap<String, Vec<usize>>,
+    spatial_index: SpatialIndex,
+    query_stats: ScriptQueryFrameStats,
     camera: ScriptCameraSnapshot,
+}
+
+impl ScriptHostState {
+    fn replace_world_entities(&mut self, entities: &[GameObject]) {
+        self.world_entities = entities.to_vec();
+        self.world_entity_ids.clear();
+        self.world_entity_names.clear();
+        self.world_entity_tags.clear();
+        for (index, entity) in self.world_entities.iter().enumerate() {
+            self.world_entity_ids.entry(entity.id).or_insert(index);
+            self.world_entity_names
+                .entry(entity.name.clone())
+                .or_insert(index);
+            self.world_entity_tags
+                .entry(entity.tag.clone())
+                .or_default()
+                .push(index);
+        }
+        self.spatial_index.rebuild(&self.world_entities);
+    }
+
+    fn reset_query_stats(&mut self) {
+        self.query_stats = ScriptQueryFrameStats::default();
+    }
 }
 
 type SharedHostState = Arc<Mutex<ScriptHostState>>;
@@ -461,6 +532,8 @@ pub struct LuauScriptRuntime {
     pub watcher_active: bool,
     pub reload_count: usize,
     pub last_frame_scripts: usize,
+    pub last_scheduler_stats: ScriptSchedulerFrameStats,
+    pub last_query_stats: ScriptQueryFrameStats,
     pub last_errors: Vec<String>,
 }
 
@@ -474,6 +547,8 @@ impl std::fmt::Debug for LuauScriptRuntime {
             .field("watcher_active", &self.watcher_active)
             .field("reload_count", &self.reload_count)
             .field("last_frame_scripts", &self.last_frame_scripts)
+            .field("last_scheduler_stats", &self.last_scheduler_stats)
+            .field("last_query_stats", &self.last_query_stats)
             .field("last_errors", &self.last_errors)
             .finish()
     }
@@ -508,6 +583,8 @@ impl LuauScriptRuntime {
             watcher_active: false,
             reload_count: 0,
             last_frame_scripts: 0,
+            last_scheduler_stats: ScriptSchedulerFrameStats::default(),
+            last_query_stats: ScriptQueryFrameStats::default(),
             last_errors: Vec::new(),
         };
         let _ = runtime.watch_project();
@@ -733,7 +810,10 @@ impl LuauScriptRuntime {
     ) -> LuauRunReport {
         self.poll_hot_reload();
         self.last_frame_scripts = 0;
+        self.last_scheduler_stats = ScriptSchedulerFrameStats::default();
+        self.last_query_stats = ScriptQueryFrameStats::default();
         self.last_errors.clear();
+        self.reset_query_stats();
         if mode != "PLAY" {
             return LuauRunReport::default();
         }
@@ -745,6 +825,7 @@ impl LuauScriptRuntime {
         }
         report.merge(self.run_event_for_all(entities, LuauScriptEvent::Update(dt)));
         report.errors = self.last_errors.clone();
+        self.sync_query_stats();
         report
     }
 
@@ -791,6 +872,7 @@ impl LuauScriptRuntime {
             }
         }
         report.errors = self.last_errors.clone();
+        self.sync_query_stats();
         report
     }
 
@@ -929,16 +1011,12 @@ impl LuauScriptRuntime {
             .into_iter()
             .filter(|call| ids.contains(&call.entity_id))
             .collect::<Vec<_>>();
+        let focus = script_focus_point(entities).or_else(|| self.camera_focus_point());
         if matches!(event, LuauScriptEvent::Update(_)) {
-            calls.sort_by(|a, b| {
-                b.update_policy
-                    .priority
-                    .cmp(&a.update_policy.priority)
-                    .then_with(|| a.entity_id.cmp(&b.entity_id))
-            });
+            self.last_scheduler_stats.update_candidates = calls.len();
+            calls.sort_by(|a, b| compare_update_calls(a, b, focus, self.scheduler_config));
         }
         let mut report = LuauRunReport::default();
-        let focus = script_focus_point(entities).or_else(|| self.camera_focus_point());
         self.refresh_world_snapshot(entities);
         let mut update_budget_used = 0usize;
         for call in calls {
@@ -969,6 +1047,7 @@ impl LuauScriptRuntime {
             }
         }
         report.errors = self.last_errors.clone();
+        self.sync_query_stats();
         report
     }
 
@@ -1112,7 +1191,19 @@ impl LuauScriptRuntime {
 
     fn refresh_world_snapshot(&mut self, entities: &[GameObject]) {
         if let Ok(mut host) = self.host.lock() {
-            host.world_entities = entities.to_vec();
+            host.replace_world_entities(entities);
+        }
+    }
+
+    fn reset_query_stats(&mut self) {
+        if let Ok(mut host) = self.host.lock() {
+            host.reset_query_stats();
+        }
+    }
+
+    fn sync_query_stats(&mut self) {
+        if let Ok(host) = self.host.lock() {
+            self.last_query_stats = host.query_stats;
         }
     }
 
@@ -1133,14 +1224,22 @@ impl LuauScriptRuntime {
         let policy = call.update_policy;
         if !self.scheduler_config.enabled || policy.always_update {
             *update_budget_used = update_budget_used.saturating_add(1);
+            self.last_scheduler_stats.update_budget_used = self
+                .last_scheduler_stats
+                .update_budget_used
+                .saturating_add(1);
             return policy.enabled;
         }
         if !policy.enabled {
+            self.last_scheduler_stats.skipped_disabled =
+                self.last_scheduler_stats.skipped_disabled.saturating_add(1);
             return false;
         }
         if *update_budget_used >= self.scheduler_config.max_update_scripts_per_frame
             && policy.priority < self.scheduler_config.budget_bypass_priority
         {
+            self.last_scheduler_stats.skipped_budget =
+                self.last_scheduler_stats.skipped_budget.saturating_add(1);
             return false;
         }
 
@@ -1152,6 +1251,10 @@ impl LuauScriptRuntime {
             let dx = call.x - fx;
             let dy = call.y - fy;
             if dx * dx + dy * dy > max_distance * max_distance {
+                self.last_scheduler_stats.distance_throttled = self
+                    .last_scheduler_stats
+                    .distance_throttled
+                    .saturating_add(1);
                 interval = interval.max(
                     policy
                         .distant_update_interval
@@ -1161,6 +1264,10 @@ impl LuauScriptRuntime {
         }
         if interval <= f64::EPSILON {
             *update_budget_used = update_budget_used.saturating_add(1);
+            self.last_scheduler_stats.update_budget_used = self
+                .last_scheduler_stats
+                .update_budget_used
+                .saturating_add(1);
             return true;
         }
 
@@ -1168,11 +1275,17 @@ impl LuauScriptRuntime {
         let key = (call.entity_id, normalize_path(path.to_path_buf()));
         let state = self.update_states.entry(key).or_default();
         if now + 0.000_001 < state.next_update_time {
+            self.last_scheduler_stats.skipped_interval =
+                self.last_scheduler_stats.skipped_interval.saturating_add(1);
             return false;
         }
         let phase = script_schedule_phase(call.entity_id, path, interval);
         state.next_update_time = now + interval + phase;
         *update_budget_used = update_budget_used.saturating_add(1);
+        self.last_scheduler_stats.update_budget_used = self
+            .last_scheduler_stats
+            .update_budget_used
+            .saturating_add(1);
         true
     }
 
@@ -1225,7 +1338,10 @@ impl LuauScriptRuntime {
                     entity_name: entity.name.clone(),
                     x: entity.x,
                     y: entity.y,
-                    update_policy: script_update_policy(entity),
+                    update_policy: script_update_policy(
+                        entity,
+                        self.scheduler_config.open_world_auto_policy,
+                    ),
                     scripts,
                 })
             })
@@ -1868,14 +1984,62 @@ fn script_schedule_phase(entity_id: u64, path: &Path, interval: f64) -> f64 {
     unit * interval.min(0.5) * 0.35
 }
 
-fn script_update_policy(entity: &GameObject) -> ScriptUpdatePolicy {
+fn compare_update_calls(
+    a: &EntityScriptCall,
+    b: &EntityScriptCall,
+    focus: Option<(f64, f64)>,
+    config: ScriptSchedulerConfig,
+) -> std::cmp::Ordering {
+    let priority_order = b
+        .update_policy
+        .priority
+        .cmp(&a.update_policy.priority)
+        .then_with(|| {
+            script_class_rank(b.update_policy.simulation_class)
+                .cmp(&script_class_rank(a.update_policy.simulation_class))
+        });
+    if priority_order != std::cmp::Ordering::Equal {
+        return priority_order;
+    }
+    if config.prioritize_by_distance
+        && let Some(focus) = focus
+    {
+        return distance_sq(a, focus)
+            .partial_cmp(&distance_sq(b, focus))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.entity_id.cmp(&b.entity_id));
+    }
+    a.entity_id.cmp(&b.entity_id)
+}
+
+fn distance_sq(call: &EntityScriptCall, focus: (f64, f64)) -> f64 {
+    let dx = call.x - focus.0;
+    let dy = call.y - focus.1;
+    dx * dx + dy * dy
+}
+
+fn script_class_rank(class: ScriptSimulationClass) -> i32 {
+    match class {
+        ScriptSimulationClass::Critical => 6,
+        ScriptSimulationClass::Police => 5,
+        ScriptSimulationClass::Vehicle => 4,
+        ScriptSimulationClass::Pickup => 3,
+        ScriptSimulationClass::Pedestrian => 2,
+        ScriptSimulationClass::Background => 1,
+        ScriptSimulationClass::Default => 0,
+    }
+}
+
+fn script_update_policy(entity: &GameObject, open_world_auto_policy: bool) -> ScriptUpdatePolicy {
     let mut policy = ScriptUpdatePolicy::default();
+    let mut explicit_timing = false;
     if let Some(component) = entity.get_component("ScriptSchedule") {
         policy.enabled = component.get_bool("enabled", policy.enabled);
         policy.always_update = component.get_bool("always_update", policy.always_update);
         policy.update_interval = component
             .get_f64("update_interval", policy.update_interval)
             .max(0.0);
+        explicit_timing = true;
         let max_distance = component.get_f64("max_distance", 0.0);
         if max_distance > 0.0 {
             policy.max_distance = Some(max_distance);
@@ -1891,6 +2055,7 @@ fn script_update_policy(entity: &GameObject) -> ScriptUpdatePolicy {
         policy.update_interval = component
             .get_f64("update_interval", policy.update_interval)
             .max(0.0);
+        explicit_timing = true;
         let max_distance = component.get_f64("max_update_distance", 0.0);
         if max_distance > 0.0 {
             policy.max_distance = Some(max_distance);
@@ -1911,6 +2076,7 @@ fn script_update_policy(entity: &GameObject) -> ScriptUpdatePolicy {
             .and_then(Value::as_f64)
             .unwrap_or(policy.update_interval)
             .max(0.0);
+        explicit_timing |= values.get("script_update_interval").is_some();
         if let Some(max_distance) = values.get("script_max_distance").and_then(Value::as_f64)
             && max_distance > 0.0
         {
@@ -1928,7 +2094,117 @@ fn script_update_policy(entity: &GameObject) -> ScriptUpdatePolicy {
             .and_then(Value::as_i64)
             .unwrap_or(policy.priority);
     }
+    if open_world_auto_policy {
+        apply_open_world_policy(entity, &mut policy, explicit_timing);
+    }
     policy
+}
+
+fn apply_open_world_policy(
+    entity: &GameObject,
+    policy: &mut ScriptUpdatePolicy,
+    explicit_timing: bool,
+) {
+    let class = classify_script_entity(entity);
+    policy.simulation_class = class;
+    match class {
+        ScriptSimulationClass::Critical => {
+            policy.priority = policy.priority.max(180);
+            policy.always_update = true;
+            policy.max_distance = None;
+            if !explicit_timing {
+                policy.update_interval = 0.0;
+            }
+        }
+        ScriptSimulationClass::Police => {
+            policy.priority = policy.priority.max(90);
+            if policy.max_distance.is_none() {
+                policy.max_distance = Some(80.0);
+            }
+            if policy.distant_update_interval.is_none() {
+                policy.distant_update_interval = Some(0.55);
+            }
+            if !explicit_timing {
+                policy.update_interval = 0.08;
+            }
+        }
+        ScriptSimulationClass::Vehicle => {
+            policy.priority = policy.priority.max(60);
+            if policy.max_distance.is_none() {
+                policy.max_distance = Some(72.0);
+            }
+            if policy.distant_update_interval.is_none() {
+                policy.distant_update_interval = Some(0.9);
+            }
+            if !explicit_timing {
+                policy.update_interval = 0.12;
+            }
+        }
+        ScriptSimulationClass::Pickup => {
+            policy.priority = policy.priority.max(30);
+            if policy.max_distance.is_none() {
+                policy.max_distance = Some(24.0);
+            }
+            if policy.distant_update_interval.is_none() {
+                policy.distant_update_interval = Some(1.0);
+            }
+            if !explicit_timing {
+                policy.update_interval = 0.18;
+            }
+        }
+        ScriptSimulationClass::Pedestrian => {
+            policy.priority = policy.priority.max(20);
+            if policy.max_distance.is_none() {
+                policy.max_distance = Some(36.0);
+            }
+            if policy.distant_update_interval.is_none() {
+                policy.distant_update_interval = Some(1.25);
+            }
+            if !explicit_timing {
+                policy.update_interval = 0.3;
+            }
+        }
+        ScriptSimulationClass::Background => {
+            policy.priority = policy.priority.max(10);
+            if !explicit_timing {
+                policy.update_interval = 0.5;
+            }
+        }
+        ScriptSimulationClass::Default => {}
+    }
+}
+
+fn classify_script_entity(entity: &GameObject) -> ScriptSimulationClass {
+    let name = entity.name.as_str();
+    let tag = entity.tag.as_str();
+    if tag == "Player" || matches!(name, "Player" | "CityDirector" | "GameDirector") {
+        return ScriptSimulationClass::Critical;
+    }
+    if tag == "Police"
+        || name.starts_with("Police")
+        || name.starts_with("PatrolOfficer")
+        || name.starts_with("Roadblock_")
+    {
+        return ScriptSimulationClass::Police;
+    }
+    if tag == "Vehicle"
+        || name.starts_with("TrafficCar")
+        || name.starts_with("Vehicle")
+        || name.ends_with("Car")
+        || entity.get_component("Vehicle2D").is_some()
+    {
+        return ScriptSimulationClass::Vehicle;
+    }
+    if tag == "Collectible" || tag == "Pickup" || name.starts_with("Pickup") {
+        return ScriptSimulationClass::Pickup;
+    }
+    if tag == "NPC" || name.starts_with("NPC_") || name.starts_with("Pedestrian") {
+        return ScriptSimulationClass::Pedestrian;
+    }
+    if entity.get_component("UIElement").is_some() || !entity.visible {
+        return ScriptSimulationClass::Background;
+    }
+    ScriptSimulationClass::Default
 }
 
 impl ProjectRequire {
@@ -3203,21 +3479,17 @@ fn register_safe_luau_api(
                 let layers = luau_layers_from_options(options.as_ref())?;
                 let mut matches = shared
                     .lock()
-                    .map(|host| host.world_entities.clone())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|entity| include_disabled || entity.enabled)
-                    .filter(|entity| tags.is_empty() || tags.iter().any(|tag| tag == &entity.tag))
-                    .filter(|entity| {
-                        layers.is_empty() || layers.iter().any(|layer| layer == &entity.layer)
+                    .map(|mut host| {
+                        nearby_snapshot_entities(
+                            &mut host,
+                            origin,
+                            radius,
+                            include_disabled,
+                            &tags,
+                            &layers,
+                        )
                     })
-                    .filter_map(|entity| {
-                        let dx = entity.x - origin.0;
-                        let dy = entity.y - origin.1;
-                        let distance = (dx * dx + dy * dy).sqrt();
-                        (distance <= radius).then_some((distance, entity))
-                    })
-                    .collect::<Vec<_>>();
+                    .unwrap_or_default();
                 matches.sort_by(|a, b| a.0.total_cmp(&b.0));
                 let table = lua.create_table()?;
                 for (index, (distance, entity)) in matches.iter().enumerate() {
@@ -3236,14 +3508,20 @@ fn register_safe_luau_api(
         lua.create_function(move |lua, tag: String| {
             let entities = shared
                 .lock()
-                .map(|host| host.world_entities.clone())
+                .map(|host| {
+                    host.world_entity_tags
+                        .get(&tag)
+                        .into_iter()
+                        .flat_map(|indices| indices.iter())
+                        .filter_map(|index| host.world_entities.get(*index))
+                        .filter(|entity| entity.enabled)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default();
             let table = lua.create_table()?;
             let mut index = 1;
-            for entity in entities
-                .iter()
-                .filter(|entity| entity.enabled && entity.tag == tag)
-            {
+            for entity in &entities {
                 table.set(index, entity_to_luau(lua, entity)?)?;
                 index += 1;
             }
@@ -3923,12 +4201,130 @@ fn find_snapshot_entity<'a>(
     target: &ScriptTarget,
 ) -> Option<&'a GameObject> {
     match target {
-        ScriptTarget::Id(id) => host.world_entities.iter().find(|entity| entity.id == *id),
+        ScriptTarget::Id(id) => host
+            .world_entity_ids
+            .get(id)
+            .and_then(|index| host.world_entities.get(*index)),
         ScriptTarget::Name(name) => host
-            .world_entities
-            .iter()
-            .find(|entity| entity.name == *name),
+            .world_entity_names
+            .get(name)
+            .and_then(|index| host.world_entities.get(*index)),
     }
+}
+
+fn nearby_snapshot_entities(
+    host: &mut ScriptHostState,
+    origin: (f64, f64),
+    radius: f64,
+    include_disabled: bool,
+    tags: &[String],
+    layers: &[String],
+) -> Vec<(f64, GameObject)> {
+    host.query_stats.nearby_queries = host.query_stats.nearby_queries.saturating_add(1);
+    let hits = if include_disabled {
+        host.query_stats.nearby_linear_scans =
+            host.query_stats.nearby_linear_scans.saturating_add(1);
+        nearby_snapshot_entities_linear(host, origin, radius, include_disabled, tags, layers)
+    } else {
+        host.query_stats.nearby_indexed = host.query_stats.nearby_indexed.saturating_add(1);
+        nearby_snapshot_entities_indexed(host, origin, radius, tags, layers)
+    };
+    host.query_stats.nearby_candidates = host
+        .query_stats
+        .nearby_candidates
+        .saturating_add(hits.len());
+    hits
+}
+
+fn nearby_snapshot_entities_indexed(
+    host: &ScriptHostState,
+    origin: (f64, f64),
+    radius: f64,
+    tags: &[String],
+    layers: &[String],
+) -> Vec<(f64, GameObject)> {
+    let tag_filters = spatial_filter_values(tags);
+    let layer_filters = spatial_filter_values(layers);
+    let mut seen = BTreeSet::new();
+    let mut hits = Vec::new();
+    for tag in &tag_filters {
+        for layer in &layer_filters {
+            for entry in host.spatial_index.query_radius(
+                origin.0,
+                origin.1,
+                radius,
+                tag.as_deref(),
+                layer.as_deref(),
+            ) {
+                if !seen.insert(entry.entity_id) {
+                    continue;
+                }
+                if let Some((distance, entity)) =
+                    spatial_entry_to_nearby_snapshot(host, &entry, origin, radius, tags, layers)
+                {
+                    hits.push((distance, entity));
+                }
+            }
+        }
+    }
+    hits
+}
+
+fn spatial_entry_to_nearby_snapshot(
+    host: &ScriptHostState,
+    entry: &SpatialEntry,
+    origin: (f64, f64),
+    radius: f64,
+    tags: &[String],
+    layers: &[String],
+) -> Option<(f64, GameObject)> {
+    let entity = host
+        .world_entity_ids
+        .get(&entry.entity_id)
+        .and_then(|index| host.world_entities.get(*index))?;
+    if !entity.enabled {
+        return None;
+    }
+    if !tags.is_empty() && !tags.iter().any(|tag| tag == &entity.tag) {
+        return None;
+    }
+    if !layers.is_empty() && !layers.iter().any(|layer| layer == &entity.layer) {
+        return None;
+    }
+    let dx = entity.x - origin.0;
+    let dy = entity.y - origin.1;
+    let distance = (dx * dx + dy * dy).sqrt();
+    (distance <= radius).then(|| (distance, entity.clone()))
+}
+
+fn spatial_filter_values(values: &[String]) -> Vec<Option<&str>> {
+    if values.is_empty() {
+        vec![None]
+    } else {
+        values.iter().map(|value| Some(value.as_str())).collect()
+    }
+}
+
+fn nearby_snapshot_entities_linear(
+    host: &ScriptHostState,
+    origin: (f64, f64),
+    radius: f64,
+    include_disabled: bool,
+    tags: &[String],
+    layers: &[String],
+) -> Vec<(f64, GameObject)> {
+    host.world_entities
+        .iter()
+        .filter(|entity| include_disabled || entity.enabled)
+        .filter(|entity| tags.is_empty() || tags.iter().any(|tag| tag == &entity.tag))
+        .filter(|entity| layers.is_empty() || layers.iter().any(|layer| layer == &entity.layer))
+        .filter_map(|entity| {
+            let dx = entity.x - origin.0;
+            let dy = entity.y - origin.1;
+            let distance = (dx * dx + dy * dy).sqrt();
+            (distance <= radius).then(|| (distance, entity.clone()))
+        })
+        .collect()
 }
 
 fn tilemap_cell(entity: &GameObject, layer: &str, x: usize, y: usize) -> Option<i64> {
@@ -4662,4 +5058,182 @@ fn trace_script_lines(path: &Path) -> Vec<ScriptTraceEntry> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use serde_json::json;
+
+    use super::{
+        EntityScriptCall, ScriptAttachment, ScriptHostState, ScriptSchedulerConfig,
+        ScriptSimulationClass, ScriptTarget, compare_update_calls, find_snapshot_entity,
+        nearby_snapshot_entities, script_update_policy,
+    };
+    use crate::engine::component::default_component;
+    use crate::entities::game_object::GameObject;
+
+    fn call(entity_id: u64, x: f64, priority: i64) -> EntityScriptCall {
+        EntityScriptCall {
+            entity_id,
+            entity_name: format!("Entity{entity_id}"),
+            x,
+            y: 0.0,
+            update_policy: super::ScriptUpdatePolicy {
+                priority,
+                ..Default::default()
+            },
+            scripts: vec![ScriptAttachment {
+                path: PathBuf::from("scripts/test.luau"),
+                public_variables: json!(null),
+            }],
+        }
+    }
+
+    #[test]
+    fn open_world_policy_assigns_gta_like_defaults() {
+        let mut player = GameObject::new(0.0, 0.0, Some("Player".to_string()));
+        player.tag = "Player".to_string();
+        let player_policy = script_update_policy(&player, true);
+        assert!(player_policy.always_update);
+        assert_eq!(player_policy.priority, 180);
+        assert_eq!(
+            player_policy.simulation_class,
+            ScriptSimulationClass::Critical
+        );
+
+        let mut pedestrian = GameObject::new(8.0, 0.0, Some("NPC_01".to_string()));
+        pedestrian.tag = "NPC".to_string();
+        let pedestrian_policy = script_update_policy(&pedestrian, true);
+        assert_eq!(
+            pedestrian_policy.simulation_class,
+            ScriptSimulationClass::Pedestrian
+        );
+        assert_eq!(pedestrian_policy.priority, 20);
+        assert_eq!(pedestrian_policy.update_interval, 0.3);
+        assert_eq!(pedestrian_policy.max_distance, Some(36.0));
+
+        let mut police = GameObject::new(32.0, 0.0, Some("PoliceCar_01".to_string()));
+        police.tag = "Police".to_string();
+        let police_policy = script_update_policy(&police, true);
+        assert_eq!(
+            police_policy.simulation_class,
+            ScriptSimulationClass::Police
+        );
+        assert_eq!(police_policy.priority, 90);
+        assert_eq!(police_policy.max_distance, Some(80.0));
+    }
+
+    #[test]
+    fn explicit_script_schedule_keeps_timing_but_gets_class_priority_floor() {
+        let mut pedestrian = GameObject::new(8.0, 0.0, Some("NPC_02".to_string()));
+        pedestrian.tag = "NPC".to_string();
+        let mut schedule = default_component("ScriptSchedule").unwrap();
+        schedule.set_f64("update_interval", 0.05);
+        schedule.set("priority", json!(7));
+        pedestrian.add_component(schedule);
+
+        let policy = script_update_policy(&pedestrian, true);
+
+        assert_eq!(policy.update_interval, 0.05);
+        assert_eq!(policy.priority, 20);
+        assert_eq!(policy.simulation_class, ScriptSimulationClass::Pedestrian);
+    }
+
+    #[test]
+    fn update_sort_keeps_priority_then_prefers_nearby_scripts() {
+        let config = ScriptSchedulerConfig {
+            prioritize_by_distance: true,
+            ..Default::default()
+        };
+        let near = call(1, 2.0, 10);
+        let far = call(2, 80.0, 10);
+        assert_eq!(
+            compare_update_calls(&near, &far, Some((0.0, 0.0)), config),
+            std::cmp::Ordering::Less
+        );
+
+        let high_priority_far = call(3, 200.0, 100);
+        assert_eq!(
+            compare_update_calls(&near, &high_priority_far, Some((0.0, 0.0)), config),
+            std::cmp::Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn script_snapshot_indexes_id_name_and_tag_lookups() {
+        let player = GameObject::new(0.0, 0.0, Some("Player".to_string()));
+        let mut contact = GameObject::new(4.0, 0.0, Some("MissionContact".to_string()));
+        contact.tag = "Contact".to_string();
+        let contact_id = contact.id;
+
+        let mut host = ScriptHostState::default();
+        host.replace_world_entities(&[player, contact]);
+
+        assert_eq!(
+            find_snapshot_entity(&host, &ScriptTarget::Id(contact_id))
+                .map(|entity| entity.name.as_str()),
+            Some("MissionContact")
+        );
+        assert_eq!(
+            find_snapshot_entity(&host, &ScriptTarget::Name("MissionContact".to_string()))
+                .map(|entity| entity.id),
+            Some(contact_id)
+        );
+        assert_eq!(host.world_entity_tags["Contact"].len(), 1);
+    }
+
+    #[test]
+    fn nearby_snapshot_entities_uses_spatial_index_for_open_world_queries() {
+        let player = GameObject::new(0.0, 0.0, Some("Player".to_string()));
+        let mut police = GameObject::new(3.0, 0.0, Some("PoliceCar_01".to_string()));
+        police.tag = "Police".to_string();
+        let mut pedestrian = GameObject::new(18.0, 0.0, Some("NPC_01".to_string()));
+        pedestrian.tag = "NPC".to_string();
+
+        let mut host = ScriptHostState::default();
+        host.replace_world_entities(&[player, police, pedestrian]);
+
+        let hits = nearby_snapshot_entities(
+            &mut host,
+            (0.0, 0.0),
+            5.0,
+            false,
+            &["Police".to_string()],
+            &[],
+        );
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].1.name, "PoliceCar_01");
+        assert_eq!(host.query_stats.nearby_queries, 1);
+        assert_eq!(host.query_stats.nearby_indexed, 1);
+        assert_eq!(host.query_stats.nearby_linear_scans, 0);
+        assert_eq!(host.query_stats.nearby_candidates, 1);
+    }
+
+    #[test]
+    fn nearby_snapshot_entities_keeps_disabled_fallback_compatible() {
+        let player = GameObject::new(0.0, 0.0, Some("Player".to_string()));
+        let mut pickup = GameObject::new(1.0, 0.0, Some("PickupCash".to_string()));
+        pickup.tag = "Collectible".to_string();
+        pickup.enabled = false;
+
+        let mut host = ScriptHostState::default();
+        host.replace_world_entities(&[player, pickup]);
+
+        let hits = nearby_snapshot_entities(
+            &mut host,
+            (0.0, 0.0),
+            2.0,
+            true,
+            &["Collectible".to_string()],
+            &[],
+        );
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].1.name, "PickupCash");
+        assert_eq!(host.query_stats.nearby_indexed, 0);
+        assert_eq!(host.query_stats.nearby_linear_scans, 1);
+    }
 }

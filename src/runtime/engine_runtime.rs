@@ -89,6 +89,14 @@ fn script_scheduler_config(data: &Value) -> ScriptSchedulerConfig {
         .get("budget_bypass_priority")
         .and_then(Value::as_i64)
         .unwrap_or(config.budget_bypass_priority);
+    config.prioritize_by_distance = scheduler
+        .get("prioritize_by_distance")
+        .and_then(Value::as_bool)
+        .unwrap_or(config.prioritize_by_distance);
+    config.open_world_auto_policy = scheduler
+        .get("open_world_auto_policy")
+        .and_then(Value::as_bool)
+        .unwrap_or(config.open_world_auto_policy);
     config
 }
 
@@ -422,6 +430,52 @@ impl EngineRuntime {
             .set_counter("Entities", self.runtime_world.units.len());
         self.profiler
             .set_counter("LuauScripts", self.luau_script_runtime.last_frame_scripts);
+        self.profiler.set_counter(
+            "LuauUpdateCandidates",
+            self.luau_script_runtime
+                .last_scheduler_stats
+                .update_candidates,
+        );
+        self.profiler.set_counter(
+            "LuauUpdateBudgetUsed",
+            self.luau_script_runtime
+                .last_scheduler_stats
+                .update_budget_used,
+        );
+        self.profiler.set_counter(
+            "LuauSkippedBudget",
+            self.luau_script_runtime.last_scheduler_stats.skipped_budget,
+        );
+        self.profiler.set_counter(
+            "LuauSkippedInterval",
+            self.luau_script_runtime
+                .last_scheduler_stats
+                .skipped_interval,
+        );
+        self.profiler.set_counter(
+            "LuauDistanceThrottled",
+            self.luau_script_runtime
+                .last_scheduler_stats
+                .distance_throttled,
+        );
+        self.profiler.set_counter(
+            "LuauNearbyQueries",
+            self.luau_script_runtime.last_query_stats.nearby_queries,
+        );
+        self.profiler.set_counter(
+            "LuauNearbyIndexed",
+            self.luau_script_runtime.last_query_stats.nearby_indexed,
+        );
+        self.profiler.set_counter(
+            "LuauNearbyLinearScans",
+            self.luau_script_runtime
+                .last_query_stats
+                .nearby_linear_scans,
+        );
+        self.profiler.set_counter(
+            "LuauNearbyCandidates",
+            self.luau_script_runtime.last_query_stats.nearby_candidates,
+        );
         self.profiler
             .set_counter("FixedTicks", clock_advance.fixed_steps);
         self.profiler

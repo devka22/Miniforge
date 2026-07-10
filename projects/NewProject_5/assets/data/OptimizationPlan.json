@@ -13,7 +13,10 @@
     "Luau runtime clones the world snapshot once per event batch instead of once per script call",
     "script handler detection skips fixed/update/event calls when a script does not implement that handler",
     "ScriptSchedule component staggers NPC, traffic, police and prompt updates by priority and distance",
-    "runtime_config.script_scheduler caps update scripts per frame while letting high priority scripts bypass the cap"
+    "runtime_config.script_scheduler caps update scripts per frame while letting high priority scripts bypass the cap",
+    "scheduler sorts equal-priority scripts by player/camera distance before spending update budget",
+    "open_world_auto_policy assigns safe defaults for police, traffic, pedestrians, pickups and background scripts",
+    "Entity.nearby uses the Luau spatial snapshot for police, traffic, pickups and mission proximity checks"
   ],
   "content": [
     "pixel-art atlas for characters, vehicles, props and roadblocks",
