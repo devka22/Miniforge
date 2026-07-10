@@ -720,6 +720,7 @@ Esta rama suma una capa de escena inspirada por buenas ideas de Godot, mantenien
 - `SceneSignalBus` para conexiones por `target_id` o `target_path`, validacion y despachos deterministas.
 - Componentes nuevos: `Node2D`, `SceneTreeNode`, `GroupMembership`, `SignalEmitter`, `PackedSceneInstance` y `ResourceReference`.
 - Comandos de editor: `object.create_node2d`, `object.create_area2d`, `object.create_character_body2d`, `scene.audit_tree` y `scene.pack_selected`.
+- Optimizaciones de mundo abierto: scheduler Luau por distancia/prioridad, politicas automaticas para trafico/policia/NPCs/pickups y `Entity.nearby` acelerado por indice espacial.
 
 Godot es MIT y una referencia enorme de arquitectura open source; MiniForge toma patrones de escena/editor y los reimplementa de forma nativa en Rust, sin copiar el motor C++.
 

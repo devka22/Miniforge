@@ -498,6 +498,7 @@ Usar antes/despues de cambios en:
 - `PhysicsSystem`.
 - `SpatialIndex`.
 - `LuauScriptRuntime`.
+- scheduler Luau y counters `LuauUpdate*`, `LuauDistanceThrottled`, `LuauNearby*`.
 - render/asset pipeline.
 - RTS masivo.
 
@@ -510,6 +511,7 @@ Capacidades ya presentes:
 - schemas de escena/prefab.
 - asset GUIDs.
 - Luau y visual graphs.
+- scheduler de mundo abierto con prioridad/distancia y `Entity.nearby` indexado.
 - runtime 2D con fisica, camara, controllers y tilemap.
 - RTS, gameplay, UI, particulas, audio, narrativa.
 - Qt/C++ bridge.

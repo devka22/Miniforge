@@ -250,8 +250,17 @@ Callbacks soportados:
 - `default_update_interval`
 - `distant_update_interval`
 - `budget_bypass_priority`
+- `prioritize_by_distance`
+- `open_world_auto_policy`
 
-Si una entidad tiene `ScriptSchedule`, puede controlar frecuencia, prioridad y distancia.
+Si una entidad tiene `ScriptSchedule`, puede controlar frecuencia, prioridad y distancia. Cuando `open_world_auto_policy` esta activo, el runtime asigna defaults conservadores para entidades comunes de mundo abierto: jugador/directores siempre activos, policia y vehiculos con prioridad alta, peatones/pickups con intervalos mas largos y objetos de fondo con menor frecuencia. `prioritize_by_distance` ordena scripts de igual prioridad por cercania al jugador/camara antes de consumir el presupuesto de update.
+
+El snapshot Luau mantiene indices por id, nombre, tag y un `SpatialIndex` interno. `Entity.find` usa los indices por id/nombre y `Entity.nearby(origin, radius, options)` usa broadphase espacial para consultas normales con tag/layer, incluyendo filtros multiples con deduplicacion. Si se solicita `include_disabled = true`, cae a un scan lineal para preservar compatibilidad.
+
+Counters utiles del profiler:
+
+- `LuauUpdateCandidates`, `LuauUpdateBudgetUsed`, `LuauSkippedBudget`, `LuauSkippedInterval`, `LuauDistanceThrottled`.
+- `LuauNearbyQueries`, `LuauNearbyIndexed`, `LuauNearbyLinearScans`, `LuauNearbyCandidates`.
 
 ## Comandos Luau
 

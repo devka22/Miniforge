@@ -73,7 +73,9 @@
     "default_update_interval": 0,
     "distant_update_interval": 1.1,
     "enabled": true,
-    "max_update_scripts_per_frame": 58
+    "max_update_scripts_per_frame": 58,
+    "open_world_auto_policy": true,
+    "prioritize_by_distance": true
   },
   "start_scene": "main.scene",
   "streaming_enabled": true,
