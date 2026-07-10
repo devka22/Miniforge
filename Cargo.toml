@@ -57,26 +57,26 @@ path = "src/bin/miniforge_dev.rs"
 required-features = ["editor"]
 
 [dependencies]
-egui = { version = "0.34", optional = true }
-egui_dock = { version = "0.19.1", optional = true }
-egui_extras = { version = "0.34.2", optional = true }
+egui = { version = "0.35", optional = true }
+egui_dock = { version = "0.20.1", optional = true }
+egui_extras = { version = "0.35.0", optional = true }
 guillotiere = "0.7"
 image = "0.25.10"
-kira = "0.10"
+kira = "0.12"
 lyon = "1.0"
 macroquad = "0.4"
 notify = "8"
 pathfinding = "4.15.0"
 rayon = "1.10"
-rapier2d = "0.32"
+rapier2d = "0.34"
 rstar = "0.13.0"
-rfd = { version = "0.15", optional = true }
-mlua = { version = "0.11.4", features = ["luau", "vendored"] }
+rfd = { version = "0.17", optional = true }
+mlua = { version = "0.12.0", features = ["luau", "vendored"] }
 libloading = "0.9.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 strsim = "0.11.1"
-sysinfo = "0.35"
+sysinfo = "0.39"
 walkdir = "2.5.0"
 zip = "8.6.0"
 egui-phosphor = { version = "0.12.0", features = ["regular", "fill"], optional = true }
