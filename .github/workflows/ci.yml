@@ -5,10 +5,21 @@ on:
     branches: ["**"]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   rust:
     name: check-fmt-clippy-test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,10 +36,18 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Check
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
+
+      - name: Check runtime without editor
+        run: cargo check --locked --no-default-features --features runtime --bin miniforge_runtime --bin miniforge_headless
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --all-targets
+        run: cargo test --locked --all-targets
+
+      - name: Documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --no-deps
