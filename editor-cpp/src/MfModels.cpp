@@ -1,6 +1,12 @@
 #include "MfModels.h"
 
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
 #include <QSet>
+
+#include <utility>
 
 struct EntityTreeNode {
     MfEntityItem item;
@@ -626,6 +632,170 @@ void ReadinessModel::refresh()
         m_score = nextScore;
         emit scoreChanged();
     }
+}
+
+ForgeAiModel::ForgeAiModel(MfBridge* bridge, QObject* parent)
+    : QAbstractListModel(parent)
+    , m_bridge(bridge)
+{
+}
+
+int ForgeAiModel::rowCount(const QModelIndex& parent) const
+{
+    return parent.isValid() ? 0 : static_cast<int>(m_rows.size());
+}
+
+QVariant ForgeAiModel::data(const QModelIndex& index, int role) const
+{
+    if (!index.isValid() || index.row() < 0 || index.row() >= m_rows.size()) {
+        return {};
+    }
+    const auto& row = m_rows[index.row()];
+    switch (role) {
+    case SeverityRole: return row.severity;
+    case CodeRole: return row.code;
+    case MessageRole: return row.message;
+    case EvidenceRole: return row.evidence;
+    case ProposedFixRole: return row.proposedFix;
+    default: return {};
+    }
+}
+
+QHash<int, QByteArray> ForgeAiModel::roleNames() const
+{
+    return {
+        { SeverityRole, "severity" },
+        { CodeRole, "code" },
+        { MessageRole, "message" },
+        { EvidenceRole, "evidence" },
+        { ProposedFixRole, "proposedFix" },
+    };
+}
+
+int ForgeAiModel::diagnosticCount() const
+{
+    return static_cast<int>(m_rows.size());
+}
+
+int ForgeAiModel::criticalCount() const
+{
+    return m_criticalCount;
+}
+
+int ForgeAiModel::errorCount() const
+{
+    return m_errorCount;
+}
+
+int ForgeAiModel::warningCount() const
+{
+    return m_warningCount;
+}
+
+int ForgeAiModel::suggestionCount() const
+{
+    return m_suggestionCount;
+}
+
+QString ForgeAiModel::scanSummary() const
+{
+    return m_scanSummary;
+}
+
+QString ForgeAiModel::testStatus() const
+{
+    return m_testStatus;
+}
+
+QString ForgeAiModel::testSummary() const
+{
+    return m_testSummary;
+}
+
+QStringList ForgeAiModel::testFailures() const
+{
+    return m_testFailures;
+}
+
+void ForgeAiModel::runDoctor()
+{
+    const QString json = m_bridge->forgeAiDiagnosticsJson();
+    QJsonParseError parseError {};
+    const QJsonDocument document = QJsonDocument::fromJson(json.toUtf8(), &parseError);
+
+    beginResetModel();
+    m_rows.clear();
+    m_criticalCount = 0;
+    m_errorCount = 0;
+    m_warningCount = 0;
+    m_suggestionCount = 0;
+    if (parseError.error == QJsonParseError::NoError && document.isArray()) {
+        const QJsonArray diagnostics = document.array();
+        m_rows.reserve(diagnostics.size());
+        for (const QJsonValue& value : diagnostics) {
+            const QJsonObject object = value.toObject();
+            ForgeAiDiagnosticItem row {
+                object.value(QStringLiteral("severity")).toString(),
+                object.value(QStringLiteral("code")).toString(),
+                object.value(QStringLiteral("message")).toString(),
+                object.value(QStringLiteral("evidence")).toString(),
+                object.value(QStringLiteral("proposed_fix")).toString(),
+            };
+            if (row.severity == QStringLiteral("Critical")) {
+                ++m_criticalCount;
+            } else if (row.severity == QStringLiteral("Error")) {
+                ++m_errorCount;
+            } else if (row.severity == QStringLiteral("Warning")) {
+                ++m_warningCount;
+            } else {
+                ++m_suggestionCount;
+            }
+            m_rows.push_back(std::move(row));
+        }
+    }
+    endResetModel();
+
+    if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
+        const QString reason = json.isEmpty() ? m_bridge->lastError() : parseError.errorString();
+        m_scanSummary = QStringLiteral("Scan failed: %1").arg(reason);
+    } else if (m_rows.isEmpty()) {
+        m_scanSummary = QStringLiteral("No project issues found");
+    } else {
+        m_scanSummary = QStringLiteral("%1 diagnostics | %2 blocking | %3 warnings | %4 suggestions")
+            .arg(m_rows.size())
+            .arg(m_criticalCount + m_errorCount)
+            .arg(m_warningCount)
+            .arg(m_suggestionCount);
+    }
+    emit summaryChanged();
+}
+
+void ForgeAiModel::runEnemySmoke()
+{
+    const QString json = m_bridge->runForgeAiTestJson(QStringLiteral("forge_ai_enemy_smoke"));
+    QJsonParseError parseError {};
+    const QJsonDocument document = QJsonDocument::fromJson(json.toUtf8(), &parseError);
+    m_testFailures.clear();
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        const QString reason = json.isEmpty() ? m_bridge->lastError() : parseError.errorString();
+        m_testStatus = QStringLiteral("Error");
+        m_testSummary = QStringLiteral("Test failed to run: %1").arg(reason);
+        emit testChanged();
+        return;
+    }
+
+    const QJsonObject report = document.object();
+    m_testStatus = report.value(QStringLiteral("status")).toString();
+    const int casesRun = report.value(QStringLiteral("cases_run")).toInt();
+    const QJsonArray failures = report.value(QStringLiteral("failures")).toArray();
+    for (const QJsonValue& failure : failures) {
+        m_testFailures.push_back(failure.toString());
+    }
+    m_testSummary = QStringLiteral("%1 | %2 cases | %3 failures")
+        .arg(m_testStatus)
+        .arg(casesRun)
+        .arg(m_testFailures.size());
+    emit testChanged();
 }
 
 MfEditorController::MfEditorController(MfBridge* bridge, InspectorModel* inspector, QObject* parent)

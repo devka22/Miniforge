@@ -134,6 +134,18 @@ pub struct MfViewportInfo {
     pub required_bytes: usize,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MfSpriteInfo {
+    pub abi_version: u32,
+    pub struct_size: usize,
+    pub width: u32,
+    pub height: u32,
+    pub required_bytes: usize,
+    pub can_undo: u8,
+    pub can_redo: u8,
+}
+
 #[unsafe(no_mangle)]
 /// Creates an editor handle owned by the C ABI caller.
 ///
@@ -199,6 +211,23 @@ pub unsafe extern "C" fn mf_editor_is_project_open(handle: *const MfEditorHandle
     }
     // SAFETY: null was checked; immutable borrow only.
     unsafe { u8::from((*handle).core.is_project_open()) }
+}
+
+#[unsafe(no_mangle)]
+/// Refreshes live scene and asset views from the current Rust engine state.
+///
+/// # Safety
+/// `handle` must be a valid mutable editor handle. `error`, when non-null,
+/// must point to writable storage.
+pub unsafe extern "C" fn mf_editor_refresh(
+    handle: *mut MfEditorHandle,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_mut(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    status_from_result(core.refresh(), error)
 }
 
 #[unsafe(no_mangle)]
@@ -823,6 +852,263 @@ pub unsafe extern "C" fn mf_editor_execute_command(
 }
 
 #[unsafe(no_mangle)]
+/// Writes the indexed Luau script list as a UTF-8 JSON array.
+///
+/// # Safety
+/// `handle` must be a valid editor handle. `data` must point to `capacity`
+/// writable bytes when non-null; `required` and `error`, when non-null, must
+/// be writable.
+pub unsafe extern "C" fn mf_editor_luau_scripts_json(
+    handle: *const MfEditorHandle,
+    data: *mut c_char,
+    capacity: usize,
+    required: *mut usize,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_ref(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    let scripts = match core.luau_scripts() {
+        Ok(scripts) => scripts,
+        Err(error_value) => return set_core_error(error, error_value),
+    };
+    let json = match serde_json::to_string(&scripts) {
+        Ok(json) => json,
+        Err(error_value) => return set_core_error(error, error_value.into()),
+    };
+    write_string_buffer(&json, data, capacity, required, error)
+}
+
+#[unsafe(no_mangle)]
+/// Writes one project Luau script into a caller-provided UTF-8 buffer.
+///
+/// # Safety
+/// `handle` must be valid and `relative_path` must be a valid null-terminated
+/// UTF-8 string. Buffer pointers follow `mf_editor_project_path` semantics.
+pub unsafe extern "C" fn mf_editor_luau_read(
+    handle: *const MfEditorHandle,
+    relative_path: *const c_char,
+    data: *mut c_char,
+    capacity: usize,
+    required: *mut usize,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_ref(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    let Ok(relative_path) = read_cstr(relative_path) else {
+        set_error(
+            error,
+            MfStatus::InvalidArgument,
+            "Luau path pointer is invalid",
+        );
+        return MfStatus::InvalidArgument;
+    };
+    let source = match core.read_luau_script(relative_path) {
+        Ok(source) => source,
+        Err(error_value) => return set_core_error(error, error_value),
+    };
+    write_string_buffer(&source, data, capacity, required, error)
+}
+
+#[unsafe(no_mangle)]
+/// Validates unsaved Luau source and writes `{valid, diagnostic}` as JSON.
+///
+/// # Safety
+/// `handle` must be valid; `relative_path` and `source` must be valid
+/// null-terminated UTF-8 strings. Output pointers follow string-buffer rules.
+pub unsafe extern "C" fn mf_editor_luau_validate_json(
+    handle: *const MfEditorHandle,
+    relative_path: *const c_char,
+    source: *const c_char,
+    data: *mut c_char,
+    capacity: usize,
+    required: *mut usize,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_ref(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    let (Ok(relative_path), Ok(source)) = (read_cstr(relative_path), read_cstr(source)) else {
+        set_error(
+            error,
+            MfStatus::InvalidArgument,
+            "Luau path or source pointer is invalid",
+        );
+        return MfStatus::InvalidArgument;
+    };
+    let validation = match core.validate_luau_source(relative_path, source) {
+        Ok(validation) => validation,
+        Err(error_value) => return set_core_error(error, error_value),
+    };
+    let json = match serde_json::to_string(&validation) {
+        Ok(json) => json,
+        Err(error_value) => return set_core_error(error, error_value.into()),
+    };
+    write_string_buffer(&json, data, capacity, required, error)
+}
+
+#[unsafe(no_mangle)]
+/// Atomically saves a validated Luau script and rotates recovery backups.
+///
+/// # Safety
+/// `handle` must be valid and exclusively borrowed for the call;
+/// `relative_path` and `source` must be valid null-terminated UTF-8 strings.
+pub unsafe extern "C" fn mf_editor_luau_save(
+    handle: *mut MfEditorHandle,
+    relative_path: *const c_char,
+    source: *const c_char,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_mut(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    let (Ok(relative_path), Ok(source)) = (read_cstr(relative_path), read_cstr(source)) else {
+        set_error(
+            error,
+            MfStatus::InvalidArgument,
+            "Luau path or source pointer is invalid",
+        );
+        return MfStatus::InvalidArgument;
+    };
+    status_from_result(core.save_luau_script(relative_path, source), error)
+}
+
+#[unsafe(no_mangle)]
+/// Exports the open project with a named runtime profile.
+///
+/// The resulting report remains available through
+/// `mf_editor_last_export_report_json` so the export is never repeated merely
+/// to size an output buffer.
+///
+/// # Safety
+/// `handle` must be valid and exclusively borrowed; `profile` must be a valid
+/// null-terminated UTF-8 string.
+pub unsafe extern "C" fn mf_editor_export_runtime(
+    handle: *mut MfEditorHandle,
+    profile: *const c_char,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_mut(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    let Ok(profile) = read_cstr(profile) else {
+        set_error(
+            error,
+            MfStatus::InvalidArgument,
+            "Runtime export profile pointer is invalid",
+        );
+        return MfStatus::InvalidArgument;
+    };
+    status_from_result(core.export_runtime_profile(profile), error)
+}
+
+#[unsafe(no_mangle)]
+/// Writes the most recent runtime export report as UTF-8 JSON.
+///
+/// # Safety
+/// `handle` must be a valid editor handle. Output pointers follow the standard
+/// MiniForge string-buffer contract.
+pub unsafe extern "C" fn mf_editor_last_export_report_json(
+    handle: *const MfEditorHandle,
+    data: *mut c_char,
+    capacity: usize,
+    required: *mut usize,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_ref(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    let json = match core
+        .last_export_report()
+        .and_then(|report| serde_json::to_string(report).map_err(EditorCoreError::from))
+    {
+        Ok(json) => json,
+        Err(error_value) => return set_core_error(error, error_value),
+    };
+    write_string_buffer(&json, data, capacity, required, error)
+}
+
+#[unsafe(no_mangle)]
+/// Writes Forge AI Project Doctor diagnostics as a UTF-8 JSON array.
+///
+/// Call with a null `data` pointer or insufficient `capacity` to query the
+/// required byte count (including the trailing NUL) through `required`.
+///
+/// # Safety
+/// `handle` must be a valid mutable editor handle. `data` must point to
+/// `capacity` writable bytes when non-null; `required` and `error`, when
+/// non-null, must point to writable storage.
+pub unsafe extern "C" fn mf_editor_forge_ai_diagnostics_json(
+    handle: *mut MfEditorHandle,
+    data: *mut c_char,
+    capacity: usize,
+    required: *mut usize,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_mut(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    let diagnostics = match core.forge_ai_diagnostics() {
+        Ok(diagnostics) => diagnostics,
+        Err(error_value) => return set_core_error(error, error_value),
+    };
+    let json = match serde_json::to_string(&diagnostics) {
+        Ok(json) => json,
+        Err(error_value) => return set_core_error(error, error_value.into()),
+    };
+    write_string_buffer(&json, data, capacity, required, error)
+}
+
+#[unsafe(no_mangle)]
+/// Runs a named Forge AI test suite and writes its report as UTF-8 JSON.
+///
+/// Call with a null `data` pointer or insufficient `capacity` to query the
+/// required byte count (including the trailing NUL) through `required`.
+///
+/// # Safety
+/// `handle` must be a valid mutable editor handle. `suite_id` must be a valid,
+/// null-terminated UTF-8 string. `data` must point to `capacity` writable bytes
+/// when non-null; `required` and `error`, when non-null, must be writable.
+pub unsafe extern "C" fn mf_editor_forge_ai_run_test_json(
+    handle: *mut MfEditorHandle,
+    suite_id: *const c_char,
+    data: *mut c_char,
+    capacity: usize,
+    required: *mut usize,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_mut(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    let Ok(suite_id) = read_cstr(suite_id) else {
+        set_error(
+            error,
+            MfStatus::InvalidArgument,
+            "Forge AI suite id pointer is invalid",
+        );
+        return MfStatus::InvalidArgument;
+    };
+    let report = match core.forge_ai_run_test(suite_id) {
+        Ok(report) => report,
+        Err(error_value) => return set_core_error(error, error_value),
+    };
+    let json = match serde_json::to_string(&report) {
+        Ok(json) => json,
+        Err(error_value) => return set_core_error(error, error_value.into()),
+    };
+    write_string_buffer(&json, data, capacity, required, error)
+}
+
+#[unsafe(no_mangle)]
 /// Writes the number of console entries.
 ///
 /// # Safety
@@ -1075,6 +1361,232 @@ pub unsafe extern "C" fn mf_editor_readiness_rows(
     *out_written = written;
     *out_total = total;
     MfStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+/// Writes the active sprite canvas as tightly packed RGBA pixels.
+///
+/// # Safety
+/// `handle` must be a valid immutable editor handle. `data` must point to
+/// `capacity` writable bytes unless probing. `out_info` and `error`, when
+/// non-null, must point to writable storage.
+pub unsafe extern "C" fn mf_editor_sprite_snapshot_rgba(
+    handle: *const MfEditorHandle,
+    data: *mut u8,
+    capacity: usize,
+    out_info: *mut MfSpriteInfo,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_ref(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    let Some(out_info) = out_ptr(out_info, error, "out_info") else {
+        return MfStatus::InvalidArgument;
+    };
+    match core.sprite_snapshot() {
+        Ok(snapshot) => {
+            let required = snapshot.rgba.len();
+            *out_info = MfSpriteInfo {
+                abi_version: EDITOR_CORE_API_VERSION,
+                struct_size: std::mem::size_of::<MfSpriteInfo>(),
+                width: snapshot.width,
+                height: snapshot.height,
+                required_bytes: required,
+                can_undo: u8::from(core.sprite_can_undo().unwrap_or(false)),
+                can_redo: u8::from(core.sprite_can_redo().unwrap_or(false)),
+            };
+            if data.is_null() || capacity < required {
+                set_error(
+                    error,
+                    MfStatus::BufferTooSmall,
+                    "Sprite RGBA buffer is too small",
+                );
+                return MfStatus::BufferTooSmall;
+            }
+            // SAFETY: caller provided a buffer with at least `required` bytes.
+            unsafe {
+                ptr::copy_nonoverlapping(snapshot.rgba.as_ptr(), data, required);
+            }
+            MfStatus::Ok
+        }
+        Err(error_value) => set_core_error(error, error_value),
+    }
+}
+
+#[unsafe(no_mangle)]
+/// Creates a new active sprite canvas.
+///
+/// # Safety
+/// `handle` must be a valid mutable editor handle and `error`, when non-null,
+/// must point to writable storage.
+pub unsafe extern "C" fn mf_editor_sprite_new_canvas(
+    handle: *mut MfEditorHandle,
+    width: u32,
+    height: u32,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_mut(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    status_from_result(core.sprite_new_canvas(width, height), error)
+}
+
+#[unsafe(no_mangle)]
+/// Begins a coalesced sprite edit (normally one pointer stroke).
+///
+/// # Safety
+/// `handle` must be valid and exclusively borrowed for this call.
+pub unsafe extern "C" fn mf_editor_sprite_begin_edit(
+    handle: *mut MfEditorHandle,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_mut(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    status_from_result(core.sprite_begin_edit(), error)
+}
+
+#[unsafe(no_mangle)]
+/// Sets one pixel on the active sprite canvas.
+///
+/// # Safety
+/// `handle` must be valid and exclusively borrowed for this call.
+pub unsafe extern "C" fn mf_editor_sprite_set_pixel(
+    handle: *mut MfEditorHandle,
+    x: u32,
+    y: u32,
+    red: u8,
+    green: u8,
+    blue: u8,
+    alpha: u8,
+    out_changed: *mut u8,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_mut(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    let Some(out_changed) = out_ptr(out_changed, error, "out_changed") else {
+        return MfStatus::InvalidArgument;
+    };
+    match core.sprite_set_pixel(
+        x,
+        y,
+        crate::engine::sprite_editor::SpriteColor {
+            r: red,
+            g: green,
+            b: blue,
+            a: alpha,
+        },
+    ) {
+        Ok(changed) => {
+            *out_changed = u8::from(changed);
+            MfStatus::Ok
+        }
+        Err(error_value) => set_core_error(error, error_value),
+    }
+}
+
+#[unsafe(no_mangle)]
+/// Clears the active sprite canvas without closing the current edit.
+///
+/// # Safety
+/// `handle` must be valid and exclusively borrowed for this call.
+pub unsafe extern "C" fn mf_editor_sprite_clear(
+    handle: *mut MfEditorHandle,
+    red: u8,
+    green: u8,
+    blue: u8,
+    alpha: u8,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_mut(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    status_from_result(
+        core.sprite_clear(crate::engine::sprite_editor::SpriteColor {
+            r: red,
+            g: green,
+            b: blue,
+            a: alpha,
+        }),
+        error,
+    )
+}
+
+#[unsafe(no_mangle)]
+/// Commits a coalesced sprite edit and reports whether pixels changed.
+///
+/// # Safety
+/// `handle` and `out_changed` must be valid writable pointers.
+pub unsafe extern "C" fn mf_editor_sprite_commit_edit(
+    handle: *mut MfEditorHandle,
+    out_changed: *mut u8,
+    error: *mut MfError,
+) -> MfStatus {
+    sprite_history_action(handle, out_changed, error, EditorCore::sprite_commit_edit)
+}
+
+#[unsafe(no_mangle)]
+/// Undoes the latest sprite edit.
+///
+/// # Safety
+/// `handle` and `out_changed` must be valid writable pointers.
+pub unsafe extern "C" fn mf_editor_sprite_undo(
+    handle: *mut MfEditorHandle,
+    out_changed: *mut u8,
+    error: *mut MfError,
+) -> MfStatus {
+    sprite_history_action(handle, out_changed, error, EditorCore::sprite_undo)
+}
+
+#[unsafe(no_mangle)]
+/// Redoes the latest reverted sprite edit.
+///
+/// # Safety
+/// `handle` and `out_changed` must be valid writable pointers.
+pub unsafe extern "C" fn mf_editor_sprite_redo(
+    handle: *mut MfEditorHandle,
+    out_changed: *mut u8,
+    error: *mut MfError,
+) -> MfStatus {
+    sprite_history_action(handle, out_changed, error, EditorCore::sprite_redo)
+}
+
+#[unsafe(no_mangle)]
+/// Saves the active sprite, overwriting its current path when available.
+///
+/// # Safety
+/// `handle` must be valid, `fallback_name` must be a NUL-terminated UTF-8
+/// string, and output pointers must reference writable storage.
+pub unsafe extern "C" fn mf_editor_sprite_save(
+    handle: *mut MfEditorHandle,
+    fallback_name: *const c_char,
+    data: *mut c_char,
+    capacity: usize,
+    required: *mut usize,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_mut(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    let Ok(fallback_name) = read_cstr(fallback_name) else {
+        set_error(
+            error,
+            MfStatus::InvalidArgument,
+            "Sprite fallback name pointer is invalid",
+        );
+        return MfStatus::InvalidArgument;
+    };
+    match core.sprite_save_current(fallback_name) {
+        Ok(path) => write_string_buffer(&path, data, capacity, required, error),
+        Err(error_value) => set_core_error(error, error_value),
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1360,6 +1872,28 @@ fn readiness_level_label(level: SystemReadinessLevel) -> &'static str {
     }
 }
 
+fn sprite_history_action(
+    handle: *mut MfEditorHandle,
+    out_changed: *mut u8,
+    error: *mut MfError,
+    action: fn(&mut EditorCore) -> Result<bool, EditorCoreError>,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_mut(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    let Some(out_changed) = out_ptr(out_changed, error, "out_changed") else {
+        return MfStatus::InvalidArgument;
+    };
+    match action(core) {
+        Ok(changed) => {
+            *out_changed = u8::from(changed);
+            MfStatus::Ok
+        }
+        Err(error_value) => set_core_error(error, error_value),
+    }
+}
+
 fn core_ref<'a>(handle: *const MfEditorHandle, error: *mut MfError) -> Option<&'a EditorCore> {
     if handle.is_null() {
         set_error(error, MfStatus::InvalidArgument, "Editor handle is null");
@@ -1484,7 +2018,7 @@ fn write_fixed<const N: usize>(target: &mut [c_char; N], value: &str) {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1699,6 +2233,260 @@ mod tests {
             );
             assert_eq!(info.required_bytes, pixels.len());
             assert!(pixels.iter().any(|value| *value != 0));
+
+            mf_editor_destroy(handle);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ffi_refreshes_and_exposes_forge_ai_reports_as_json() {
+        let root = temp_project("ffi_forge_ai");
+        unsafe {
+            let mut error = MfError::default();
+            let handle = mf_editor_create(&mut error);
+            let path = CString::new(root.to_string_lossy().as_bytes()).unwrap();
+            assert_eq!(
+                mf_editor_open_project(handle, path.as_ptr(), &mut error),
+                MfStatus::Ok
+            );
+            assert_eq!(mf_editor_refresh(handle, &mut error), MfStatus::Ok);
+
+            let mut required = 0;
+            assert_eq!(
+                mf_editor_forge_ai_diagnostics_json(
+                    handle,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut required,
+                    &mut error,
+                ),
+                MfStatus::BufferTooSmall
+            );
+            assert!(required > 2);
+            let mut diagnostics = vec![0 as c_char; required];
+            assert_eq!(
+                mf_editor_forge_ai_diagnostics_json(
+                    handle,
+                    diagnostics.as_mut_ptr(),
+                    diagnostics.len(),
+                    &mut required,
+                    &mut error,
+                ),
+                MfStatus::Ok
+            );
+            let diagnostics_json = CStr::from_ptr(diagnostics.as_ptr()).to_str().unwrap();
+            assert!(
+                serde_json::from_str::<serde_json::Value>(diagnostics_json)
+                    .unwrap()
+                    .is_array()
+            );
+
+            let suite = CString::new("forge_ai_enemy_smoke").unwrap();
+            required = 0;
+            assert_eq!(
+                mf_editor_forge_ai_run_test_json(
+                    handle,
+                    suite.as_ptr(),
+                    std::ptr::null_mut(),
+                    0,
+                    &mut required,
+                    &mut error,
+                ),
+                MfStatus::BufferTooSmall
+            );
+            let mut report = vec![0 as c_char; required];
+            assert_eq!(
+                mf_editor_forge_ai_run_test_json(
+                    handle,
+                    suite.as_ptr(),
+                    report.as_mut_ptr(),
+                    report.len(),
+                    &mut required,
+                    &mut error,
+                ),
+                MfStatus::Ok
+            );
+            let report_json = CStr::from_ptr(report.as_ptr()).to_str().unwrap();
+            let report_value = serde_json::from_str::<serde_json::Value>(report_json).unwrap();
+            assert_eq!(
+                report_value["suite_id"],
+                serde_json::Value::String("forge_ai_enemy_smoke".to_string())
+            );
+
+            mf_editor_destroy(handle);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ffi_exposes_a_complete_luau_document_workflow() {
+        let root = temp_project("ffi_luau_documents");
+        unsafe {
+            let mut error = MfError::default();
+            let handle = mf_editor_create(&mut error);
+            let project = CString::new(root.to_string_lossy().as_bytes()).unwrap();
+            assert_eq!(
+                mf_editor_open_project(handle, project.as_ptr(), &mut error),
+                MfStatus::Ok
+            );
+
+            let path = CString::new("scripts/BridgeController.luau").unwrap();
+            let source =
+                CString::new("function on_update(dt)\n    move(100 * dt, 0)\nend\n").unwrap();
+            let mut required = 0;
+            assert_eq!(
+                mf_editor_luau_validate_json(
+                    handle,
+                    path.as_ptr(),
+                    source.as_ptr(),
+                    std::ptr::null_mut(),
+                    0,
+                    &mut required,
+                    &mut error,
+                ),
+                MfStatus::BufferTooSmall
+            );
+            let mut validation = vec![0 as c_char; required];
+            assert_eq!(
+                mf_editor_luau_validate_json(
+                    handle,
+                    path.as_ptr(),
+                    source.as_ptr(),
+                    validation.as_mut_ptr(),
+                    validation.len(),
+                    &mut required,
+                    &mut error,
+                ),
+                MfStatus::Ok
+            );
+            let validation_json = CStr::from_ptr(validation.as_ptr()).to_str().unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(validation_json).unwrap()["valid"],
+                serde_json::Value::Bool(true)
+            );
+
+            assert_eq!(
+                mf_editor_luau_save(handle, path.as_ptr(), source.as_ptr(), &mut error),
+                MfStatus::Ok
+            );
+
+            required = 0;
+            assert_eq!(
+                mf_editor_luau_scripts_json(
+                    handle,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut required,
+                    &mut error,
+                ),
+                MfStatus::BufferTooSmall
+            );
+            let mut scripts = vec![0 as c_char; required];
+            assert_eq!(
+                mf_editor_luau_scripts_json(
+                    handle,
+                    scripts.as_mut_ptr(),
+                    scripts.len(),
+                    &mut required,
+                    &mut error,
+                ),
+                MfStatus::Ok
+            );
+            let scripts_json = CStr::from_ptr(scripts.as_ptr()).to_str().unwrap();
+            assert!(scripts_json.contains("scripts/BridgeController.luau"));
+
+            required = 0;
+            assert_eq!(
+                mf_editor_luau_read(
+                    handle,
+                    path.as_ptr(),
+                    std::ptr::null_mut(),
+                    0,
+                    &mut required,
+                    &mut error,
+                ),
+                MfStatus::BufferTooSmall
+            );
+            let mut contents = vec![0 as c_char; required];
+            assert_eq!(
+                mf_editor_luau_read(
+                    handle,
+                    path.as_ptr(),
+                    contents.as_mut_ptr(),
+                    contents.len(),
+                    &mut required,
+                    &mut error,
+                ),
+                MfStatus::Ok
+            );
+            assert_eq!(
+                CStr::from_ptr(contents.as_ptr()).to_str().unwrap(),
+                source.to_str().unwrap()
+            );
+
+            let invalid_path = CString::new("../escape.luau").unwrap();
+            assert_eq!(
+                mf_editor_luau_read(
+                    handle,
+                    invalid_path.as_ptr(),
+                    std::ptr::null_mut(),
+                    0,
+                    &mut required,
+                    &mut error,
+                ),
+                MfStatus::InvalidArgument
+            );
+
+            mf_editor_destroy(handle);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ffi_exports_runtime_once_and_reads_the_cached_report() {
+        let root = temp_project("ffi_runtime_export");
+        unsafe {
+            let mut error = MfError::default();
+            let handle = mf_editor_create(&mut error);
+            let project = CString::new(root.to_string_lossy().as_bytes()).unwrap();
+            assert_eq!(
+                mf_editor_open_project(handle, project.as_ptr(), &mut error),
+                MfStatus::Ok
+            );
+            let profile = CString::new("debug").unwrap();
+            assert_eq!(
+                mf_editor_export_runtime(handle, profile.as_ptr(), &mut error),
+                MfStatus::Ok
+            );
+
+            let mut required = 0;
+            assert_eq!(
+                mf_editor_last_export_report_json(
+                    handle,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut required,
+                    &mut error,
+                ),
+                MfStatus::BufferTooSmall
+            );
+            let mut report = vec![0 as c_char; required];
+            assert_eq!(
+                mf_editor_last_export_report_json(
+                    handle,
+                    report.as_mut_ptr(),
+                    report.len(),
+                    &mut required,
+                    &mut error,
+                ),
+                MfStatus::Ok
+            );
+            let report_json = CStr::from_ptr(report.as_ptr()).to_str().unwrap();
+            let value = serde_json::from_str::<serde_json::Value>(report_json).unwrap();
+            assert_eq!(value["profile"], serde_json::Value::String("Debug".into()));
+            assert!(value["copied_files"].as_u64().unwrap_or_default() > 0);
+            assert!(root.join("build/debug").exists());
 
             mf_editor_destroy(handle);
         }

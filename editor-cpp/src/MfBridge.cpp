@@ -77,6 +77,80 @@ int MfBridge::readinessScore() const
     return static_cast<int>(score);
 }
 
+int MfBridge::entityCount() const
+{
+    if (!m_handle || !isOpen()) {
+        return 0;
+    }
+    MfError error {};
+    size_t count = 0;
+    if (mf_editor_entity_count(m_handle, &count, &error) != MF_STATUS_OK) {
+        setError(error, QStringLiteral("Failed to read entity count"));
+        return 0;
+    }
+    return static_cast<int>(count);
+}
+
+int MfBridge::assetCount() const
+{
+    if (!m_handle || !isOpen()) {
+        return 0;
+    }
+    MfError error {};
+    size_t count = 0;
+    if (mf_editor_asset_count(m_handle, &count, &error) != MF_STATUS_OK) {
+        setError(error, QStringLiteral("Failed to read asset count"));
+        return 0;
+    }
+    return static_cast<int>(count);
+}
+
+int MfBridge::commandCount() const
+{
+    if (!m_handle) {
+        return 0;
+    }
+    MfError error {};
+    size_t count = 0;
+    if (mf_editor_command_count(m_handle, &count, &error) != MF_STATUS_OK) {
+        setError(error, QStringLiteral("Failed to read command count"));
+        return 0;
+    }
+    return static_cast<int>(count);
+}
+
+int MfBridge::consoleCount() const
+{
+    if (!m_handle || !isOpen()) {
+        return 0;
+    }
+    MfError error {};
+    size_t count = 0;
+    if (mf_editor_console_count(m_handle, &count, &error) != MF_STATUS_OK) {
+        setError(error, QStringLiteral("Failed to read console count"));
+        return 0;
+    }
+    return static_cast<int>(count);
+}
+
+qulonglong MfBridge::selectedEntityId() const
+{
+    const QVector<quint64> selected = selectedEntities();
+    return selected.isEmpty() ? 0 : selected.first();
+}
+
+QString MfBridge::workbenchSummary() const
+{
+    if (!isOpen()) {
+        return QStringLiteral("No project open");
+    }
+    return QStringLiteral("%1 entities | %2 assets | %3 commands | %4 console entries")
+        .arg(entityCount())
+        .arg(assetCount())
+        .arg(commandCount())
+        .arg(consoleCount());
+}
+
 bool MfBridge::isOpen() const
 {
     return m_handle && mf_editor_is_project_open(m_handle) != 0;
@@ -103,6 +177,25 @@ bool MfBridge::openProject(const QString& path)
     emit commandsChanged();
     emit consoleChanged();
     emit readinessChanged();
+    emit luauScriptsChanged();
+    emit dataChanged();
+    return true;
+}
+
+bool MfBridge::refreshAll()
+{
+    MfError error {};
+    const MfStatus status = mf_editor_refresh(m_handle, &error);
+    if (!ensureOk(status, error, QStringLiteral("Failed to refresh the Rust editor state"))) {
+        return false;
+    }
+    emit entitiesChanged();
+    emit assetsChanged();
+    emit commandsChanged();
+    emit consoleChanged();
+    emit readinessChanged();
+    emit luauScriptsChanged();
+    emit selectionChanged(selectedEntityId());
     emit dataChanged();
     return true;
 }
@@ -132,6 +225,7 @@ bool MfBridge::executeCommand(const QString& commandId)
     emit commandsChanged();
     emit consoleChanged();
     emit readinessChanged();
+    emit luauScriptsChanged();
     emit dataChanged();
     return true;
 }
@@ -157,6 +251,230 @@ bool MfBridge::setInspectorValueJson(qulonglong entityId, const QString& target,
     emit consoleChanged();
     emit dataChanged();
     return true;
+}
+
+QString MfBridge::luauScriptsJson()
+{
+    MfError error {};
+    size_t required = 0;
+    const MfStatus probeStatus = mf_editor_luau_scripts_json(
+        m_handle,
+        nullptr,
+        0,
+        &required,
+        &error
+    );
+    if (probeStatus != MF_STATUS_BUFFER_TOO_SMALL || required == 0) {
+        setError(error, QStringLiteral("Failed to query Luau scripts"));
+        return {};
+    }
+    QByteArray buffer(static_cast<qsizetype>(required), '\0');
+    const MfStatus status = mf_editor_luau_scripts_json(
+        m_handle,
+        buffer.data(),
+        static_cast<size_t>(buffer.size()),
+        &required,
+        &error
+    );
+    if (!ensureOk(status, error, QStringLiteral("Failed to read Luau scripts"))) {
+        return {};
+    }
+    return QString::fromUtf8(buffer.constData());
+}
+
+QString MfBridge::readLuauScript(const QString& relativePath)
+{
+    const QByteArray pathBytes = utf8(relativePath);
+    MfError error {};
+    size_t required = 0;
+    const MfStatus probeStatus = mf_editor_luau_read(
+        m_handle,
+        pathBytes.constData(),
+        nullptr,
+        0,
+        &required,
+        &error
+    );
+    if (probeStatus != MF_STATUS_BUFFER_TOO_SMALL || required == 0) {
+        setError(error, QStringLiteral("Failed to query Luau source"));
+        return {};
+    }
+    QByteArray buffer(static_cast<qsizetype>(required), '\0');
+    const MfStatus status = mf_editor_luau_read(
+        m_handle,
+        pathBytes.constData(),
+        buffer.data(),
+        static_cast<size_t>(buffer.size()),
+        &required,
+        &error
+    );
+    if (!ensureOk(status, error, QStringLiteral("Failed to read Luau source"))) {
+        return {};
+    }
+    return QString::fromUtf8(buffer.constData());
+}
+
+QString MfBridge::validateLuauSource(const QString& relativePath, const QString& source)
+{
+    const QByteArray pathBytes = utf8(relativePath);
+    const QByteArray sourceBytes = utf8(source);
+    MfError error {};
+    size_t required = 0;
+    const MfStatus probeStatus = mf_editor_luau_validate_json(
+        m_handle,
+        pathBytes.constData(),
+        sourceBytes.constData(),
+        nullptr,
+        0,
+        &required,
+        &error
+    );
+    if (probeStatus != MF_STATUS_BUFFER_TOO_SMALL || required == 0) {
+        setError(error, QStringLiteral("Failed to validate Luau source"));
+        return {};
+    }
+    QByteArray buffer(static_cast<qsizetype>(required), '\0');
+    const MfStatus status = mf_editor_luau_validate_json(
+        m_handle,
+        pathBytes.constData(),
+        sourceBytes.constData(),
+        buffer.data(),
+        static_cast<size_t>(buffer.size()),
+        &required,
+        &error
+    );
+    if (!ensureOk(status, error, QStringLiteral("Failed to validate Luau source"))) {
+        return {};
+    }
+    return QString::fromUtf8(buffer.constData());
+}
+
+bool MfBridge::saveLuauScript(const QString& relativePath, const QString& source)
+{
+    const QByteArray pathBytes = utf8(relativePath);
+    const QByteArray sourceBytes = utf8(source);
+    MfError error {};
+    const MfStatus status = mf_editor_luau_save(
+        m_handle,
+        pathBytes.constData(),
+        sourceBytes.constData(),
+        &error
+    );
+    if (!ensureOk(status, error, QStringLiteral("Failed to save Luau source"))) {
+        return false;
+    }
+    emit assetsChanged();
+    emit consoleChanged();
+    emit luauScriptsChanged();
+    emit dataChanged();
+    return true;
+}
+
+QString MfBridge::exportRuntime(const QString& profile)
+{
+    const QByteArray profileBytes = utf8(profile);
+    MfError error {};
+    const MfStatus exportStatus = mf_editor_export_runtime(
+        m_handle,
+        profileBytes.constData(),
+        &error
+    );
+    if (!ensureOk(exportStatus, error, QStringLiteral("Runtime export failed"))) {
+        return {};
+    }
+
+    size_t required = 0;
+    const MfStatus probeStatus = mf_editor_last_export_report_json(
+        m_handle,
+        nullptr,
+        0,
+        &required,
+        &error
+    );
+    if (probeStatus != MF_STATUS_BUFFER_TOO_SMALL || required == 0) {
+        setError(error, QStringLiteral("Failed to query runtime export report"));
+        return {};
+    }
+    QByteArray buffer(static_cast<qsizetype>(required), '\0');
+    const MfStatus reportStatus = mf_editor_last_export_report_json(
+        m_handle,
+        buffer.data(),
+        static_cast<size_t>(buffer.size()),
+        &required,
+        &error
+    );
+    if (!ensureOk(reportStatus, error, QStringLiteral("Failed to read runtime export report"))) {
+        return {};
+    }
+    emit assetsChanged();
+    emit consoleChanged();
+    emit readinessChanged();
+    emit exportCompleted();
+    emit dataChanged();
+    return QString::fromUtf8(buffer.constData());
+}
+
+QString MfBridge::forgeAiDiagnosticsJson()
+{
+    MfError error {};
+    size_t required = 0;
+    const MfStatus probeStatus = mf_editor_forge_ai_diagnostics_json(
+        m_handle,
+        nullptr,
+        0,
+        &required,
+        &error
+    );
+    if (probeStatus != MF_STATUS_BUFFER_TOO_SMALL || required == 0) {
+        setError(error, QStringLiteral("Failed to query Forge AI diagnostics"));
+        return {};
+    }
+
+    QByteArray buffer(static_cast<qsizetype>(required), '\0');
+    const MfStatus status = mf_editor_forge_ai_diagnostics_json(
+        m_handle,
+        buffer.data(),
+        static_cast<size_t>(buffer.size()),
+        &required,
+        &error
+    );
+    if (!ensureOk(status, error, QStringLiteral("Failed to read Forge AI diagnostics"))) {
+        return {};
+    }
+    return QString::fromUtf8(buffer.constData());
+}
+
+QString MfBridge::runForgeAiTestJson(const QString& suiteId)
+{
+    const QByteArray suiteBytes = utf8(suiteId);
+    MfError error {};
+    size_t required = 0;
+    const MfStatus probeStatus = mf_editor_forge_ai_run_test_json(
+        m_handle,
+        suiteBytes.constData(),
+        nullptr,
+        0,
+        &required,
+        &error
+    );
+    if (probeStatus != MF_STATUS_BUFFER_TOO_SMALL || required == 0) {
+        setError(error, QStringLiteral("Failed to query the Forge AI test report"));
+        return {};
+    }
+
+    QByteArray buffer(static_cast<qsizetype>(required), '\0');
+    const MfStatus status = mf_editor_forge_ai_run_test_json(
+        m_handle,
+        suiteBytes.constData(),
+        buffer.data(),
+        static_cast<size_t>(buffer.size()),
+        &required,
+        &error
+    );
+    if (!ensureOk(status, error, QStringLiteral("Failed to run the Forge AI test"))) {
+        return {};
+    }
+    return QString::fromUtf8(buffer.constData());
 }
 
 QVector<MfEntityItem> MfBridge::entities() const
@@ -399,6 +717,169 @@ QImage MfBridge::viewportImage(const QSize& size) const
     return image;
 }
 
+QImage MfBridge::spriteImage(MfSpriteInfo* info) const
+{
+    MfSpriteInfo spriteInfo {};
+    MfError error {};
+    MfStatus status = mf_editor_sprite_snapshot_rgba(
+        m_handle,
+        nullptr,
+        0,
+        &spriteInfo,
+        &error
+    );
+    if (status != MF_STATUS_BUFFER_TOO_SMALL || spriteInfo.required_bytes == 0) {
+        setError(error, QStringLiteral("Failed to query sprite canvas"));
+        return {};
+    }
+    QImage image(
+        static_cast<int>(spriteInfo.width),
+        static_cast<int>(spriteInfo.height),
+        QImage::Format_RGBA8888
+    );
+    status = mf_editor_sprite_snapshot_rgba(
+        m_handle,
+        image.bits(),
+        static_cast<size_t>(image.sizeInBytes()),
+        &spriteInfo,
+        &error
+    );
+    if (!ensureOk(status, error, QStringLiteral("Failed to read sprite canvas"))) {
+        return {};
+    }
+    if (info) {
+        *info = spriteInfo;
+    }
+    return image;
+}
+
+bool MfBridge::newSpriteCanvas(int width, int height)
+{
+    MfError error {};
+    const MfStatus status = mf_editor_sprite_new_canvas(
+        m_handle,
+        static_cast<uint32_t>(width),
+        static_cast<uint32_t>(height),
+        &error
+    );
+    if (!ensureOk(status, error, QStringLiteral("Failed to create sprite canvas"))) {
+        return false;
+    }
+    emit spriteChanged();
+    return true;
+}
+
+bool MfBridge::beginSpriteEdit()
+{
+    MfError error {};
+    return ensureOk(
+        mf_editor_sprite_begin_edit(m_handle, &error),
+        error,
+        QStringLiteral("Failed to begin sprite edit")
+    );
+}
+
+bool MfBridge::setSpritePixel(int x, int y, const QColor& color)
+{
+    MfError error {};
+    uint8_t changed = 0;
+    const MfStatus status = mf_editor_sprite_set_pixel(
+        m_handle,
+        static_cast<uint32_t>(x),
+        static_cast<uint32_t>(y),
+        static_cast<uint8_t>(color.red()),
+        static_cast<uint8_t>(color.green()),
+        static_cast<uint8_t>(color.blue()),
+        static_cast<uint8_t>(color.alpha()),
+        &changed,
+        &error
+    );
+    return ensureOk(status, error, QStringLiteral("Failed to paint sprite pixel")) && changed != 0;
+}
+
+bool MfBridge::clearSprite(const QColor& color)
+{
+    MfError error {};
+    return ensureOk(
+        mf_editor_sprite_clear(
+            m_handle,
+            static_cast<uint8_t>(color.red()),
+            static_cast<uint8_t>(color.green()),
+            static_cast<uint8_t>(color.blue()),
+            static_cast<uint8_t>(color.alpha()),
+            &error
+        ),
+        error,
+        QStringLiteral("Failed to clear sprite canvas")
+    );
+}
+
+bool MfBridge::commitSpriteEdit()
+{
+    MfError error {};
+    uint8_t changed = 0;
+    const MfStatus status = mf_editor_sprite_commit_edit(m_handle, &changed, &error);
+    if (!ensureOk(status, error, QStringLiteral("Failed to commit sprite edit"))) {
+        return false;
+    }
+    if (changed != 0) {
+        emit spriteChanged();
+    }
+    return changed != 0;
+}
+
+bool MfBridge::undoSprite()
+{
+    MfError error {};
+    uint8_t changed = 0;
+    const MfStatus status = mf_editor_sprite_undo(m_handle, &changed, &error);
+    if (!ensureOk(status, error, QStringLiteral("Failed to undo sprite edit"))) {
+        return false;
+    }
+    if (changed != 0) {
+        emit spriteChanged();
+    }
+    return changed != 0;
+}
+
+bool MfBridge::redoSprite()
+{
+    MfError error {};
+    uint8_t changed = 0;
+    const MfStatus status = mf_editor_sprite_redo(m_handle, &changed, &error);
+    if (!ensureOk(status, error, QStringLiteral("Failed to redo sprite edit"))) {
+        return false;
+    }
+    if (changed != 0) {
+        emit spriteChanged();
+    }
+    return changed != 0;
+}
+
+QString MfBridge::saveSprite(const QString& fallbackName)
+{
+    const QByteArray name = utf8(fallbackName);
+    char buffer[MF_PATH_CAPACITY] {};
+    size_t required = 0;
+    MfError error {};
+    const MfStatus status = mf_editor_sprite_save(
+        m_handle,
+        name.constData(),
+        buffer,
+        sizeof(buffer),
+        &required,
+        &error
+    );
+    Q_UNUSED(required);
+    if (!ensureOk(status, error, QStringLiteral("Failed to save sprite canvas"))) {
+        return {};
+    }
+    emit assetsChanged();
+    emit consoleChanged();
+    emit dataChanged();
+    return mfString(buffer);
+}
+
 bool MfBridge::setError(const MfError& error, const QString& fallback) const
 {
     m_lastError = mfString(error.message);
@@ -412,6 +893,10 @@ bool MfBridge::setError(const MfError& error, const QString& fallback) const
 bool MfBridge::ensureOk(MfStatus status, const MfError& error, const QString& fallback) const
 {
     if (status == MF_STATUS_OK) {
+        if (!m_lastError.isEmpty()) {
+            m_lastError.clear();
+            emit const_cast<MfBridge*>(this)->lastErrorChanged();
+        }
         return true;
     }
     return setError(error, fallback);

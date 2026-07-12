@@ -12,20 +12,24 @@ use crate::engine::asset_database::AssetRecord;
 use crate::engine::command_palette::CommandPalette;
 use crate::engine::developer_console::ConsoleEntry;
 use crate::engine::forge_ai::context::AiProjectContext;
+use crate::engine::forge_ai::diagnostics::{AiDiagnostic, ProjectDoctor};
 use crate::engine::forge_ai::executor::{AiFileChange, AiHostValidation};
 use crate::engine::forge_ai::testing::{AiTestReport, AiTestStatus, AiTestSuite};
 use crate::engine::inspector_editor::InspectorEditor;
 use crate::engine::luau_scripting::LuauScriptRuntime;
+use crate::engine::project_storage::{BackupPolicy, DEFAULT_BACKUP_GENERATIONS, ProjectStorage};
 use crate::engine::project_validator::ProjectValidator;
 use crate::engine::render_2d::{
     Render2DCompatibilityProfile, SpriteAtlasExportOptions2D, export_sprite_atlas_pages_from_files,
 };
+use crate::engine::runtime_exporter::{ExportProfile, RuntimeExportReport};
 use crate::engine::sprite_editor::{SpriteColor, SpriteEditorCanvas};
 use crate::engine::system_audit::{SystemReadinessLevel, SystemReadinessReport};
 use crate::entities::game_object::GameObject;
 use crate::render::backend::RenderBackendConfig;
 
 pub const EDITOR_CORE_API_VERSION: u32 = 1;
+const MAX_EDITOR_SCRIPT_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EntityRow {
@@ -101,6 +105,21 @@ pub struct ViewportSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LuauScriptRow {
+    pub relative_path: String,
+    pub name: String,
+    pub bytes: u64,
+    pub valid: bool,
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LuauValidationResult {
+    pub valid: bool,
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum EditorCoreErrorKind {
     NoProjectOpen,
     InvalidArgument,
@@ -162,6 +181,7 @@ pub struct EditorCore {
     readiness_cache: Vec<ReadinessRow>,
     readiness_score: u8,
     readiness_summary: String,
+    last_export_report: Option<RuntimeExportReport>,
 }
 
 impl Default for EditorCore {
@@ -183,6 +203,7 @@ impl Default for EditorCore {
             readiness_cache: Vec::new(),
             readiness_score: 0,
             readiness_summary: "Readiness unavailable".to_string(),
+            last_export_report: None,
         }
     }
 }
@@ -202,6 +223,7 @@ impl EditorCore {
         );
         self.project_path = Some(project_path);
         self.game = Some(game);
+        self.last_export_report = None;
         self.refresh_all_caches();
         Ok(())
     }
@@ -210,8 +232,167 @@ impl EditorCore {
         self.game.is_some()
     }
 
+    /// Re-synchronizes the live scene and asset views without replacing the
+    /// in-memory scene or running filesystem-heavy asset/readiness audits.
+    /// Those remain explicit through `assets.refresh` and `project.audit`.
+    pub fn refresh(&mut self) -> Result<(), EditorCoreError> {
+        self.game()?;
+        self.refresh_scene_cache();
+        self.refresh_asset_cache();
+        Ok(())
+    }
+
     pub fn project_path(&self) -> Option<&Path> {
         self.project_path.as_deref()
+    }
+
+    pub fn luau_scripts(&self) -> Result<Vec<LuauScriptRow>, EditorCoreError> {
+        let project_path = self
+            .project_path
+            .as_ref()
+            .ok_or_else(EditorCoreError::no_project)?;
+        let scripts_path = project_path.join("scripts");
+        if !scripts_path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut scripts = Vec::new();
+        for entry in WalkDir::new(&scripts_path)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file() && is_luau_path(entry.path()))
+        {
+            let path = entry.path();
+            let metadata = entry.metadata().map_err(|error| {
+                EditorCoreError::new(EditorCoreErrorKind::Io, error.to_string())
+            })?;
+            let relative_path = project_relative(project_path, path);
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("script.luau")
+                .to_string();
+            let diagnostic = if metadata.len() > MAX_EDITOR_SCRIPT_BYTES as u64 {
+                Some(format!(
+                    "Script exceeds the editor limit of {} MiB",
+                    MAX_EDITOR_SCRIPT_BYTES / (1024 * 1024)
+                ))
+            } else {
+                match fs::read_to_string(path) {
+                    Ok(source) => LuauScriptRuntime::validate_source(&source, &name).err(),
+                    Err(error) => Some(error.to_string()),
+                }
+            };
+            scripts.push(LuauScriptRow {
+                relative_path,
+                name,
+                bytes: metadata.len(),
+                valid: diagnostic.is_none(),
+                diagnostic,
+            });
+        }
+        scripts.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        Ok(scripts)
+    }
+
+    pub fn read_luau_script(&self, relative_path: &str) -> Result<String, EditorCoreError> {
+        let project_path = self
+            .project_path
+            .as_ref()
+            .ok_or_else(EditorCoreError::no_project)?;
+        let path = resolve_luau_script_path(project_path, relative_path, true)?;
+        let metadata = fs::metadata(&path)?;
+        if metadata.len() > MAX_EDITOR_SCRIPT_BYTES as u64 {
+            return Err(EditorCoreError::new(
+                EditorCoreErrorKind::InvalidArgument,
+                format!(
+                    "Luau script is larger than the editor limit of {} MiB",
+                    MAX_EDITOR_SCRIPT_BYTES / (1024 * 1024)
+                ),
+            ));
+        }
+        fs::read_to_string(path).map_err(EditorCoreError::from)
+    }
+
+    pub fn validate_luau_source(
+        &self,
+        relative_path: &str,
+        source: &str,
+    ) -> Result<LuauValidationResult, EditorCoreError> {
+        let project_path = self
+            .project_path
+            .as_ref()
+            .ok_or_else(EditorCoreError::no_project)?;
+        let path = resolve_luau_script_path(project_path, relative_path, false)?;
+        validate_editor_script_size(source)?;
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("script.luau");
+        let diagnostic = LuauScriptRuntime::validate_source(source, name).err();
+        Ok(LuauValidationResult {
+            valid: diagnostic.is_none(),
+            diagnostic,
+        })
+    }
+
+    pub fn save_luau_script(
+        &mut self,
+        relative_path: &str,
+        source: &str,
+    ) -> Result<(), EditorCoreError> {
+        let validation = self.validate_luau_source(relative_path, source)?;
+        if let Some(diagnostic) = validation.diagnostic {
+            return Err(EditorCoreError::new(
+                EditorCoreErrorKind::CommandFailed,
+                format!("Luau validation failed: {diagnostic}"),
+            ));
+        }
+        let project_path = self
+            .project_path
+            .clone()
+            .ok_or_else(EditorCoreError::no_project)?;
+        let path = resolve_luau_script_path(&project_path, relative_path, false)?;
+        if path.exists() {
+            ProjectStorage::write_atomic_with_backup(
+                &path,
+                source.as_bytes(),
+                BackupPolicy::new(luau_backup_path(&path), DEFAULT_BACKUP_GENERATIONS),
+            )
+            .map_err(|error| EditorCoreError::new(EditorCoreErrorKind::Io, error.to_string()))?;
+        } else {
+            ProjectStorage::write_atomic(&path, source.as_bytes()).map_err(|error| {
+                EditorCoreError::new(EditorCoreErrorKind::Io, error.to_string())
+            })?;
+        }
+
+        {
+            let game = self.game_mut()?;
+            game.asset_database.scan()?;
+            game.console
+                .log(format!("Luau script saved: {relative_path}"), "LUAU");
+        }
+        self.refresh_asset_cache();
+        Ok(())
+    }
+
+    pub fn export_runtime_profile(&mut self, profile: &str) -> Result<(), EditorCoreError> {
+        let profile = parse_export_profile(profile)?;
+        let report = self.game_mut()?.export_runtime(profile)?;
+        self.last_export_report = Some(report);
+        self.refresh_all_caches();
+        Ok(())
+    }
+
+    pub fn last_export_report(&self) -> Result<&RuntimeExportReport, EditorCoreError> {
+        self.game()?;
+        self.last_export_report.as_ref().ok_or_else(|| {
+            EditorCoreError::new(
+                EditorCoreErrorKind::NotFound,
+                "No runtime export has completed in this editor session",
+            )
+        })
     }
 
     pub fn entity_count(&self) -> Result<usize, EditorCoreError> {
@@ -379,6 +560,45 @@ impl EditorCore {
             self.command_palette.record_execution(&label);
             return Ok(CommandOutcome {
                 changed: true,
+                message,
+            });
+        }
+        if command_id == "forge_ai.project_doctor" {
+            let diagnostics = self.forge_ai_diagnostics()?;
+            let message = format!("Forge AI Doctor: {} diagnostics", diagnostics.len());
+            let game = self.game_mut()?;
+            game.console.log(message.clone(), "FORGE_AI");
+            for diagnostic in diagnostics.iter().take(8) {
+                game.console.log(
+                    format!(
+                        "[{:?}] {}: {}",
+                        diagnostic.severity, diagnostic.code, diagnostic.message
+                    ),
+                    "FORGE_AI",
+                );
+            }
+            self.command_palette.record_execution(&label);
+            return Ok(CommandOutcome {
+                changed: false,
+                message,
+            });
+        }
+        if command_id == "forge_ai.enemy_smoke" {
+            let report = self.forge_ai_run_test("forge_ai_enemy_smoke")?;
+            let message = format!(
+                "Forge AI enemy smoke: {:?}, {} cases, {} failures",
+                report.status,
+                report.cases_run,
+                report.failures.len()
+            );
+            let game = self.game_mut()?;
+            game.console.log(message.clone(), "FORGE_AI");
+            for failure in &report.failures {
+                game.console.log(failure.clone(), "FORGE_AI");
+            }
+            self.command_palette.record_execution(&label);
+            return Ok(CommandOutcome {
+                changed: false,
                 message,
             });
         }
@@ -788,6 +1008,24 @@ impl EditorCore {
         Ok(report)
     }
 
+    pub fn forge_ai_diagnostics(&mut self) -> Result<Vec<AiDiagnostic>, EditorCoreError> {
+        self.refresh_scene_cache();
+        self.refresh_asset_cache();
+        let context = AiProjectContext::from_editor_core(self)?;
+        let validation = self.forge_ai_validate_project()?;
+        let mut diagnostics = ProjectDoctor::analyze(&context);
+        diagnostics.extend(ProjectDoctor::from_project_validation(
+            &validation.errors,
+            &validation.warnings,
+        ));
+        diagnostics.sort_by(|a, b| {
+            a.severity
+                .cmp(&b.severity)
+                .then_with(|| a.code.cmp(&b.code))
+        });
+        Ok(diagnostics)
+    }
+
     pub fn console_count(&self) -> Result<usize, EditorCoreError> {
         Ok(self.game()?.console.structured_entries.len())
     }
@@ -804,6 +1042,89 @@ impl EditorCore {
                     format!("Console index out of range: {index}"),
                 )
             })
+    }
+
+    pub fn sprite_snapshot(&self) -> Result<ViewportSnapshot, EditorCoreError> {
+        let canvas = &self.game()?.sprite_editor;
+        let rgba = canvas
+            .pixels
+            .iter()
+            .flat_map(|color| color.rgba())
+            .collect::<Vec<_>>();
+        Ok(ViewportSnapshot {
+            width: canvas.width,
+            height: canvas.height,
+            rgba,
+        })
+    }
+
+    pub fn sprite_can_undo(&self) -> Result<bool, EditorCoreError> {
+        Ok(self.game()?.sprite_editor.can_undo())
+    }
+
+    pub fn sprite_can_redo(&self) -> Result<bool, EditorCoreError> {
+        Ok(self.game()?.sprite_editor.can_redo())
+    }
+
+    pub fn sprite_new_canvas(&mut self, width: u32, height: u32) -> Result<(), EditorCoreError> {
+        if width == 0 || height == 0 || width > 512 || height > 512 {
+            return Err(EditorCoreError::new(
+                EditorCoreErrorKind::InvalidArgument,
+                "Sprite canvas dimensions must be between 1 and 512",
+            ));
+        }
+        self.game_mut()?.new_sprite_canvas(width, height);
+        Ok(())
+    }
+
+    pub fn sprite_begin_edit(&mut self) -> Result<(), EditorCoreError> {
+        self.game_mut()?.sprite_editor.begin_edit();
+        Ok(())
+    }
+
+    pub fn sprite_set_pixel(
+        &mut self,
+        x: u32,
+        y: u32,
+        color: SpriteColor,
+    ) -> Result<bool, EditorCoreError> {
+        let canvas = &mut self.game_mut()?.sprite_editor;
+        if x >= canvas.width || y >= canvas.height {
+            return Err(EditorCoreError::new(
+                EditorCoreErrorKind::InvalidArgument,
+                format!("Sprite pixel out of bounds: {x},{y}"),
+            ));
+        }
+        Ok(canvas.set_pixel(x, y, color))
+    }
+
+    pub fn sprite_clear(&mut self, color: SpriteColor) -> Result<(), EditorCoreError> {
+        self.game_mut()?.sprite_editor.clear(color);
+        Ok(())
+    }
+
+    pub fn sprite_commit_edit(&mut self) -> Result<bool, EditorCoreError> {
+        Ok(self.game_mut()?.sprite_editor.commit_edit())
+    }
+
+    pub fn sprite_undo(&mut self) -> Result<bool, EditorCoreError> {
+        Ok(self.game_mut()?.sprite_editor.undo())
+    }
+
+    pub fn sprite_redo(&mut self) -> Result<bool, EditorCoreError> {
+        Ok(self.game_mut()?.sprite_editor.redo())
+    }
+
+    pub fn sprite_save_current(&mut self, fallback_name: &str) -> Result<String, EditorCoreError> {
+        if fallback_name.trim().is_empty() {
+            return Err(EditorCoreError::new(
+                EditorCoreErrorKind::InvalidArgument,
+                "Sprite fallback name cannot be empty",
+            ));
+        }
+        let path = self.game_mut()?.save_sprite_canvas_current(fallback_name)?;
+        self.refresh_asset_cache();
+        Ok(path.to_string_lossy().to_string())
     }
 
     pub fn viewport_snapshot(
@@ -922,6 +1243,18 @@ fn default_command_descriptors() -> Vec<CommandDescriptor> {
         ),
         command("object.create_ui_text", "Create HUD Text", "Objects", None),
         command("project.audit", "Run Project Audit", "Project", None),
+        command(
+            "forge_ai.project_doctor",
+            "Run Forge AI Project Doctor",
+            "Forge AI",
+            None,
+        ),
+        command(
+            "forge_ai.enemy_smoke",
+            "Run Forge AI Enemy Smoke Test",
+            "Forge AI",
+            None,
+        ),
         command("play.enter", "Enter Play Mode", "Play", Some("F5")),
         command("play.stop", "Stop Play Mode", "Play", Some("Shift+F5")),
         command("assets.refresh", "Refresh Assets", "Assets", None),
@@ -1286,6 +1619,80 @@ fn is_luau_path(path: &Path) -> bool {
         })
 }
 
+fn resolve_luau_script_path(
+    project_path: &Path,
+    relative_path: &str,
+    must_exist: bool,
+) -> Result<PathBuf, EditorCoreError> {
+    let relative = Path::new(relative_path);
+    if relative_path.trim().is_empty() || relative.is_absolute() || relative_path.contains('\0') {
+        return Err(EditorCoreError::new(
+            EditorCoreErrorKind::InvalidArgument,
+            "Luau path must be a non-empty project-relative path",
+        ));
+    }
+    let mut components = relative.components();
+    if !matches!(
+        components.next(),
+        Some(std::path::Component::Normal(part)) if part.to_str() == Some("scripts")
+    ) || components.any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(EditorCoreError::new(
+            EditorCoreErrorKind::InvalidArgument,
+            format!("Luau path must stay inside scripts/: {relative_path}"),
+        ));
+    }
+    if !is_luau_path(relative) {
+        return Err(EditorCoreError::new(
+            EditorCoreErrorKind::InvalidArgument,
+            format!("Luau script must use .luau or .lua: {relative_path}"),
+        ));
+    }
+    let path = project_path.join(relative);
+    if must_exist && !path.is_file() {
+        return Err(EditorCoreError::new(
+            EditorCoreErrorKind::NotFound,
+            format!("Luau script not found: {relative_path}"),
+        ));
+    }
+    Ok(path)
+}
+
+fn validate_editor_script_size(source: &str) -> Result<(), EditorCoreError> {
+    if source.len() > MAX_EDITOR_SCRIPT_BYTES {
+        return Err(EditorCoreError::new(
+            EditorCoreErrorKind::InvalidArgument,
+            format!(
+                "Luau source exceeds the editor limit of {} MiB",
+                MAX_EDITOR_SCRIPT_BYTES / (1024 * 1024)
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn luau_backup_path(path: &Path) -> PathBuf {
+    let filename = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("script.luau");
+    path.with_file_name(format!("{filename}.bak"))
+}
+
+fn parse_export_profile(value: &str) -> Result<ExportProfile, EditorCoreError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "debug" | "development" => Ok(ExportProfile::Debug),
+        "release" => Ok(ExportProfile::Release),
+        "shipping" => Ok(ExportProfile::Shipping),
+        "web_future" | "web-future" => Ok(ExportProfile::WebFuture),
+        "macos_app_future" | "macos-app-future" => Ok(ExportProfile::MacosAppFuture),
+        other => Err(EditorCoreError::new(
+            EditorCoreErrorKind::InvalidArgument,
+            format!("Unknown runtime export profile: {other}"),
+        )),
+    }
+}
+
 fn is_sprite_image_path(path: &Path) -> bool {
     path.extension()
         .and_then(|value| value.to_str())
@@ -1628,6 +2035,55 @@ mod tests {
                     .count()
         );
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn luau_document_bridge_lists_validates_reads_and_saves_atomically() {
+        let root = temp_project("luau_documents");
+        let mut core = EditorCore::new();
+        core.open_project(&root).unwrap();
+
+        let path = "scripts/LiveController.luau";
+        let source = "local speed = 120\nfunction on_update(dt)\n    move(speed * dt, 0)\nend\n";
+        assert!(core.validate_luau_source(path, source).unwrap().valid);
+        core.save_luau_script(path, source).unwrap();
+        assert_eq!(core.read_luau_script(path).unwrap(), source);
+
+        let scripts = core.luau_scripts().unwrap();
+        let script = scripts
+            .iter()
+            .find(|script| script.relative_path == path)
+            .expect("saved script should be listed");
+        assert!(script.valid);
+        assert_eq!(script.bytes, source.len() as u64);
+
+        let invalid = "function on_update(\n";
+        assert!(!core.validate_luau_source(path, invalid).unwrap().valid);
+        assert!(core.save_luau_script(path, invalid).is_err());
+        assert_eq!(core.read_luau_script(path).unwrap(), source);
+        assert!(
+            core.read_luau_script("../outside.luau").is_err(),
+            "script paths must not escape scripts/"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_export_bridge_keeps_a_structured_session_report() {
+        let root = temp_project("runtime_export");
+        let mut core = EditorCore::new();
+        core.open_project(&root).unwrap();
+
+        core.export_runtime_profile("debug").unwrap();
+        let report = core.last_export_report().unwrap();
+        assert_eq!(report.profile, ExportProfile::Debug);
+        assert!(report.output_path.starts_with(root.join("build")));
+        assert!(report.manifest_path.exists());
+        assert!(report.copied_files > 0);
+
+        assert!(core.export_runtime_profile("unknown-profile").is_err());
         let _ = fs::remove_dir_all(root);
     }
 

@@ -800,9 +800,14 @@ fn collider_shape(entity: &GameObject) -> Option<ColliderShape> {
     );
     let shape = collider.get_string("shape", "rect").to_lowercase();
     if shape == "circle" {
+        // Circle colliders remain circular under a non-uniform entity transform.
+        // Use the largest axis, matching the conservative broad-phase AABB.
+        // This keeps both phases aligned; a future ellipse shape can model the
+        // two axes independently.
+        let scale = entity.scale_x.abs().max(entity.scale_y.abs());
         return Some(ColliderShape::Circle {
             center,
-            radius: collider.get_f64("radius", 0.5).max(0.001),
+            radius: (collider.get_f64("radius", 0.5).max(0.001) * scale).max(0.001),
         });
     }
 
@@ -1355,5 +1360,29 @@ fn pair_key(first: u64, second: u64) -> (u64, u64) {
         (first, second)
     } else {
         (second, first)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raycast_uses_scaled_circle_radius_in_narrow_phase() {
+        let mut circle = GameObject::new(3.0, 0.0, Some("ScaledCircle".to_string()));
+        circle.scale_x = 4.0;
+        circle.scale_y = 1.0;
+        let collider = circle
+            .get_component_mut("Collider2D")
+            .expect("default game object has a collider");
+        collider.set("shape", serde_json::json!("circle"));
+        collider.set_f64("radius", 0.5);
+
+        let hit = PhysicsSystem::new()
+            .raycast(&[circle], (0.0, 0.0), (1.0, 0.0), 10.0)
+            .expect("scaled circle should be hit");
+
+        assert!((hit.distance - 1.0).abs() < 1e-9, "hit was {hit:?}");
+        assert!((hit.point.0 - 1.0).abs() < 1e-9, "hit was {hit:?}");
     }
 }

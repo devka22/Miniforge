@@ -126,10 +126,21 @@ typedef struct MfViewportInfo {
     size_t required_bytes;
 } MfViewportInfo;
 
+typedef struct MfSpriteInfo {
+    uint32_t abi_version;
+    size_t struct_size;
+    uint32_t width;
+    uint32_t height;
+    size_t required_bytes;
+    uint8_t can_undo;
+    uint8_t can_redo;
+} MfSpriteInfo;
+
 MINIFORGE_EDITOR_EXPORT MfEditorHandle* mf_editor_create(MfError* error);
 MINIFORGE_EDITOR_EXPORT void mf_editor_destroy(MfEditorHandle* editor);
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_open_project(MfEditorHandle* editor, const char* path, MfError* error);
 MINIFORGE_EDITOR_EXPORT uint8_t mf_editor_is_project_open(const MfEditorHandle* editor);
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_refresh(MfEditorHandle* editor, MfError* error);
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_project_path(const MfEditorHandle* editor, char* data, size_t capacity, size_t* required, MfError* error);
 
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_entity_count(const MfEditorHandle* editor, size_t* out_count, MfError* error);
@@ -153,6 +164,17 @@ MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_command_descriptor(const MfEditorHand
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_command_descriptors(const MfEditorHandle* editor, size_t start_index, MfCommandDescriptor* commands, size_t command_capacity, size_t* out_written, size_t* out_total, MfError* error);
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_execute_command(MfEditorHandle* editor, const char* command_id, MfError* error);
 
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_luau_scripts_json(const MfEditorHandle* editor, char* data, size_t capacity, size_t* required, MfError* error);
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_luau_read(const MfEditorHandle* editor, const char* relative_path, char* data, size_t capacity, size_t* required, MfError* error);
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_luau_validate_json(const MfEditorHandle* editor, const char* relative_path, const char* source, char* data, size_t capacity, size_t* required, MfError* error);
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_luau_save(MfEditorHandle* editor, const char* relative_path, const char* source, MfError* error);
+
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_export_runtime(MfEditorHandle* editor, const char* profile, MfError* error);
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_last_export_report_json(const MfEditorHandle* editor, char* data, size_t capacity, size_t* required, MfError* error);
+
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_forge_ai_diagnostics_json(MfEditorHandle* editor, char* data, size_t capacity, size_t* required, MfError* error);
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_forge_ai_run_test_json(MfEditorHandle* editor, const char* suite_id, char* data, size_t capacity, size_t* required, MfError* error);
+
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_console_count(const MfEditorHandle* editor, size_t* out_count, MfError* error);
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_console_entry(const MfEditorHandle* editor, size_t index, MfConsoleEntry* out_entry, MfError* error);
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_console_entries(const MfEditorHandle* editor, size_t start_index, MfConsoleEntry* entries, size_t entry_capacity, size_t* out_written, size_t* out_total, MfError* error);
@@ -161,6 +183,16 @@ MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_readiness_score(const MfEditorHandle*
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_readiness_count(const MfEditorHandle* editor, size_t* out_count, MfError* error);
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_readiness_row(const MfEditorHandle* editor, size_t index, MfReadinessRow* out_row, MfError* error);
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_readiness_rows(const MfEditorHandle* editor, size_t start_index, MfReadinessRow* rows, size_t row_capacity, size_t* out_written, size_t* out_total, MfError* error);
+
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_sprite_snapshot_rgba(const MfEditorHandle* editor, uint8_t* data, size_t capacity, MfSpriteInfo* out_info, MfError* error);
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_sprite_new_canvas(MfEditorHandle* editor, uint32_t width, uint32_t height, MfError* error);
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_sprite_begin_edit(MfEditorHandle* editor, MfError* error);
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_sprite_set_pixel(MfEditorHandle* editor, uint32_t x, uint32_t y, uint8_t red, uint8_t green, uint8_t blue, uint8_t alpha, uint8_t* out_changed, MfError* error);
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_sprite_clear(MfEditorHandle* editor, uint8_t red, uint8_t green, uint8_t blue, uint8_t alpha, MfError* error);
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_sprite_commit_edit(MfEditorHandle* editor, uint8_t* out_changed, MfError* error);
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_sprite_undo(MfEditorHandle* editor, uint8_t* out_changed, MfError* error);
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_sprite_redo(MfEditorHandle* editor, uint8_t* out_changed, MfError* error);
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_sprite_save(MfEditorHandle* editor, const char* fallback_name, char* data, size_t capacity, size_t* required, MfError* error);
 
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_viewport_snapshot_rgba(const MfEditorHandle* editor, uint32_t width, uint32_t height, uint8_t* data, size_t capacity, MfViewportInfo* out_info, MfError* error);
 

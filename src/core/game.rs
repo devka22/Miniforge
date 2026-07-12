@@ -776,8 +776,12 @@ impl Game {
         self.profiler
             .record_system("Runtime2D", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
-        self.gameplay_system
-            .update_entities(&mut self.runtime_world.units, dt, &self.mode);
+        self.gameplay_system.update_entities_with_grid(
+            &mut self.runtime_world.units,
+            &self.grid,
+            dt,
+            &self.mode,
+        );
         self.profiler
             .record_system("Gameplay", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
@@ -2779,6 +2783,23 @@ impl Game {
             filename.push_str(".png");
         }
         let path = AssetTools::unique_path(&self.project_paths.sprites, &filename);
+        self.sprite_editor.save_png(&path)?;
+        self.refresh_assets().ok();
+        self.console
+            .log(format!("Sprite guardado: {}", path.display()), "SPRITE");
+        Ok(path)
+    }
+
+    pub fn save_sprite_canvas_current(&mut self, fallback_name: &str) -> io::Result<PathBuf> {
+        let path = if let Some(path) = self.sprite_editor.last_path.clone() {
+            path
+        } else {
+            let mut filename = AssetTools::safe_name(fallback_name, "Sprite");
+            if !filename.ends_with(".png") {
+                filename.push_str(".png");
+            }
+            AssetTools::unique_path(&self.project_paths.sprites, &filename)
+        };
         self.sprite_editor.save_png(&path)?;
         self.refresh_assets().ok();
         self.console

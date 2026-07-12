@@ -10975,7 +10975,7 @@ fn draw_sprite_editor_panel(game: &mut Game, state: &mut EditorState, rect: Rect
         game.sprite_editor.commit_edit();
     }
     if button(rect.x + 476.0, rect.y + 31.0, 72.0, 22.0, "Save", false) {
-        game.save_sprite_canvas("Sprite").ok();
+        game.save_sprite_canvas_current("Sprite").ok();
     }
     if button(rect.x + 556.0, rect.y + 31.0, 64.0, 22.0, "Crop", false) {
         game.sprite_editor.begin_edit();

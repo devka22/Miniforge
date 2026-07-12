@@ -408,6 +408,9 @@ impl SpriteEditorCanvas {
         let Some(index) = self.index(x, y) else {
             return false;
         };
+        if self.pixels[index] == color {
+            return false;
+        }
         self.pixels[index] = color;
         true
     }
