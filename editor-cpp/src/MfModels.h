@@ -5,6 +5,7 @@
 #include <QAbstractTableModel>
 #include <QHash>
 #include <QObject>
+#include <QStringList>
 
 #include <memory>
 #include <vector>
@@ -217,6 +218,65 @@ private:
     MfBridge* m_bridge = nullptr;
     int m_score = 0;
     QVector<MfReadinessItem> m_rows;
+};
+
+struct ForgeAiDiagnosticItem {
+    QString severity;
+    QString code;
+    QString message;
+    QString evidence;
+    QString proposedFix;
+};
+
+class ForgeAiModel final : public QAbstractListModel {
+    Q_OBJECT
+    Q_PROPERTY(int diagnosticCount READ diagnosticCount NOTIFY summaryChanged)
+    Q_PROPERTY(int criticalCount READ criticalCount NOTIFY summaryChanged)
+    Q_PROPERTY(int errorCount READ errorCount NOTIFY summaryChanged)
+    Q_PROPERTY(int warningCount READ warningCount NOTIFY summaryChanged)
+    Q_PROPERTY(int suggestionCount READ suggestionCount NOTIFY summaryChanged)
+    Q_PROPERTY(QString scanSummary READ scanSummary NOTIFY summaryChanged)
+    Q_PROPERTY(QString testStatus READ testStatus NOTIFY testChanged)
+    Q_PROPERTY(QString testSummary READ testSummary NOTIFY testChanged)
+    Q_PROPERTY(QStringList testFailures READ testFailures NOTIFY testChanged)
+public:
+    enum Roles {
+        SeverityRole = Qt::UserRole + 1,
+        CodeRole,
+        MessageRole,
+        EvidenceRole,
+        ProposedFixRole,
+    };
+
+    explicit ForgeAiModel(MfBridge* bridge, QObject* parent = nullptr);
+    int rowCount(const QModelIndex& parent = QModelIndex()) const override;
+    QVariant data(const QModelIndex& index, int role) const override;
+    QHash<int, QByteArray> roleNames() const override;
+    int diagnosticCount() const;
+    int criticalCount() const;
+    int errorCount() const;
+    int warningCount() const;
+    int suggestionCount() const;
+    QString scanSummary() const;
+    QString testStatus() const;
+    QString testSummary() const;
+    QStringList testFailures() const;
+    Q_INVOKABLE void runDoctor();
+    Q_INVOKABLE void runEnemySmoke();
+signals:
+    void summaryChanged();
+    void testChanged();
+private:
+    MfBridge* m_bridge = nullptr;
+    QVector<ForgeAiDiagnosticItem> m_rows;
+    int m_criticalCount = 0;
+    int m_errorCount = 0;
+    int m_warningCount = 0;
+    int m_suggestionCount = 0;
+    QString m_scanSummary = QStringLiteral("Not scanned");
+    QString m_testStatus = QStringLiteral("NotRun");
+    QString m_testSummary = QStringLiteral("Enemy smoke test has not run");
+    QStringList m_testFailures;
 };
 
 class MfEditorController final : public QObject {

@@ -385,8 +385,12 @@ impl EngineRuntime {
         self.runtime_2d_system
             .update_entities(&mut self.runtime_world.units, dt, &self.mode);
         self.record_system("Runtime2D", &mut marker);
-        self.gameplay_system
-            .update_entities(&mut self.runtime_world.units, dt, &self.mode);
+        self.gameplay_system.update_entities_with_grid(
+            &mut self.runtime_world.units,
+            &self.grid,
+            dt,
+            &self.mode,
+        );
         self.record_system("Gameplay", &mut marker);
         self.rts_system
             .update_entities(&mut self.runtime_world.units, dt, &self.mode);

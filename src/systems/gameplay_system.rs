@@ -4,6 +4,8 @@ use serde_json::{Value, json};
 
 use crate::engine::component::default_component;
 use crate::entities::game_object::GameObject;
+use crate::map::grid::Grid;
+use crate::systems::command_system::CommandSystem;
 use crate::systems::runtime_2d_system::respawn_entity;
 
 #[derive(Debug, Clone, Default)]
@@ -14,6 +16,26 @@ pub struct GameplaySystem {
 
 impl GameplaySystem {
     pub fn update_entities(&mut self, entities: &mut Vec<GameObject>, dt: f64, mode: &str) {
+        self.update_entities_internal(entities, None, dt, mode);
+    }
+
+    pub fn update_entities_with_grid(
+        &mut self,
+        entities: &mut Vec<GameObject>,
+        grid: &Grid,
+        dt: f64,
+        mode: &str,
+    ) {
+        self.update_entities_internal(entities, Some(grid), dt, mode);
+    }
+
+    fn update_entities_internal(
+        &mut self,
+        entities: &mut Vec<GameObject>,
+        grid: Option<&Grid>,
+        dt: f64,
+        mode: &str,
+    ) {
         if mode != "PLAY" {
             self.stats = BTreeMap::from([
                 ("lifetimes".to_string(), 0),
@@ -25,6 +47,8 @@ impl GameplaySystem {
                 ("damage_events".to_string(), 0),
                 ("respawned".to_string(), 0),
                 ("loot_drops".to_string(), 0),
+                ("nav_repaths".to_string(), 0),
+                ("nav_blocked".to_string(), 0),
             ]);
             return;
         }
@@ -38,6 +62,8 @@ impl GameplaySystem {
         let snapshot = entities.clone();
         let mut pending_destroy = Vec::new();
         let mut spawn_requests = Vec::new();
+        let mut nav_repaths = 0usize;
+        let mut nav_blocked = 0usize;
 
         for index in 0..entities.len() {
             if !entities[index].enabled {
@@ -49,7 +75,9 @@ impl GameplaySystem {
             self.update_stat_regen(&mut entities[index], dt);
             self.update_state_machine(&mut entities[index], dt);
             self.update_tween(&mut entities[index], dt);
-            self.update_nav_agent(&mut entities[index], dt);
+            let nav = self.update_nav_agent(&mut entities[index], grid, dt);
+            nav_repaths += usize::from(nav.repathed);
+            nav_blocked += usize::from(nav.blocked);
             self.update_interaction(index, entities, &snapshot);
 
             if let Some(request) = self.update_spawner(&mut entities[index], dt) {
@@ -57,7 +85,7 @@ impl GameplaySystem {
             }
         }
 
-        let mut damage_events = self.update_ai(entities, &mut pending_destroy, dt);
+        let mut damage_events = self.update_ai(entities, grid, &mut pending_destroy, dt);
 
         for request in spawn_requests {
             if entities
@@ -126,6 +154,8 @@ impl GameplaySystem {
             ("damage_events".to_string(), damage_events),
             ("respawned".to_string(), respawned),
             ("loot_drops".to_string(), loot_drops),
+            ("nav_repaths".to_string(), nav_repaths),
+            ("nav_blocked".to_string(), nav_blocked),
         ]);
     }
 
@@ -301,53 +331,96 @@ impl GameplaySystem {
         }
     }
 
-    fn update_nav_agent(&self, entity: &mut GameObject, dt: f64) {
+    fn update_nav_agent(
+        &self,
+        entity: &mut GameObject,
+        grid: Option<&Grid>,
+        dt: f64,
+    ) -> NavUpdateOutcome {
+        let mut outcome = NavUpdateOutcome::default();
         let entity_x = entity.x;
         let entity_y = entity.y;
         let entity_speed = entity.speed;
         let path_empty = entity.path.is_empty();
         let Some(agent) = entity.get_component_mut("NavAgent") else {
-            return;
+            return outcome;
         };
         if !agent.get_bool("has_destination", false) {
-            return;
+            return outcome;
         }
         let destination_x = agent.get_f64("destination_x", entity_x);
         let destination_y = agent.get_f64("destination_y", entity_y);
         let stopping_distance = agent.get_f64("stopping_distance", 0.15);
-        let speed = agent.get_f64("speed", entity_speed);
+        let speed = agent.get_f64("speed", entity_speed).max(0.0);
         let dx = destination_x - entity_x;
         let dy = destination_y - entity_y;
         let distance = (dx * dx + dy * dy).sqrt();
         if distance <= stopping_distance {
             agent.nav_clear_destination();
+            agent.set("last_status", json!("arrived"));
             let _ = agent;
             entity.path.clear();
             entity.state = "IDLE".to_string();
-            return;
+            return outcome;
         }
 
         let repath_timer = agent.get_f64("repath_timer", 0.0) + dt;
-        let repath_interval = agent.get_f64("repath_interval", 0.25);
+        let repath_interval = agent.get_f64("repath_interval", 0.25).max(0.01);
         let use_path =
             agent.get_bool("auto_repath", true) && agent.get_bool("avoid_obstacles", true);
         if use_path && (path_empty || repath_timer >= repath_interval) {
+            let path = grid
+                .map(|grid| {
+                    CommandSystem::build_path(
+                        grid,
+                        (entity_x.round() as i32, entity_y.round() as i32),
+                        (destination_x.round() as i32, destination_y.round() as i32),
+                    )
+                })
+                .unwrap_or_else(|| vec![(destination_x, destination_y)]);
             agent.set_f64("repath_timer", 0.0);
-            agent.set("last_path_length", json!(1));
+            agent.set("last_path_length", json!(path.len()));
+            agent.set(
+                "last_status",
+                json!(if path.is_empty() { "blocked" } else { "moving" }),
+            );
             let _ = agent;
-            entity.path = vec![(destination_x, destination_y)];
-            entity.command = "NAVIGATE".to_string();
-            entity.state = "MOVING".to_string();
-        } else {
+            entity.speed = speed;
+            if path.is_empty() {
+                entity.path.clear();
+                entity.command = "NAVIGATION_BLOCKED".to_string();
+                entity.state = "BLOCKED".to_string();
+                outcome.blocked = true;
+            } else {
+                entity.path = path;
+                entity.command = "NAVIGATE".to_string();
+                entity.state = "MOVING".to_string();
+                outcome.repathed = true;
+            }
+            return outcome;
+        }
+
+        if use_path {
             agent.set_f64("repath_timer", repath_timer);
             let _ = agent;
-            if distance > 0.0 {
-                let step = (speed * dt).min(distance);
-                entity.x += dx / distance * step;
-                entity.y += dy / distance * step;
-                entity.sync_to_components();
-            }
+            entity.speed = speed;
+            // MovementSystem is the sole owner of path traversal. Keeping the
+            // NavAgent stationary here prevents doubled speed and obstacle
+            // tunnelling between repath ticks.
+            return outcome;
         }
+
+        agent.set_f64("repath_timer", repath_timer);
+        agent.set("last_status", json!("direct"));
+        let _ = agent;
+        entity.speed = speed;
+        if distance > 0.0 {
+            let step = (speed * dt).min(distance);
+            entity.x += dx / distance * step;
+            entity.y += dy / distance * step;
+            entity.sync_to_components();
+        }
+        outcome
     }
 
     fn update_interaction(
@@ -426,6 +499,7 @@ impl GameplaySystem {
     fn update_ai(
         &mut self,
         entities: &mut [GameObject],
+        grid: Option<&Grid>,
         pending_destroy: &mut Vec<u64>,
         dt: f64,
     ) -> usize {
@@ -457,8 +531,12 @@ impl GameplaySystem {
                     let home_x = ai.get_f64("home_x", attacker.x);
                     let home_y = ai.get_f64("home_y", attacker.y);
                     let radius = ai.get_f64("wander_radius", 5.0);
-                    attacker_mut.path = vec![(home_x + radius * 0.5, home_y)];
-                    attacker_mut.command = "WANDER".to_string();
+                    set_ai_destination(
+                        attacker_mut,
+                        (home_x + radius * 0.5, home_y),
+                        "WANDER",
+                        grid,
+                    );
                 }
                 continue;
             };
@@ -470,10 +548,7 @@ impl GameplaySystem {
                 if let Some(attacker_mut) =
                     entities.iter_mut().find(|entity| entity.id == attacker.id)
                 {
-                    if attacker_mut.path.is_empty() {
-                        attacker_mut.path = vec![(target.x, target.y)];
-                        attacker_mut.command = "CHASE".to_string();
-                    }
+                    set_ai_destination(attacker_mut, (target.x, target.y), "CHASE", grid);
                     if let Some(ai_mut) = attacker_mut.get_component_mut("AIController") {
                         ai_mut.set("state", json!("chase"));
                         ai_mut.set("target_id", json!(target.id));
@@ -531,6 +606,12 @@ impl GameplaySystem {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct NavUpdateOutcome {
+    repathed: bool,
+    blocked: bool,
+}
+
 #[derive(Debug, Clone)]
 struct SpawnRequest {
     spawner_entity_id: u64,
@@ -581,6 +662,42 @@ fn find_nearest_target<'a>(
         }
     }
     best
+}
+
+fn set_ai_destination(
+    entity: &mut GameObject,
+    target: (f64, f64),
+    command: &str,
+    grid: Option<&Grid>,
+) -> bool {
+    if let Some(agent) = entity.get_component_mut("NavAgent") {
+        agent.nav_set_destination(target.0, target.1);
+        agent.set("last_status", json!("queued"));
+        let _ = agent;
+        entity.command = command.to_string();
+        entity.state = "MOVING".to_string();
+        return true;
+    }
+
+    let path = grid
+        .map(|grid| {
+            CommandSystem::build_path(
+                grid,
+                (entity.x.round() as i32, entity.y.round() as i32),
+                (target.0.round() as i32, target.1.round() as i32),
+            )
+        })
+        .unwrap_or_else(|| vec![target]);
+    if path.is_empty() {
+        entity.path.clear();
+        entity.command = "NAVIGATION_BLOCKED".to_string();
+        entity.state = "BLOCKED".to_string();
+        return false;
+    }
+    entity.path = path;
+    entity.command = command.to_string();
+    entity.state = "MOVING".to_string();
+    true
 }
 
 fn set_property_path(entity: &mut GameObject, path: &str, value: f64) -> bool {
@@ -745,4 +862,71 @@ pub fn add_default_component(entity: &mut GameObject, component_type: &str) -> b
     };
     entity.add_component(component);
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nav_actor(x: f64, y: f64, destination: (f64, f64)) -> GameObject {
+        let mut actor = GameObject::new(x, y, Some("NavActor".to_string()));
+        assert!(add_default_component(&mut actor, "NavAgent"));
+        actor
+            .get_component_mut("NavAgent")
+            .unwrap()
+            .nav_set_destination(destination.0, destination.1);
+        actor
+    }
+
+    #[test]
+    fn nav_agent_builds_grid_path_around_obstacles() {
+        let mut grid = Grid::new(5, 3, 1, 1);
+        grid.set_tile(2, 1, 1);
+        let mut entities = vec![nav_actor(0.0, 1.0, (4.0, 1.0))];
+        let mut system = GameplaySystem::default();
+
+        system.update_entities_with_grid(&mut entities, &grid, 0.016, "PLAY");
+
+        assert!(!entities[0].path.is_empty());
+        assert!(
+            !entities[0]
+                .path
+                .iter()
+                .any(|point| point.0.round() == 2.0 && point.1.round() == 1.0)
+        );
+        assert_eq!(system.stats.get("nav_repaths"), Some(&1));
+        assert_eq!(system.stats.get("nav_blocked"), Some(&0));
+    }
+
+    #[test]
+    fn nav_agent_reports_blocked_instead_of_crossing_solid_wall() {
+        let mut grid = Grid::new(5, 3, 1, 1);
+        for y in 0..3 {
+            grid.set_tile(2, y, 1);
+        }
+        let mut entities = vec![nav_actor(0.0, 1.0, (4.0, 1.0))];
+        let mut system = GameplaySystem::default();
+
+        system.update_entities_with_grid(&mut entities, &grid, 0.016, "PLAY");
+
+        assert!(entities[0].path.is_empty());
+        assert_eq!(entities[0].command, "NAVIGATION_BLOCKED");
+        assert_eq!(entities[0].state, "BLOCKED");
+        assert_eq!(system.stats.get("nav_blocked"), Some(&1));
+    }
+
+    #[test]
+    fn path_following_is_left_to_movement_system_between_repaths() {
+        let grid = Grid::new(6, 2, 1, 1);
+        let mut entities = vec![nav_actor(0.0, 0.0, (5.0, 0.0))];
+        let mut system = GameplaySystem::default();
+        system.update_entities_with_grid(&mut entities, &grid, 0.016, "PLAY");
+        let position = (entities[0].x, entities[0].y);
+        assert!(!entities[0].path.is_empty());
+
+        system.update_entities_with_grid(&mut entities, &grid, 0.016, "PLAY");
+
+        assert_eq!((entities[0].x, entities[0].y), position);
+        assert_eq!(system.stats.get("nav_repaths"), Some(&0));
+    }
 }

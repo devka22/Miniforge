@@ -179,6 +179,7 @@ int main(int argc, char** argv)
 
     bool foundRefresh = false;
     bool foundAudit = false;
+    bool foundForgeAiDoctor = false;
     for (const MfCommandDescriptor& command : commands) {
         if (fixedString(command.id, MF_NAME_CAPACITY) == "assets.refresh") {
             foundRefresh = true;
@@ -186,11 +187,240 @@ int main(int argc, char** argv)
         if (fixedString(command.id, MF_NAME_CAPACITY) == "project.audit") {
             foundAudit = true;
         }
+        if (fixedString(command.id, MF_NAME_CAPACITY) == "forge_ai.project_doctor") {
+            foundForgeAiDoctor = true;
+        }
     }
     expect(foundRefresh, "command palette should include assets.refresh");
     expect(foundAudit, "command palette should include project.audit");
+    expect(foundForgeAiDoctor, "command palette should include Forge AI Project Doctor");
     expectStatus(mf_editor_execute_command(editor, "project.audit", &error), MF_STATUS_OK, error, "execute project.audit");
     expectStatus(mf_editor_execute_command(editor, "assets.refresh", &error), MF_STATUS_OK, error, "execute assets.refresh");
+    expectStatus(mf_editor_refresh(editor, &error), MF_STATUS_OK, error, "refresh editor caches");
+
+    expectStatus(mf_editor_sprite_new_canvas(editor, 8, 8, &error), MF_STATUS_OK, error, "new sprite canvas");
+    expectStatus(mf_editor_sprite_begin_edit(editor, &error), MF_STATUS_OK, error, "begin sprite edit");
+    std::uint8_t spriteChanged = 0;
+    expectStatus(
+        mf_editor_sprite_set_pixel(editor, 2, 3, 240, 80, 120, 255, &spriteChanged, &error),
+        MF_STATUS_OK,
+        error,
+        "paint sprite pixel"
+    );
+    expect(spriteChanged == 1, "painting a new sprite pixel should report a change");
+    expectStatus(
+        mf_editor_sprite_commit_edit(editor, &spriteChanged, &error),
+        MF_STATUS_OK,
+        error,
+        "commit sprite edit"
+    );
+    expect(spriteChanged == 1, "committing the sprite stroke should create history");
+    MfSpriteInfo spriteInfo {};
+    expectStatus(
+        mf_editor_sprite_snapshot_rgba(editor, nullptr, 0, &spriteInfo, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "probe sprite canvas"
+    );
+    expect(spriteInfo.width == 8 && spriteInfo.height == 8, "sprite dimensions should round-trip");
+    std::vector<std::uint8_t> spritePixels(spriteInfo.required_bytes);
+    expectStatus(
+        mf_editor_sprite_snapshot_rgba(
+            editor,
+            spritePixels.data(),
+            spritePixels.size(),
+            &spriteInfo,
+            &error
+        ),
+        MF_STATUS_OK,
+        error,
+        "read sprite canvas"
+    );
+    const std::size_t paintedPixel = (3 * 8 + 2) * 4;
+    expect(
+        spritePixels[paintedPixel] == 240 && spritePixels[paintedPixel + 3] == 255,
+        "sprite snapshot should contain the painted pixel"
+    );
+    expectStatus(mf_editor_sprite_undo(editor, &spriteChanged, &error), MF_STATUS_OK, error, "undo sprite");
+    expect(spriteChanged == 1, "sprite undo should report a change");
+    expectStatus(mf_editor_sprite_redo(editor, &spriteChanged, &error), MF_STATUS_OK, error, "redo sprite");
+    expect(spriteChanged == 1, "sprite redo should report a change");
+    std::array<char, MF_PATH_CAPACITY> spritePath {};
+    required = 0;
+    expectStatus(
+        mf_editor_sprite_save(
+            editor,
+            "BridgeSmokeSprite",
+            spritePath.data(),
+            spritePath.size(),
+            &required,
+            &error
+        ),
+        MF_STATUS_OK,
+        error,
+        "save sprite canvas"
+    );
+    expect(std::filesystem::exists(spritePath.data()), "saved sprite path should exist");
+
+    const std::string luauPath = "scripts/BridgeSmokeController.luau";
+    const std::string luauSource = "function on_update(dt)\n    move(100 * dt, 0)\nend\n";
+    required = 0;
+    expectStatus(
+        mf_editor_luau_validate_json(editor, luauPath.c_str(), luauSource.c_str(), nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "probe Luau validation"
+    );
+    std::vector<char> validation(required);
+    expectStatus(
+        mf_editor_luau_validate_json(
+            editor,
+            luauPath.c_str(),
+            luauSource.c_str(),
+            validation.data(),
+            validation.size(),
+            &required,
+            &error
+        ),
+        MF_STATUS_OK,
+        error,
+        "validate Luau source"
+    );
+    expect(
+        fixedString(validation.data(), validation.size()).find("\"valid\":true") != std::string::npos,
+        "Luau validation JSON should report valid source"
+    );
+    expectStatus(
+        mf_editor_luau_save(editor, luauPath.c_str(), luauSource.c_str(), &error),
+        MF_STATUS_OK,
+        error,
+        "save Luau source"
+    );
+
+    required = 0;
+    expectStatus(
+        mf_editor_luau_read(editor, luauPath.c_str(), nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "probe Luau source"
+    );
+    std::vector<char> luauContents(required);
+    expectStatus(
+        mf_editor_luau_read(
+            editor,
+            luauPath.c_str(),
+            luauContents.data(),
+            luauContents.size(),
+            &required,
+            &error
+        ),
+        MF_STATUS_OK,
+        error,
+        "read Luau source"
+    );
+    expect(
+        fixedString(luauContents.data(), luauContents.size()) == luauSource,
+        "saved Luau source should round-trip through the bridge"
+    );
+
+    required = 0;
+    expectStatus(
+        mf_editor_luau_scripts_json(editor, nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "probe Luau script list"
+    );
+    std::vector<char> luauScripts(required);
+    expectStatus(
+        mf_editor_luau_scripts_json(
+            editor,
+            luauScripts.data(),
+            luauScripts.size(),
+            &required,
+            &error
+        ),
+        MF_STATUS_OK,
+        error,
+        "read Luau script list"
+    );
+    expect(
+        fixedString(luauScripts.data(), luauScripts.size()).find(luauPath) != std::string::npos,
+        "Luau script list should include the saved document"
+    );
+
+    expectStatus(
+        mf_editor_export_runtime(editor, "debug", &error),
+        MF_STATUS_OK,
+        error,
+        "export debug runtime"
+    );
+    required = 0;
+    expectStatus(
+        mf_editor_last_export_report_json(editor, nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "query runtime export report size"
+    );
+    std::vector<char> exportReport(required);
+    expectStatus(
+        mf_editor_last_export_report_json(
+            editor,
+            exportReport.data(),
+            exportReport.size(),
+            &required,
+            &error
+        ),
+        MF_STATUS_OK,
+        error,
+        "read runtime export report"
+    );
+    expect(
+        fixedString(exportReport.data(), exportReport.size()).find("\"profile\":\"Debug\"") != std::string::npos,
+        "runtime export report should describe the debug profile"
+    );
+
+    required = 0;
+    expectStatus(
+        mf_editor_forge_ai_diagnostics_json(editor, nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "query Forge AI diagnostics size"
+    );
+    expect(required > 2, "Forge AI diagnostics JSON should include at least an array payload");
+    std::vector<char> aiDiagnostics(required);
+    expectStatus(
+        mf_editor_forge_ai_diagnostics_json(editor, aiDiagnostics.data(), aiDiagnostics.size(), &required, &error),
+        MF_STATUS_OK,
+        error,
+        "read Forge AI diagnostics"
+    );
+    expect(aiDiagnostics.front() == '[', "Forge AI diagnostics should be a JSON array");
+
+    required = 0;
+    expectStatus(
+        mf_editor_forge_ai_run_test_json(editor, "forge_ai_enemy_smoke", nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "query Forge AI test report size"
+    );
+    std::vector<char> aiTestReport(required);
+    expectStatus(
+        mf_editor_forge_ai_run_test_json(
+            editor,
+            "forge_ai_enemy_smoke",
+            aiTestReport.data(),
+            aiTestReport.size(),
+            &required,
+            &error
+        ),
+        MF_STATUS_OK,
+        error,
+        "run Forge AI enemy smoke test"
+    );
+    expect(
+        std::string(aiTestReport.data()).find("forge_ai_enemy_smoke") != std::string::npos,
+        "Forge AI test report should name the requested suite"
+    );
 
     std::uint8_t readinessScore = 0;
     expectStatus(mf_editor_readiness_score(editor, &readinessScore, &error), MF_STATUS_OK, error, "readiness score");

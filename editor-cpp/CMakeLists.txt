@@ -70,6 +70,8 @@ add_executable(miniforge_qt_editor
     src/MfModels.h
     src/ViewportWidget.cpp
     src/ViewportWidget.h
+    src/SpriteEditorWidget.cpp
+    src/SpriteEditorWidget.h
     src/MainWindow.cpp
     src/MainWindow.h
 )
@@ -78,6 +80,8 @@ add_dependencies(miniforge_qt_editor miniforge_rust_editor_bridge)
 
 target_compile_definitions(miniforge_qt_editor PRIVATE
     MF_QML_ROOT="${MINIFORGE_QML_ROOT}"
+    MF_QML_INSTALL_SUBDIR="${CMAKE_INSTALL_DATADIR}/miniforge/editor-qml"
+    MF_DEFAULT_PROJECT="${MINIFORGE_DEFAULT_PROJECT}"
 )
 
 target_link_libraries(miniforge_qt_editor PRIVATE

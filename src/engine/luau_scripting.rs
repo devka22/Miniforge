@@ -12,7 +12,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use mlua::{Compiler, Function, Lua, NavigateError, Require, Table, Value as LuaValue, VmState};
+use mlua::chunk::Compiler;
+use mlua::luau::{NavigateError, Require};
+use mlua::{Function, Lua, Table, Value as LuaValue, VmState};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::{Value, json};
 

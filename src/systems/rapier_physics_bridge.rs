@@ -90,9 +90,11 @@ fn collider_builder_for(entity: &GameObject) -> Option<ColliderBuilder> {
     let collider = entity.get_component("Collider2D")?;
     let shape = collider.get_string("shape", "rect").to_lowercase();
     match shape.as_str() {
-        "circle" => Some(ColliderBuilder::ball(
-            collider.get_f64("radius", 0.5).max(0.001) as Real,
-        )),
+        "circle" => {
+            let scale = entity.scale_x.abs().max(entity.scale_y.abs());
+            let radius = (collider.get_f64("radius", 0.5).max(0.001) * scale).max(0.001);
+            Some(ColliderBuilder::ball(radius as Real))
+        }
         "polygon" => {
             let points = collider
                 .get("points")
@@ -124,4 +126,26 @@ fn default_box(
         (collider.get_f64("width", entity.width).max(0.001) * entity.scale_x.abs() * 0.5) as Real,
         (collider.get_f64("height", entity.height).max(0.001) * entity.scale_y.abs() * 0.5) as Real,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scene_report_uses_scaled_circle_radius() {
+        let mut circle = GameObject::new(0.0, 0.0, Some("ScaledCircle".to_string()));
+        circle.scale_x = 4.0;
+        circle.scale_y = 1.0;
+        let collider = circle
+            .get_component_mut("Collider2D")
+            .expect("default game object has a collider");
+        collider.set("shape", serde_json::json!("circle"));
+        collider.set_f64("radius", 0.5);
+
+        let report = RapierPhysicsBridge::inspect_scene(&[circle], (0.0, 9.8));
+
+        assert_eq!(report.colliders, 1);
+        assert!((report.broadphase_aabb_area - 16.0).abs() < 1e-5);
+    }
 }
