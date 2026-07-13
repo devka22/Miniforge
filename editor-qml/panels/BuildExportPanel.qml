@@ -9,6 +9,7 @@ Rectangle {
 
     property bool running: false
     property bool hasReport: false
+    property bool failed: false
     property string statusText: "Choose a profile and export runtime data"
     property string outputPath: ""
     property string manifestPath: ""
@@ -20,14 +21,34 @@ Rectangle {
     property int readinessScore: 0
     property string detailsText: ""
 
+    function resetReport() {
+        running = false
+        hasReport = false
+        failed = false
+        outputPath = ""
+        manifestPath = ""
+        reportProfile = ""
+        copiedFiles = 0
+        usedAssets = 0
+        missingAssets = 0
+        warningCount = 0
+        readinessScore = 0
+        detailsText = ""
+        statusText = editorBridge.projectOpen
+            ? "Choose a profile and export runtime data"
+            : "Open a project to export a runtime build"
+    }
+
     function runExport() {
         running = true
         hasReport = false
+        failed = false
         statusText = "Validating project and exporting…"
         Qt.callLater(function() {
             var json = editorBridge.exportRuntime(profileBox.currentText)
             if (json.length === 0) {
                 statusText = editorBridge.lastError
+                failed = true
                 running = false
                 return
             }
@@ -60,12 +81,23 @@ Rectangle {
                 detailsText = lines.length > 0 ? lines.join("\n") : "No missing assets or validation warnings."
                 statusText = "Export completed successfully"
                 hasReport = true
+                failed = false
             } catch (error) {
                 statusText = "Invalid export report: " + error
+                failed = true
             }
             running = false
         })
     }
+
+    Connections {
+        target: editorBridge
+        function onProjectChanged() {
+            root.resetReport()
+        }
+    }
+
+    Component.onCompleted: resetReport()
 
     Column {
         anchors.fill: parent
@@ -76,10 +108,10 @@ Rectangle {
             width: parent.width
             title: "Build & Export"
             detail: root.statusText
-            badge: root.running ? "Working" : (root.hasReport ? "Complete" : "Runtime")
+            badge: root.running ? "Working" : (root.failed ? "Failed" : (root.hasReport ? "Complete" : "Runtime"))
             badgeColor: root.running
                 ? Theme.DarkTheme.warning
-                : (root.hasReport ? Theme.DarkTheme.accent : Theme.DarkTheme.info)
+                : (root.failed ? Theme.DarkTheme.danger : (root.hasReport ? Theme.DarkTheme.accent : Theme.DarkTheme.info))
         }
 
         Row {
@@ -146,12 +178,12 @@ Rectangle {
 
             Repeater {
                 model: [
-                    ["Profile", root.reportProfile || "—"],
-                    ["Files", String(root.copiedFiles)],
-                    ["Assets", String(root.usedAssets)],
-                    ["Missing", String(root.missingAssets)],
-                    ["Warnings", String(root.warningCount)],
-                    ["Readiness", root.readinessScore + "%"]
+                    ["Profile", root.hasReport ? root.reportProfile : "—"],
+                    ["Files", root.hasReport ? String(root.copiedFiles) : "—"],
+                    ["Assets", root.hasReport ? String(root.usedAssets) : "—"],
+                    ["Missing", root.hasReport ? String(root.missingAssets) : "—"],
+                    ["Warnings", root.hasReport ? String(root.warningCount) : "—"],
+                    ["Readiness", root.hasReport ? root.readinessScore + "%" : "—"]
                 ]
 
                 Rectangle {
@@ -160,9 +192,11 @@ Rectangle {
                     height: 54
                     radius: Theme.DarkTheme.cardRadius
                     color: Theme.DarkTheme.surfaceRaised
-                    border.color: modelData[0] === "Missing" && root.missingAssets > 0
+                    border.color: root.hasReport && modelData[0] === "Missing" && root.missingAssets > 0
                         ? Theme.DarkTheme.danger
-                        : Theme.DarkTheme.borderSoft
+                        : (root.hasReport && modelData[0] === "Warnings" && root.warningCount > 0
+                            ? Theme.DarkTheme.warning
+                            : Theme.DarkTheme.borderSoft)
                     border.width: 1
 
                     Column {

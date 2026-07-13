@@ -3,7 +3,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::engine::asset_tools::AssetTools;
-use crate::engine::editor_ui::{EditorIcon, install_phosphor_fonts};
 use crate::engine::engine_backend::{EngineBackend, EngineBackendPlan};
 use crate::engine::manifest_builder::ManifestBuilder;
 use crate::engine::project_templates::ProjectTemplates;
@@ -19,8 +18,8 @@ impl ProjectLauncher {
         AssetTools::default_project_path()
     }
 
-    pub fn egui(workspace_root: impl AsRef<Path>) -> EguiProjectLauncher {
-        EguiProjectLauncher::new(workspace_root)
+    pub fn state(workspace_root: impl AsRef<Path>) -> ProjectLauncherState {
+        ProjectLauncherState::new(workspace_root)
     }
 }
 
@@ -73,7 +72,7 @@ pub struct LauncherPatchNote {
 }
 
 #[derive(Debug, Clone)]
-pub struct EguiProjectLauncher {
+pub struct ProjectLauncherState {
     pub workspace_root: PathBuf,
     pub project_name: String,
     pub project_location: String,
@@ -127,13 +126,13 @@ struct LauncherDiskState {
     export_profile: Option<ExportProfile>,
 }
 
-impl Default for EguiProjectLauncher {
+impl Default for ProjectLauncherState {
     fn default() -> Self {
         Self::new("projects")
     }
 }
 
-impl EguiProjectLauncher {
+impl ProjectLauncherState {
     pub fn new(workspace_root: impl AsRef<Path>) -> Self {
         let workspace_root = workspace_root.as_ref().to_path_buf();
         let mut launcher = Self {
@@ -383,198 +382,6 @@ impl EguiProjectLauncher {
         self.patch_notes
             .get(self.selected_patch_note)
             .or_else(|| self.patch_notes.first())
-    }
-
-    pub fn ui(&mut self, ctx: &egui::Context) -> Option<LauncherAction> {
-        install_phosphor_fonts(ctx);
-        let mut action = None;
-        egui::Window::new(EditorIcon::Scene.label("MiniForge Launcher"))
-            .resizable(true)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Proyecto");
-                    ui.text_edit_singleline(&mut self.project_name);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Ubicacion");
-                    ui.text_edit_singleline(&mut self.project_location);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Template");
-                    for template in LauncherTemplate::all() {
-                        ui.selectable_value(
-                            &mut self.selected_template,
-                            template,
-                            template.label(),
-                        );
-                    }
-                });
-                if ui
-                    .button(EditorIcon::NewEntity.label("Nuevo proyecto"))
-                    .clicked()
-                {
-                    match self.create_new_project() {
-                        Ok(path) => action = Some(LauncherAction::NewProject(path)),
-                        Err(error) => self.status = error.to_string(),
-                    }
-                }
-                if ui
-                    .button(EditorIcon::Search.label("Buscar proyectos locales"))
-                    .clicked()
-                {
-                    match self.discover_recent_projects() {
-                        Ok(count) => self.status = format!("{count} proyectos encontrados"),
-                        Err(error) => self.status = error.to_string(),
-                    }
-                }
-
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label("Abrir");
-                    ui.text_edit_singleline(&mut self.open_path);
-                });
-                if ui
-                    .button(EditorIcon::Open.label("Abrir proyecto"))
-                    .clicked()
-                {
-                    match self.open_typed_project() {
-                        Ok(path) => action = Some(LauncherAction::OpenProject(path)),
-                        Err(error) => self.status = error.to_string(),
-                    }
-                }
-
-                ui.separator();
-                ui.label(EditorIcon::Warning.label("Notas del parche"));
-                let notes = self.patch_notes.clone();
-                for (index, note) in notes.iter().enumerate() {
-                    if ui
-                        .selectable_label(
-                            self.selected_patch_note == index,
-                            format!("{} {}", note.version, note.title),
-                        )
-                        .clicked()
-                    {
-                        self.selected_patch_note = index;
-                    }
-                }
-                if let Some(note) = self.active_patch_note() {
-                    ui.label(format!("{} - {}", note.date, note.title));
-                    for highlight in note.highlights.iter().take(6) {
-                        ui.label(format!("• {highlight}"));
-                    }
-                }
-
-                ui.separator();
-                ui.label(EditorIcon::Folder.label("Proyectos recientes"));
-                let recent_projects = self.recent_projects.clone();
-                egui_extras::TableBuilder::new(ui)
-                    .striped(true)
-                    .column(egui_extras::Column::auto())
-                    .column(egui_extras::Column::remainder())
-                    .body(|mut body| {
-                        for path in recent_projects {
-                            body.row(24.0, |mut row| {
-                                row.col(|ui| {
-                                    ui.label(EditorIcon::Folder.glyph());
-                                });
-                                row.col(|ui| {
-                                    if ui
-                                        .selectable_label(false, path.display().to_string())
-                                        .clicked()
-                                    {
-                                        match self.open_project(&path) {
-                                            Ok(path) => {
-                                                action = Some(LauncherAction::OpenProject(path))
-                                            }
-                                            Err(error) => self.status = error.to_string(),
-                                        }
-                                    }
-                                });
-                            });
-                        }
-                    });
-
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label("Export");
-                    ui.selectable_value(&mut self.export_profile, ExportProfile::Debug, "Debug");
-                    ui.selectable_value(
-                        &mut self.export_profile,
-                        ExportProfile::Release,
-                        "Release",
-                    );
-                });
-                if ui
-                    .button(EditorIcon::Save.label("Exportar juego"))
-                    .clicked()
-                {
-                    let path = self
-                        .recent_projects
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(AssetTools::default_project_path);
-                    match self.export_game(&path) {
-                        Ok(report) => action = Some(LauncherAction::ExportGame(report.output_path)),
-                        Err(error) => self.status = error.to_string(),
-                    }
-                }
-
-                if ui
-                    .button(EditorIcon::Settings.label("Repair project"))
-                    .clicked()
-                {
-                    let path = self
-                        .recent_projects
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(AssetTools::default_project_path);
-                    match self.repair_project(&path) {
-                        Ok(_) => action = Some(LauncherAction::RepairProject(path)),
-                        Err(error) => self.status = error.to_string(),
-                    }
-                }
-
-                ui.separator();
-                ui.checkbox(&mut self.settings.safe_mode, "Safe mode");
-                ui.checkbox(&mut self.settings.validate_on_open, "Validate on open");
-                ui.checkbox(&mut self.settings.remember_recent, "Remember recent");
-                ui.checkbox(
-                    &mut self.settings.analyze_before_export,
-                    "Analyze before export",
-                );
-
-                ui.separator();
-                if ui
-                    .button(EditorIcon::Validate.label("Analizar backend"))
-                    .clicked()
-                {
-                    match self.refresh_typed_project_status() {
-                        Ok(summary) => self.status = summary,
-                        Err(error) => self.status = error.to_string(),
-                    }
-                }
-                if let Some(plan) = &self.backend_plan {
-                    ui.label(format!(
-                        "Readiness {}% | Editor {} | Runtime {} | Export {}",
-                        plan.system_audit.total_score,
-                        ready_label(plan.editor_ready),
-                        ready_label(plan.runtime_ready),
-                        ready_label(plan.export_ready),
-                    ));
-                    for action in self.backend_actions.iter().take(4) {
-                        ui.label(format!("Next: {action}"));
-                    }
-                }
-
-                if !self.status.is_empty() {
-                    ui.separator();
-                    ui.label(&self.status);
-                }
-            });
-        if action.is_some() {
-            self.last_action = action.clone();
-        }
-        action
     }
 }
 

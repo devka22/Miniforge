@@ -78,7 +78,7 @@ impl From<serde_json::Error> for AiError {
     }
 }
 
-#[cfg(feature = "editor")]
+#[cfg(feature = "editor_core")]
 impl From<crate::engine::editor_core::EditorCoreError> for AiError {
     fn from(error: crate::engine::editor_core::EditorCoreError) -> Self {
         Self::new(AiErrorKind::Execution, error.to_string())

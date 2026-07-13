@@ -1,5 +1,9 @@
 # MiniForge MCP Feedback
 
+> Snapshot histórico de feedback de mayo/junio de 2026. Versiones, comandos y carencias aquí
+> descritos pueden estar superados. Consulta el [índice de documentación](README.md) y el backlog
+> consolidado [MINIFORGE_MCP_FEEDBACK.md](MINIFORGE_MCP_FEEDBACK.md).
+
 Este archivo lo usa el MCP de MiniForge para apuntar problemas, recomendaciones y observaciones que luego puedes pasar a Codex para mejorar el motor.
 
 ## 2026-05-28 - RECOMMENDATION - Unificar version visible del motor

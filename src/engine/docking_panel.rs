@@ -1,7 +1,8 @@
-use egui::{CornerRadius, Visuals};
-use egui_dock::DockState;
-
-use crate::engine::editor_ui::{EditorIcon, install_phosphor_fonts};
+//! Frontend-neutral editor panel intent state.
+//!
+//! Qt owns the actual dock widgets and layout persistence. The Rust backend
+//! keeps only which tool surfaces should be opened, so engine operations never
+//! depend on a Rust UI toolkit.
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DockingPanel {
@@ -59,60 +60,39 @@ impl EditorDockTab {
             Self::PlayWindow => "Play Window",
         }
     }
-
-    pub fn icon(self) -> EditorIcon {
-        match self {
-            Self::World => EditorIcon::Scene,
-            Self::Hierarchy => EditorIcon::Graph,
-            Self::Inspector => EditorIcon::Component,
-            Self::ContentBrowser => EditorIcon::Folder,
-            Self::ScriptEditor => EditorIcon::Script,
-            Self::BlueprintEditor => EditorIcon::Graph,
-            Self::Prefabs => EditorIcon::Prefab,
-            Self::Console => EditorIcon::Warning,
-            Self::Profiler => EditorIcon::Validate,
-            Self::PlayWindow => EditorIcon::Play,
-        }
-    }
-
-    pub fn display_title(self) -> String {
-        self.icon().label(self.title())
-    }
 }
 
 #[derive(Debug, Clone)]
-pub struct EguiDockingWorkspace {
-    pub dock_state: DockState<EditorDockTab>,
+pub struct EditorDockingWorkspace {
+    pub open_tabs: Vec<EditorDockTab>,
     pub floating_panels: Vec<DockingPanel>,
     pub theme: DockingTheme,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DockingTheme {
     pub accent: [u8; 4],
     pub panel: [u8; 4],
     pub panel_dark: [u8; 4],
     pub border: [u8; 4],
-    pub egui_visuals: Visuals,
 }
 
-impl Default for EguiDockingWorkspace {
+impl Default for EditorDockingWorkspace {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl EguiDockingWorkspace {
+impl EditorDockingWorkspace {
     pub fn new() -> Self {
-        let tabs = vec![
-            EditorDockTab::World,
-            EditorDockTab::Hierarchy,
-            EditorDockTab::Inspector,
-            EditorDockTab::ContentBrowser,
-            EditorDockTab::Console,
-        ];
         Self {
-            dock_state: DockState::new(tabs),
+            open_tabs: vec![
+                EditorDockTab::World,
+                EditorDockTab::Hierarchy,
+                EditorDockTab::Inspector,
+                EditorDockTab::ContentBrowser,
+                EditorDockTab::Console,
+            ],
             floating_panels: vec![
                 DockingPanel::new("script_editor", "Script Editor")
                     .detached((86.0, 96.0, 860.0, 560.0)),
@@ -126,34 +106,30 @@ impl EguiDockingWorkspace {
     }
 
     pub fn open_tab(&mut self, tab: EditorDockTab) {
-        if !self
-            .dock_state
-            .iter_all_tabs()
-            .any(|(_, existing)| *existing == tab)
-        {
-            self.dock_state.push_to_focused_leaf(tab);
+        if !self.open_tabs.contains(&tab) {
+            self.open_tabs.push(tab);
         }
+    }
+
+    pub fn is_open(&self, tab: EditorDockTab) -> bool {
+        self.open_tabs.contains(&tab)
     }
 
     pub fn dock_summary(&self) -> String {
         let tabs = self
-            .dock_state
-            .iter_all_tabs()
-            .map(|(_, tab)| tab.title())
+            .open_tabs
+            .iter()
+            .map(|tab| tab.title())
             .collect::<Vec<_>>()
             .join(", ");
         format!(
-            "egui_dock:{} tabs | floating:{} | extras:{}",
-            self.dock_state.main_surface().num_tabs(),
+            "native:{} tabs [{}] | floating:{}",
+            self.open_tabs.len(),
+            tabs,
             self.floating_panels
                 .iter()
                 .filter(|panel| panel.floating)
                 .count(),
-            egui_extras_marker()
-        )
-        .replace(
-            "World, Hierarchy, Inspector, Content Browser, Console",
-            &tabs,
         )
     }
 
@@ -166,29 +142,32 @@ impl EguiDockingWorkspace {
             panel.visible = visible;
         }
     }
-
-    pub fn apply_egui_visuals(&self, ctx: &egui::Context) {
-        install_phosphor_fonts(ctx);
-        ctx.set_visuals(self.theme.egui_visuals.clone());
-    }
 }
 
 impl Default for DockingTheme {
     fn default() -> Self {
-        let mut visuals = Visuals::dark();
-        visuals.window_corner_radius = CornerRadius::same(4);
-        visuals.widgets.active.corner_radius = 3.0.into();
-        visuals.widgets.hovered.corner_radius = 3.0.into();
         Self {
             accent: [76, 151, 255, 255],
             panel: [25, 29, 38, 255],
             panel_dark: [15, 18, 25, 245],
             border: [72, 86, 112, 255],
-            egui_visuals: visuals,
         }
     }
 }
 
-fn egui_extras_marker() -> &'static str {
-    std::any::type_name::<egui_extras::Column>()
+#[cfg(test)]
+mod tests {
+    use super::{EditorDockTab, EditorDockingWorkspace};
+
+    #[test]
+    fn native_workspace_tracks_frontend_panel_intents() {
+        let mut workspace = EditorDockingWorkspace::new();
+        workspace.open_tab(EditorDockTab::ScriptEditor);
+        workspace.open_tab(EditorDockTab::BlueprintEditor);
+        workspace.set_floating_visibility("script_editor", true);
+
+        assert!(workspace.is_open(EditorDockTab::ScriptEditor));
+        assert!(workspace.floating_panel("script_editor").is_some());
+        assert!(workspace.dock_summary().contains("native:"));
+    }
 }

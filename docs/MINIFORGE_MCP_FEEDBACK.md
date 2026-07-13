@@ -1,6 +1,34 @@
 # MiniForge - Mejoras Recomendadas
 
-Este archivo es el quinto documento de la consolidacion. Mantiene el nombre `MINIFORGE_MCP_FEEDBACK.md` porque el servidor MCP actual escribe feedback en esta ruta. El contenido anterior de feedback queda absorbido aqui como recomendaciones accionables.
+Este archivo es backlog técnico, no documentación de capacidades. Mantiene el nombre
+`MINIFORGE_MCP_FEEDBACK.md` porque el servidor MCP escribe feedback en esta ruta. Consulta el
+[índice](README.md) y las guías canónicas antes de asumir que una recomendación sigue pendiente.
+
+## Revisión De Estado 2026-07-13
+
+| Ítem | Estado actual |
+|---|---|
+| 1. Loop compartido | Parcial: orden equivalente y tests; aún hay duplicación Game/EngineRuntime |
+| 2. Límite editor/runtime | Implementado en lo esencial: `editor_core`, runtime-only gate y editor visual Rust retirado |
+| 3. Versionado de documentos | Parcial: escenas/prefabs/assets/graphs cubiertos; quedan formatos secundarios |
+| 4. Referencias GUID | Parcial: Asset Database sólido; varios componentes aún usan path |
+| 5. Prefab bidireccional | Implementado: apply/revert/variant/detach y Prefab Studio; requiere escala real |
+| 6. Registry tipado/generable | Parcial |
+| 7. Unificación UI | Pendiente; conviven tres modelos compatibles |
+| 8. Visual Graph registrado | Parcial: authoring/serializer/runtime integrados |
+| 9. Sandbox de plugins | Pendiente más allá de Safe Mode/capabilities |
+| 10. WGPU/Metal | Experimental |
+| 11. Viewport Qt | Baseline implementado: Scene/Game, gizmos, selección múltiple y overlays |
+| 12. Stubs/docs Luau | Implementado: `types/miniforge.luau`, API browser, completions y debugger |
+| 13. Spatial index incremental | Parcial: índice/revisiones/queries existen |
+| 14. Scheduler con budgets | Infraestructura implementada; adopción universal pendiente |
+| 15. Fixtures export/packaging | Parcial |
+| 16. Migrador Rhai | Pendiente; Luau es el runtime vigente |
+| 17. Project Health Matrix | Implementado mediante Readiness/Runtime Health/Profiler |
+| 18. Docs generadas | Pendiente; documentación canónica actualizada manualmente |
+| 19. Prefabs avanzados | Implementado como workflow Qt/backend |
+| 20-22. AI/UI/3D | Parcial o experimental según área |
+| 23. MCP de producción | Parcial |
 
 ## Prioridad P0
 
@@ -28,7 +56,8 @@ Mejora propuesta:
 
 - Agregar tests de compilacion `--no-default-features --features runtime` en CI.
 - Crear una lista de modulos permitidos para runtime.
-- Mover APIs editor-only detras de `#[cfg(feature = "editor")]` de forma mas agresiva.
+- Mantener APIs editor-only detrás de `#[cfg(feature = "editor_core")]` y `editor_ffi` cuando
+  corresponda.
 
 Beneficio:
 
@@ -357,4 +386,3 @@ Estado actual observado:
 - Hay CLI de desarrollo y templates nativos.
 - Hay componentes de gran estrategia.
 - Aun conviene mover mas templates MCP a manifiestos declarativos.
-

@@ -1,0 +1,30 @@
+#!/bin/sh
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+for retired in \
+    "$ROOT/src/main.rs" \
+    "$ROOT/src/editor_app.rs" \
+    "$ROOT/src/bin/miniforge_editor.rs"
+do
+    if [ -e "$retired" ]; then
+        echo "retired Rust editor target returned: $retired" >&2
+        exit 1
+    fi
+done
+
+if rg -n '(^|[^[:alnum:]_])(egui|egui_dock|egui_extras|egui-phosphor|rfd::)([^[:alnum:]_]|$)' \
+    "$ROOT/Cargo.toml" "$ROOT/src"
+then
+    echo "Rust visual-editor dependency or code path detected" >&2
+    exit 1
+fi
+
+if rg -n 'feature = "editor"' "$ROOT/src"
+then
+    echo "legacy Cargo feature 'editor' detected; use editor_core or editor_ffi" >&2
+    exit 1
+fi
+
+echo "Rust visual editor gate: clean"

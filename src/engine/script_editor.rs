@@ -481,26 +481,30 @@ impl ScriptEditor {
     }
 
     fn validate_luau(&mut self, source: &str) -> bool {
-        match crate::engine::luau_scripting::LuauScriptRuntime::validate_source(
-            source,
-            self.document
-                .path
-                .as_deref()
-                .and_then(Path::file_name)
-                .and_then(|value| value.to_str())
-                .unwrap_or("script.luau"),
-        ) {
-            Ok(()) => {
-                self.add_luau_api_hints(source);
-                self.document.syntax_error = None;
-                self.sync_active_document();
-                true
-            }
-            Err(error) => {
-                self.set_error(None, format!("Luau inválido: {error}"));
-                self.sync_active_document();
-                false
-            }
+        let name = self
+            .document
+            .path
+            .as_deref()
+            .and_then(Path::file_name)
+            .and_then(|value| value.to_str())
+            .unwrap_or("script.luau");
+        let diagnostics =
+            crate::engine::luau_scripting::LuauScriptRuntime::validate_source_diagnostics(
+                source, name,
+            );
+        if let Some(diagnostic) = diagnostics.into_iter().next() {
+            let message = match diagnostic.column {
+                Some(column) => format!("columna {column}: {}", diagnostic.message),
+                None => diagnostic.message,
+            };
+            self.set_error(diagnostic.line, format!("Luau inválido: {message}"));
+            self.sync_active_document();
+            false
+        } else {
+            self.add_luau_api_hints(source);
+            self.document.syntax_error = None;
+            self.sync_active_document();
+            true
         }
     }
 
@@ -754,8 +758,8 @@ end
         column: usize,
     ) -> Option<(usize, usize)> {
         let snippet = match name {
-            "log" => "log(\"message\")",
-            "spawn" => "local entity = spawn(\"PrefabName\", x, y)",
+            "log" => "Debug.log(\"message\")",
+            "spawn" => "local target = Spawner.spawn(\"PrefabName\", x, y)",
             "sprite" => "set_sprite(\"assets/sprites/player.sprite.json\")\nface_right()",
             "anim" => {
                 "play_sprite_animation(\"assets/animations/player.spriteframes\", \"default\")"
@@ -771,16 +775,16 @@ end
             "ability" => {
                 "if input_pressed(\"Space\") then\n    set_ui_text(\"HUD_Status\", \"Ability fired\")\nend"
             }
-            "timer" => "local elapsed = 0.0\nif elapsed > 1.0 then\n    \nend",
+            "timer" => "Task.delay(1.0, function()\n    Debug.log(\"timer finished\")\nend)",
             "blackboard" => "set_blackboard(\"key\", value)",
-            "signal" => "emit(\"EventName\", {})",
+            "signal" => "Events.emit(\"EventName\", {})",
             "controller2d" => {
                 "local speed = 180.0\nfunction on_update(dt: number)\n    local x = Input.axis(\"A\", \"D\")\n    move(x * speed * dt, 0.0)\nend"
             }
             "sprite_state" => {
                 "local state = \"idle\"\nplay_sprite_animation(\"assets/animations/player.spriteframes\", state)"
             }
-            "camera_follow" => "Camera.current():follow(Entity.current())",
+            "camera_follow" => "Camera.main():follow(Entity.current())",
             "projectile" => {
                 "local shot = Spawner.spawn(\"Projectile\", entity.x, entity.y)\nRigidbody2D.set_velocity(shot, 420.0, 0.0)"
             }
@@ -913,6 +917,16 @@ end
             ),
             ("trigger_ability", "MiniForge API", "trigger_ability();"),
             ("Vector2", "MiniForge API", "Vector2.new(0.0, 0.0)"),
+            (
+                "Vector2.distance",
+                "MiniForge API",
+                "Vector2.distance(a, b)",
+            ),
+            (
+                "Vector2.move_towards",
+                "MiniForge API",
+                "Vector2.move_towards(current, target, speed * dt)",
+            ),
             ("Input.axis", "MiniForge API", "Input.axis(\"A\", \"D\")"),
             (
                 "Input.action_pressed",
@@ -921,6 +935,66 @@ end
             ),
             ("Time.delta_time", "MiniForge API", "Time.delta_time"),
             ("Entity.current", "MiniForge API", "Entity.current()"),
+            (
+                "Entity.spawn",
+                "MiniForge API",
+                "Entity.spawn(\"EntityName\", x, y, { tag = \"Gameplay\" })",
+            ),
+            (
+                "Entity.find",
+                "MiniForge API",
+                "Entity.find(\"EntityName\")",
+            ),
+            (
+                "Entity.nearby",
+                "MiniForge API",
+                "Entity.nearby(Entity.current(), radius, { tag = \"Enemy\" })",
+            ),
+            (
+                "Entity.nearest",
+                "MiniForge API",
+                "Entity.nearest(Entity.current(), radius, { tag = \"Enemy\" })",
+            ),
+            (
+                "Entity.exists",
+                "MiniForge API",
+                "Entity.exists(\"EntityName\")",
+            ),
+            (
+                "Entity.all_with_tag",
+                "MiniForge API",
+                "Entity.all_with_tag(\"Enemy\")",
+            ),
+            (
+                "Entity.count_with_tag",
+                "MiniForge API",
+                "Entity.count_with_tag(\"Enemy\")",
+            ),
+            (
+                "Component.add",
+                "MiniForge API",
+                "Component.add(Entity.current(), \"Component\", {});",
+            ),
+            (
+                "Component.get",
+                "MiniForge API",
+                "Component.get(Entity.current(), \"Health\", \"health\", 0)",
+            ),
+            (
+                "Component.set",
+                "MiniForge API",
+                "Component.set(Entity.current(), \"Component\", \"key\", value);",
+            ),
+            (
+                "Component.remove",
+                "MiniForge API",
+                "Component.remove(Entity.current(), \"Component\");",
+            ),
+            (
+                "Component.has",
+                "MiniForge API",
+                "Component.has(Entity.current(), \"Component\")",
+            ),
             (
                 "Transform2D.set_position",
                 "MiniForge API",
@@ -932,10 +1006,56 @@ end
                 "Rigidbody2D.set_velocity(Entity.current(), x, y);",
             ),
             (
-                "Camera.current",
+                "Rigidbody2D.apply_impulse",
                 "MiniForge API",
-                "Camera.current():follow(Entity.current());",
+                "Rigidbody2D.apply_impulse(Entity.current(), x, y);",
             ),
+            (
+                "Camera.main",
+                "MiniForge API",
+                "Camera.main():follow(Entity.current());",
+            ),
+            (
+                "Physics2D.raycast",
+                "MiniForge API",
+                "Physics2D.raycast(origin, target, { mask = Layers.WORLD })",
+            ),
+            (
+                "AnimationPlayer.play",
+                "MiniForge API",
+                "AnimationPlayer.play(Entity.current(), \"Run\");",
+            ),
+            (
+                "Tween.to",
+                "MiniForge API",
+                "Tween.to(Entity.current(), \"position.x\", x, duration, { easing = \"linear\" });",
+            ),
+            (
+                "Navigation2D.set_destination",
+                "MiniForge API",
+                "Navigation2D.set_destination(Entity.current(), x, y);",
+            ),
+            (
+                "Audio2D.play",
+                "MiniForge API",
+                "Audio2D.play(\"SfxName\", { bus = \"SFX\", volume = 1.0 });",
+            ),
+            (
+                "Particles2D.burst",
+                "MiniForge API",
+                "Particles2D.burst(Entity.current(), 16);",
+            ),
+            (
+                "Spawner.spawn",
+                "MiniForge API",
+                "Spawner.spawn(\"EntityName\", x, y)",
+            ),
+            (
+                "Task.delay",
+                "MiniForge API",
+                "Task.delay(1.0, function()\n    \nend)",
+            ),
+            ("Debug.log", "MiniForge API", "Debug.log(\"message\");"),
             (
                 "Events.emit",
                 "MiniForge API",
@@ -1195,7 +1315,7 @@ end
         let mut pending = Vec::new();
         for (index, line) in self.lines.iter().enumerate() {
             let trimmed = line.trim();
-            if trimmed.starts_with("function on_update()") {
+            if trimmed.starts_with("function ") && trimmed.contains("on_update()") {
                 pending.push((
                     ScriptDiagnosticSeverity::Warning,
                     Some(index + 1),
@@ -1448,7 +1568,9 @@ fn current_identifier_prefix(line: &str, column: usize) -> String {
     let head = &line[..column];
     head.chars()
         .rev()
-        .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+        .take_while(|character| {
+            character.is_ascii_alphanumeric() || matches!(*character, '_' | '.')
+        })
         .collect::<String>()
         .chars()
         .rev()
@@ -1517,6 +1639,19 @@ mod tests {
         let cursor = editor.insert_snippet("projectile", 0, 0);
         assert!(cursor.is_some());
         assert!(editor.text().contains("Spawner.spawn"));
+
+        editor.set_text("Entity.ne");
+        let member_completions = editor.completions_at(0, "Entity.ne".len());
+        assert!(
+            member_completions
+                .iter()
+                .any(|completion| completion.label == "Entity.nearest")
+        );
+        assert!(
+            member_completions
+                .iter()
+                .any(|completion| completion.label == "Entity.nearby")
+        );
     }
 
     #[test]
@@ -1550,5 +1685,19 @@ mod tests {
         let minimap = editor.minimap();
         assert!(minimap.iter().any(|line| line.kind == "diagnostic"));
         assert!(minimap.iter().any(|line| line.kind == "comment"));
+    }
+
+    #[test]
+    fn luau_compile_errors_and_runtime_snippets_are_actionable() {
+        let mut editor = ScriptEditor::default();
+        editor.document.language = "luau".to_string();
+        editor.set_text("local ok = true\nfunction on_update(\nend");
+        assert!(!editor.validate());
+        assert!(editor.diagnostics[0].line.is_some());
+
+        editor.set_text("");
+        assert!(editor.insert_snippet("timer", 0, 0).is_some());
+        assert!(editor.text().contains("Task.delay"));
+        assert!(editor.text().contains("Debug.log"));
     }
 }

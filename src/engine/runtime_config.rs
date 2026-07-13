@@ -61,6 +61,18 @@ impl RuntimeConfig {
                 "prioritize_by_distance": true,
                 "open_world_auto_policy": true
             },
+            "stability_guard": {
+                "enabled": true,
+                "max_delta_seconds": 0.1,
+                "repair_invalid_numbers": true,
+                "quarantine_corrupt_entities": true,
+                "repairs_before_quarantine": 8,
+                "guarded_after_slow_frames": 4,
+                "recovery_after_slow_frames": 12,
+                "stable_frames_to_recover": 90,
+                "throttle_optional_systems": true,
+                "max_world_coordinate": 1000000000.0
+            },
             "graphics": {
                 "quality": "medium",
                 "view_frustum_culling": true,

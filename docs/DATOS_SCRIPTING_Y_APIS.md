@@ -1,11 +1,14 @@
-# MiniForge - Datos, Scripting y APIs
+# MiniForge - Datos, scripting y APIs
 
-Este documento consolida los contratos de datos, formatos, scripting y APIs publicas del motor.
+Este documento consolida los contratos persistentes, Luau, Visual Graph y las APIs públicas del
+motor. `types/miniforge.luau`, los serializadores y el header
+`include/miniforge_editor_bridge.h` tienen prioridad si una descripción histórica discrepa.
 
 ## Versiones Y Contratos
 
 Version actual del motor:
 
+- crate Cargo: `0.9.3`
 - `ENGINE_VERSION`: `0.9.3.4`
 - `ENGINE_CODENAME`: `2D Workflow Foundations`
 - `ENGINE_STREAM_VERSION`: `0.9.3.4`
@@ -18,6 +21,9 @@ Formatos versionados:
 - Visual graphs: migrados por `VisualGraphSerializer`.
 
 Regla: un documento con schema futuro se rechaza. Un documento legacy se migra si el migrador conoce la ruta.
+
+La versión del crate identifica el paquete Rust; `ENGINE_VERSION` identifica el stream de
+documentos/runtime. No deben compararse como si fueran dos builds contradictorios.
 
 ## Estructura De Proyecto
 
@@ -52,6 +58,29 @@ Archivos base:
 - `settings/build_settings.json`
 - `settings/build_profiles.json`
 - `settings/prefab_settings.json`
+
+El Content Browser permite leer y mutar contenido solo dentro de raíces administradas. Además de
+las rutas canónicas anteriores, reconoce `saves`, `scenes`, `settings`, `components`, `systems`,
+`plugins` y `templates`. Las rutas se normalizan contra la raíz del proyecto y las operaciones
+rechazan traversal o enlaces que escapen de ella.
+
+Tipos que puede crear directamente:
+
+| Tipo de UI | Contrato/destino habitual |
+|---|---|
+| Folder | Directorio bajo la raíz administrada actual |
+| Luau | Script `.luau` |
+| Scene | Documento `miniforge.scene` |
+| Prefab | Documento `miniforge.prefab` |
+| JSON / Resource Config | Datos/configuración JSON |
+| Material / Shader | Assets de render |
+| Visual Graph | `.mfgraph` bajo `scripts/visual_graphs` |
+| UI | Documento/canvas UI |
+| Tilemap | Documento de mapa 2D |
+| SoundCue | Configuración de evento de audio |
+
+Las escrituras de documentos soportados son atómicas. Rename, duplicate, move, import y trash
+refrescan Asset Database; un borrado desde el editor se envía a trash recuperable.
 
 ## Escenas
 
@@ -243,6 +272,61 @@ Callbacks soportados:
 - `on_destroy`
 - `on_event(name, payload)`
 
+Un script puede declarar callbacks globales o devolver una tabla/módulo con métodos. Ejemplo
+global mínimo y compatible con el contrato de tipos:
+
+```lua
+--!strict
+
+local speed = 180
+
+function on_ready()
+    Debug.log("Player ready")
+end
+
+function on_update(dt: number)
+    local direction = Input.get_axis("A", "D")
+    Transform2D.translate(Entity.current(), direction * speed * dt, 0)
+end
+```
+
+`Entity.current()` devuelve un handle al host del script. En scripts con tabla también está
+disponible `self.entity`; los globals `entity`, `entity_id` y `entity_name` se conservan para
+compatibilidad. Las mutaciones no deben esperar que el `RuntimeWorld` cambie en mitad del
+callback: se convierten en `ScriptCommand` y se aplican al terminar.
+
+### API Luau Por Namespace
+
+| Namespace | Funciones principales |
+|---|---|
+| `Vector2` | construcción, length/normalize, add/sub/scale, dot, distance, lerp, move_towards |
+| `Input` | pressed/is_pressed, get_axis/axis, action_pressed |
+| `Time` | delta, fixed delta, tiempo y frame actuales |
+| `Entity` | current, spawn, find/exists, nearby/nearest, tags, visibilidad, enabled y destroy |
+| `Transform2D` | set_position y translate sobre un target |
+| `Component` | add/remove/set/get/has con datos JSON-like |
+| `Physics2D` | raycast, shape_cast y overlap_area con layers/triggers |
+| `Rigidbody2D` | velocity e impulse |
+| `CharacterBody2D` | input de movimiento/jump/run |
+| `Camera` | main/current, follow, shake, zoom, límites, pixel-perfect y conversión screen/world |
+| `AnimationPlayer` / `AnimatedSprite` | play y parámetros |
+| `Tilemap` | get/set de tile por layer y coordenada |
+| `Tween` | interpolación por property path |
+| `Navigation2D` | destination de una entidad |
+| `Audio2D` | play con bus, volumen y loop |
+| `Particles2D` | burst |
+| `Spawner` | spawn con ID estable reservado |
+| `Scene` | carga de escena |
+| `Game` | save/load slot y autosave |
+| `Events` | eventos custom con payload |
+| `Assets` | comprobar/resolver paths de asset |
+| `Debug` | log, warn y error |
+| `Task` | delay, defer y cancel ligados al contexto |
+
+Un `EntityTarget` puede ser ID, nombre, proxy `EntityValue` o handle. Las queries de física
+aceptan mask/layers y opción de triggers. Consulta `types/miniforge.luau` para firmas exactas: es
+el archivo que deben consumir el editor, completions y herramientas externas.
+
 `ScriptSchedulerConfig`:
 
 - `enabled`
@@ -255,7 +339,15 @@ Callbacks soportados:
 
 Si una entidad tiene `ScriptSchedule`, puede controlar frecuencia, prioridad y distancia. Cuando `open_world_auto_policy` esta activo, el runtime asigna defaults conservadores para entidades comunes de mundo abierto: jugador/directores siempre activos, policia y vehiculos con prioridad alta, peatones/pickups con intervalos mas largos y objetos de fondo con menor frecuencia. `prioritize_by_distance` ordena scripts de igual prioridad por cercania al jugador/camara antes de consumir el presupuesto de update.
 
-El snapshot Luau mantiene indices por id, nombre, tag y un `SpatialIndex` interno. `Entity.find` usa los indices por id/nombre y `Entity.nearby(origin, radius, options)` usa broadphase espacial para consultas normales con tag/layer, incluyendo filtros multiples con deduplicacion. Si se solicita `include_disabled = true`, cae a un scan lineal para preservar compatibilidad.
+El snapshot Luau mantiene indices por id, nombre, tag y un `SpatialIndex` interno. `Entity.find` y `Entity.exists` usan los indices por id/nombre. `Entity.nearby(origin, radius, options)` y `Entity.nearest(origin, radius, options)` usan broadphase espacial para consultas normales con tag/layer, incluyendo filtros multiples con deduplicacion. `Entity.nearest` excluye el origen por defecto; se puede desactivar con `exclude_origin = false`. Si se solicita `include_disabled = true`, las consultas espaciales caen a un scan lineal para preservar compatibilidad. `Entity.count_with_tag` permite contar entidades habilitadas sin construir proxies Luau.
+
+APIs de productividad destacadas:
+
+- `Vector2.add`, `sub`, `scale`, `dot`, `distance`, `lerp` y `move_towards`.
+- `Component.add`, `remove`, `set`, `get` y `has`.
+- `Spawner.spawn` y `Entity.spawn` reservan y devuelven un id estable inmediatamente; comandos posteriores del mismo callback pueden usarlo como target aunque el spawn se aplique al final del callback, incluso si ya existe otra entidad con el mismo nombre.
+- `Camera.main()` es el nombre recomendado; `Camera.current()` se conserva como alias compatible.
+- `Task.delay`, `Task.defer` y `Task.cancel` ofrecen timers ligados al contexto persistente del script.
 
 Counters utiles del profiler:
 
@@ -267,12 +359,12 @@ Counters utiles del profiler:
 `ScriptCommand` cubre:
 
 - Transform: `Move`, `SetPosition`.
-- Spawn/destruccion: `Spawn`, `SpawnConfigured`, `Destroy`.
+- Spawn/destruccion: `Spawn`, `SpawnConfigured`, `SpawnWithId`, `Destroy`.
 - Audio: `PlaySound`.
 - Escenas: `LoadScene`.
 - UI: `SetUiText`, `SetUiProgress`, `SetUiVisible`.
 - Entidad: `SetTag`, `SetLayer`, `SetEnabled`, `SetVisible`.
-- Componentes: `SetComponentNumber`, `SetComponentText`, `SetComponentValue`, `AddComponent`.
+- Componentes: `SetComponentNumber`, `SetComponentText`, `SetComponentValue`, `AddComponent`, `RemoveComponent`.
 - Fisica/control: `SetVelocity`, `ApplyImpulse`, `SetCharacterInput`.
 - Camara: `SetCameraFollow`, `SetCameraShake`, `SetCameraPixelPerfect`.
 - Animacion: `SetAnimation`, `SetAnimationParameter`.
@@ -286,6 +378,55 @@ Counters utiles del profiler:
 - Eventos/debug: `EmitEvent`, `DebugLog`.
 
 `LuauRunReport` reporta scripts ejecutados, comandos aplicados, spawns, destrucciones, sonidos, escenas solicitadas, UI updates, errores y mensajes debug.
+
+`ScriptDebugSnapshot` agrega memoria usada por la VM, scripts ejecutados en el ultimo frame, contextos persistentes, scripts cacheados y snapshots de scheduler/queries. `LuauScriptRuntime::validate_source_diagnostics` devuelve errores estructurados con linea, columna y estado de entrada incompleta. Las declaraciones completas para el language server viven en `types/miniforge.luau`.
+
+### Luau Studio
+
+Luau Studio es la superficie Qt de edición y no una VM distinta. Abre varios tabs, conserva
+buffers dirty, restaura la sesión y llama al mismo validator/runtime Rust usado por Play Mode.
+Incluye:
+
+- syntax highlighting nativo;
+- diagnostics con línea, columna y estado de código incompleto;
+- outline de callbacks y funciones;
+- completions contextuales y API browser;
+- templates/snippets alineados con callbacks reales;
+- Find/Replace, Go to Line, comment y duplicate line;
+- guardar, abrir en editor externo y navegación desde Content Browser;
+- breakpoints, pause/resume/step y watches.
+
+El estado recuperable se guarda atómicamente en `.miniforge/qt_workspace.json`: tabs, documento
+activo, texto dirty, breakpoints y watches. Al reabrir, el buffer recuperado no se sustituye en
+silencio por el archivo de disco. El usuario decide guardarlo o descartarlo.
+
+Flujo recomendado:
+
+1. Crear/abrir el script y validar antes de adjuntarlo.
+2. Corregir diagnostics desde la lista de problemas.
+3. Guardar y adjuntar el path con `GameObject.script`, `scripts` o `ScriptComponent`.
+4. Entrar en Play Mode; revisar Console y profiler Luau.
+5. Agregar breakpoints en la declaración de callbacks y watches punteados.
+
+### Debugger Luau
+
+El debugger integrado usa breakpoints reales a nivel de callback. Un breakpoint puede identificar `path + function` o la linea donde se declara el callback; el runtime pausa antes de ejecutar `on_ready`, `on_update`, `on_fixed_update`, `on_event` u otro handler soportado. `resume` ejecuta una vez el callback pausado sin volver a disparar el mismo breakpoint y `step` ejecuta ese callback y solicita pausa antes del siguiente callback elegible.
+
+El frame pausado expone entidad, script, callback, evento, linea de declaracion, variables publicas de `self`, snapshot serializado de `entity` y `Time`. Los watches aceptan solamente identificadores punteados como `self.speed`, `entity.name` o `event.payload.quest`; no ejecutan codigo Luau arbitrario. La granularidad es callback-level, no instruccion-a-instruccion, por lo que una linea interna de un callback no se presenta falsamente como breakpoint ejecutable.
+
+El ABI del editor expone estado, breakpoints, comandos y watches mediante `mf_editor_luau_debug_state_json`, `mf_editor_luau_set_breakpoints_json`, `mf_editor_luau_debug_command` y `mf_editor_luau_watches_json`.
+
+Limitaciones deliberadas:
+
+- no evalúa expresiones Luau arbitrarias desde watches;
+- no detiene el VM en una instrucción interna;
+- un breakpoint en una línea no ejecutable se asocia al callback declarado allí;
+- `step` avanza un callback elegible, no una línea;
+- Safe Mode impide ejecutar scripts aunque el documento se pueda abrir y validar.
+
+### Visual Graph round-trip
+
+El editor Qt valida y guarda `.mfgraph` a traves de `VisualGraphSerializer`: migra documentos legacy en memoria, aplica el header `miniforge.visual-graph`, rechaza versiones futuras y guarda JSON normalizado con backup atomico. El ABI correspondiente es `mf_editor_visual_graph_validate_json` y `mf_editor_visual_graph_save`.
 
 ## Eventos De Fisica En Luau
 
@@ -315,6 +456,16 @@ Payload:
 ## Visual Graphs
 
 `VisualScriptRuntime` ejecuta componentes `VisualScript` en modo `PLAY`, salvo que `run_in_editor` sea `true`.
+
+El editor crea `.mfgraph` desde Content Browser o Visual Graph. El panel ofrece lista de graphs,
+templates, palette, canvas, nodos movibles, pins/links, variables e inspector JSON. Antes de
+guardar hace validación local de IDs/enlaces y validación final mediante
+`VisualGraphSerializer`; los documentos legacy se migran en memoria, los futuros se rechazan y
+el guardado normalizado usa backup atómico.
+
+El flujo de ejecución sigue una arista `next` desde un entry node. El graph no debe depender de
+la posición visual de los nodos para definir orden. IDs de nodo deben ser únicos y toda conexión
+debe apuntar a un ID existente.
 
 Eventos/entry nodes:
 
@@ -477,7 +628,7 @@ use miniforge::RuntimeWorld;
 use miniforge::ENGINE_VERSION;
 ```
 
-Cuando `editor` esta activo:
+Cuando `editor_core` está activo:
 
 ```rust
 use miniforge::Game;
@@ -516,13 +667,45 @@ Funciones principales:
 - editar inspector por JSON.
 - ejecutar comando.
 - tomar snapshot RGBA de viewport.
+- administrar assets con una unica llamada status-only: `mf_editor_manage_asset` (`rename`, `duplicate`, `move`, `delete`, `import`).
+- consultar telemetry estructurada con `mf_editor_profiler_snapshot_json`.
+- reconstruir y consultar dependencias con `mf_editor_rebuild_asset_dependencies` y `mf_editor_asset_dependency_graph_json`.
+- ejecutar package/autosave/session/external-build con `mf_editor_project_operation` y consultar su estado/plan con `mf_editor_project_operations_json`.
+
+Superficies conectadas actualmente a Qt:
+
+| Área | Contrato |
+|---|---|
+| Proyecto | open con opciones, launcher, create/repair, settings y operations |
+| Mundo | jerarquía, selección, acciones de entidad, scene state y Scene Browser |
+| Viewport | pick, snapshot/state, transform batch y overlays |
+| Inspector | catálogo de componentes, campos single/multi y edición JSON |
+| Herramientas | sesiones/action JSON para animation, tilemap, UI y otros tools |
+| Prefabs | state y create/instantiate/apply/revert/variant/detach |
+| Assets | listado, Content Browser, texto, import/move/duplicate/rename/trash |
+| Observabilidad | console, readiness, profiler, dependency graph y Runtime Health |
+| Luau | scripts, read/save/validate, API, debugger, breakpoints y watches |
+| Visual Graph | catálogo, templates, validate/save |
+| Automatización | Python tools, external editor y ForgeAI diagnostics/tests |
+| Build | export y plan/launch/stop de proceso externo |
+| Sprite | canvas RGBA, transacciones de edición, transforms, undo/redo y save |
+
+`MfBridge` es el adaptador C++ invocable desde QML. Mantiene propiedades observables, traduce
+colecciones C a modelos Qt y publica signals después de cada refresh/mutación. Los widgets nativos
+de viewport y sprite usan el mismo bridge; no tienen un backend paralelo.
 
 Reglas de memoria:
 
 - El caller crea y destruye `MfEditorHandle`.
 - Buffers C deben pasar capacidad.
+- Las consultas JSON admiten el patron `BufferTooSmall` para medir y reintentar. `mf_editor_manage_asset` no devuelve buffer y nunca debe invocarse dos veces para una misma accion de UI.
+- `mf_editor_project_operation` tambien es status-only; package, restore o prepare-build se ejecutan una vez y su resultado se lee despues desde el snapshot.
 - Si no hay capacidad suficiente se retorna `BufferTooSmall` y `required`.
 - Strings tienen capacidades fijas para filas comunes.
+
+La regla de ownership es estricta: el caller conserva sus buffers, Rust conserva el handle y el
+bridge no almacena punteros a memoria temporal. Los payloads JSON permiten ampliar operaciones
+sin romper structs C existentes; cambios incompatibles requieren incrementar la versión ABI.
 
 ## Native Plugin ABI
 
@@ -592,3 +775,17 @@ Incluye:
 - source manifest.
 
 `RuntimeManifestLoader` valida builds exportados y detecta assets faltantes.
+
+## Compatibilidad Y Evolución
+
+- No cambies un schema persistente sin incrementar `schema_version` o agregar migración.
+- Rechaza documentos futuros; no elimines campos desconocidos mediante un guardado silencioso.
+- Mantén `types/miniforge.luau` sincronizado con bindings, snippets y API browser.
+- Conserva aliases de Luau solo cuando estén documentados como compatibilidad.
+- Usa GUID para referencias durables de assets y path para interacción humana/importación.
+- Mantén las mutaciones FFI como llamadas únicas y separa sus snapshots de resultado.
+- Considera Python, C# y TypeScript editor-only salvo que un adapter runtime declare lo contrario.
+
+Consulta el [índice de documentación](README.md), la guía del
+[editor](EDITOR_Y_FLUJO_DE_USO.md) y la arquitectura del
+[runtime](ARQUITECTURA_Y_RUNTIME.md).

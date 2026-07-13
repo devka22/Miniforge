@@ -33,17 +33,31 @@ find_program(CARGO_EXECUTABLE cargo REQUIRED)
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Quick QuickWidgets Qml)
 enable_testing()
 
+if(APPLE)
+    find_program(INSTALL_NAME_TOOL_EXECUTABLE install_name_tool REQUIRED)
+endif()
+
 set(MINIFORGE_CARGO_PROFILE_ARGS)
 if(MINIFORGE_EDITOR_RUST_PROFILE STREQUAL "release")
     list(APPEND MINIFORGE_CARGO_PROFILE_ARGS --release)
 endif()
 
-add_custom_target(miniforge_rust_editor_bridge
-    COMMAND "${CARGO_EXECUTABLE}" rustc --features editor_ffi --lib --crate-type cdylib --target-dir "${MINIFORGE_RUST_TARGET_DIR}" ${MINIFORGE_CARGO_PROFILE_ARGS}
-    WORKING_DIRECTORY "${MINIFORGE_ROOT}"
-    COMMENT "Building Rust EditorCore C ABI bridge"
-    VERBATIM
-)
+if(APPLE)
+    add_custom_target(miniforge_rust_editor_bridge
+        COMMAND "${CARGO_EXECUTABLE}" rustc --features editor_ffi --lib --crate-type cdylib --target-dir "${MINIFORGE_RUST_TARGET_DIR}" ${MINIFORGE_CARGO_PROFILE_ARGS}
+        COMMAND "${INSTALL_NAME_TOOL_EXECUTABLE}" -id "@rpath/${CMAKE_SHARED_LIBRARY_PREFIX}miniforge${CMAKE_SHARED_LIBRARY_SUFFIX}" "${MINIFORGE_RUST_LIBRARY}"
+        WORKING_DIRECTORY "${MINIFORGE_ROOT}"
+        COMMENT "Building Rust EditorCore C ABI bridge"
+        VERBATIM
+    )
+else()
+    add_custom_target(miniforge_rust_editor_bridge
+        COMMAND "${CARGO_EXECUTABLE}" rustc --features editor_ffi --lib --crate-type cdylib --target-dir "${MINIFORGE_RUST_TARGET_DIR}" ${MINIFORGE_CARGO_PROFILE_ARGS}
+        WORKING_DIRECTORY "${MINIFORGE_ROOT}"
+        COMMENT "Building Rust EditorCore C ABI bridge"
+        VERBATIM
+    )
+endif()
 
 add_library(miniforge_rust SHARED IMPORTED GLOBAL)
 set_target_properties(miniforge_rust PROPERTIES IMPORTED_LOCATION "${MINIFORGE_RUST_LIBRARY}")
@@ -68,6 +82,8 @@ add_executable(miniforge_qt_editor
     src/MfBridge.h
     src/MfModels.cpp
     src/MfModels.h
+    src/LuauSyntaxHighlighter.cpp
+    src/LuauSyntaxHighlighter.h
     src/ViewportWidget.cpp
     src/ViewportWidget.h
     src/SpriteEditorWidget.cpp
@@ -79,6 +95,7 @@ add_executable(miniforge_qt_editor
 add_dependencies(miniforge_qt_editor miniforge_rust_editor_bridge)
 
 target_compile_definitions(miniforge_qt_editor PRIVATE
+    MF_ROOT_PATH="${MINIFORGE_ROOT}"
     MF_QML_ROOT="${MINIFORGE_QML_ROOT}"
     MF_QML_INSTALL_SUBDIR="${CMAKE_INSTALL_DATADIR}/miniforge/editor-qml"
     MF_DEFAULT_PROJECT="${MINIFORGE_DEFAULT_PROJECT}"
@@ -91,6 +108,15 @@ target_link_libraries(miniforge_qt_editor PRIVATE
     Qt6::Qml
     miniforge_rust
     miniforge_editor_bridge_headers
+)
+
+add_test(
+    NAME miniforge_qt_editor_cli_help
+    COMMAND $<TARGET_FILE:miniforge_qt_editor> --help
+)
+set_tests_properties(miniforge_qt_editor_cli_help PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    TIMEOUT 20
 )
 
 install(TARGETS miniforge_qt_editor
@@ -110,6 +136,17 @@ if(APPLE OR UNIX)
     set_target_properties(miniforge_qt_editor PROPERTIES
         BUILD_RPATH "${MINIFORGE_RUST_TARGET_DIR}/${MINIFORGE_RUST_PROFILE_DIR}"
         INSTALL_RPATH "${MINIFORGE_INSTALL_RPATH}"
+    )
+endif()
+
+if(APPLE)
+    set_target_properties(miniforge_qt_editor PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "MiniForge Editor"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "io.miniforge.editor"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        OUTPUT_NAME "MiniForge"
     )
 endif()
 endif()
@@ -135,8 +172,70 @@ set_tests_properties(miniforge_editor_bridge_smoke PROPERTIES
     LABELS "editor;ffi;smoke"
 )
 
+add_executable(miniforge_editor_model_smoke_test
+    tests/model_smoke.cpp
+    src/MfBridge.cpp
+    src/MfBridge.h
+    src/MfModels.cpp
+    src/MfModels.h
+)
+
+add_dependencies(miniforge_editor_model_smoke_test miniforge_rust_editor_bridge)
+
+target_include_directories(miniforge_editor_model_smoke_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
+
+target_compile_definitions(miniforge_editor_model_smoke_test PRIVATE
+    MF_ROOT_PATH="${MINIFORGE_ROOT}"
+)
+
+target_link_libraries(miniforge_editor_model_smoke_test PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    miniforge_rust
+    miniforge_editor_bridge_headers
+)
+
+add_test(
+    NAME miniforge_editor_model_smoke
+    COMMAND miniforge_editor_model_smoke_test "${MINIFORGE_DEFAULT_PROJECT}"
+)
+
+set_tests_properties(miniforge_editor_model_smoke PROPERTIES
+    LABELS "editor;qt;models;smoke"
+)
+
+add_executable(miniforge_luau_highlighter_smoke_test
+    tests/luau_highlighter_smoke.cpp
+    src/LuauSyntaxHighlighter.cpp
+    src/LuauSyntaxHighlighter.h
+)
+
+target_include_directories(miniforge_luau_highlighter_smoke_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
+
+target_link_libraries(miniforge_luau_highlighter_smoke_test PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Quick
+)
+
+add_test(
+    NAME miniforge_luau_highlighter_smoke
+    COMMAND miniforge_luau_highlighter_smoke_test
+)
+
+set_tests_properties(miniforge_luau_highlighter_smoke PROPERTIES
+    LABELS "editor;qt;luau;syntax;smoke"
+)
+
 if(APPLE OR UNIX)
     set_target_properties(miniforge_editor_bridge_smoke_test PROPERTIES
+        BUILD_RPATH "${MINIFORGE_RUST_TARGET_DIR}/${MINIFORGE_RUST_PROFILE_DIR}"
+    )
+    set_target_properties(miniforge_editor_model_smoke_test PROPERTIES
         BUILD_RPATH "${MINIFORGE_RUST_TARGET_DIR}/${MINIFORGE_RUST_PROFILE_DIR}"
     )
 endif()
@@ -144,6 +243,9 @@ endif()
 
 install(DIRECTORY "${MINIFORGE_QML_ROOT}/"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/miniforge/editor-qml"
+)
+install(FILES "${MINIFORGE_ROOT}/types/miniforge.luau"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/miniforge/types"
 )
 
 if(MINIFORGE_EDITOR_ENABLE_QML_LINT)
@@ -177,6 +279,12 @@ if(TARGET miniforge_qt_editor)
 endif()
 if(TARGET miniforge_editor_bridge_smoke_test)
     list(APPEND MINIFORGE_EDITOR_CHECK_TARGETS miniforge_editor_bridge_smoke_test)
+endif()
+if(TARGET miniforge_editor_model_smoke_test)
+    list(APPEND MINIFORGE_EDITOR_CHECK_TARGETS miniforge_editor_model_smoke_test)
+endif()
+if(TARGET miniforge_luau_highlighter_smoke_test)
+    list(APPEND MINIFORGE_EDITOR_CHECK_TARGETS miniforge_luau_highlighter_smoke_test)
 endif()
 if(TARGET miniforge_editor_qml_lint)
     list(APPEND MINIFORGE_EDITOR_CHECK_TARGETS miniforge_editor_qml_lint)

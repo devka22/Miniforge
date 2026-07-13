@@ -121,8 +121,25 @@ fn extract_archive<R: Read + Seek>(
 
 fn should_skip_project_package_path(project_path: &Path, path: &Path) -> bool {
     let relative = path.strip_prefix(project_path).unwrap_or(path);
+    if relative.starts_with(Path::new("saves").join("autosave")) {
+        return true;
+    }
+    let filename = relative
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if filename == ".DS_Store"
+        || filename.ends_with(".bak")
+        || filename.contains(".bak.")
+        || filename.contains(".tmp.")
+    {
+        return true;
+    }
     relative.components().any(|component| {
         let part = component.as_os_str().to_string_lossy();
-        matches!(part.as_ref(), "target" | "builds" | "logs" | ".git")
+        matches!(
+            part.as_ref(),
+            "target" | "build" | "builds" | "exports" | "packages" | "logs" | ".git" | ".miniforge"
+        )
     })
 }

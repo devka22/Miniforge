@@ -33,6 +33,7 @@ pub struct RuntimeWorld {
     pub spatial_index: SpatialIndex,
     pub structural_revision: u64,
     pub indexed_revision: u64,
+    entity_lookup: BTreeMap<u64, usize>,
 }
 
 impl Default for RuntimeWorld {
@@ -48,6 +49,7 @@ impl RuntimeWorld {
             spatial_index: SpatialIndex::default(),
             structural_revision: 1,
             indexed_revision: 0,
+            entity_lookup: BTreeMap::new(),
         };
         world.rebuild_index();
         world
@@ -63,14 +65,12 @@ impl RuntimeWorld {
     }
 
     pub fn entity(&self, entity_id: u64) -> Option<&GameObject> {
-        self.units.iter().find(|entity| entity.id == entity_id)
+        self.entity_index(entity_id)
+            .and_then(|index| self.units.get(index))
     }
 
     pub fn entity_mut(&mut self, entity_id: u64) -> Option<&mut GameObject> {
-        let index = self
-            .units
-            .iter()
-            .position(|entity| entity.id == entity_id)?;
+        let index = self.entity_index(entity_id)?;
         self.mark_changed();
         self.units.get_mut(index)
     }
@@ -88,6 +88,7 @@ impl RuntimeWorld {
         let id = entity.id;
         self.units.push(entity);
         self.mark_changed();
+        self.entity_lookup.insert(id, self.units.len() - 1);
         if let Some(entity) = self.units.last() {
             self.spatial_index.insert(entity);
             self.indexed_revision = self.structural_revision;
@@ -96,15 +97,59 @@ impl RuntimeWorld {
     }
 
     pub fn remove(&mut self, entity_id: u64) -> Option<GameObject> {
-        let index = self
-            .units
-            .iter()
-            .position(|entity| entity.id == entity_id)?;
+        let index = self.entity_index(entity_id)?;
         let removed = self.units.remove(index);
         self.spatial_index.remove(entity_id);
+        self.entity_lookup.remove(&entity_id);
+        for (shifted_index, entity) in self.units.iter().enumerate().skip(index) {
+            self.entity_lookup.insert(entity.id, shifted_index);
+        }
         self.mark_changed();
         self.indexed_revision = self.structural_revision;
         Some(removed)
+    }
+
+    /// O(log n) removal for systems where vector order has no semantic value.
+    /// Rendering/editor code can continue using the stable-order `remove` API.
+    pub fn remove_unordered(&mut self, entity_id: u64) -> Option<GameObject> {
+        let index = self.entity_index(entity_id)?;
+        let removed = self.units.swap_remove(index);
+        self.spatial_index.remove(entity_id);
+        self.entity_lookup.remove(&entity_id);
+        if let Some(moved) = self.units.get(index) {
+            self.entity_lookup.insert(moved.id, index);
+        }
+        self.mark_changed();
+        self.indexed_revision = self.structural_revision;
+        Some(removed)
+    }
+
+    /// Appends a batch atomically and rebuilds acceleration structures once.
+    pub fn extend(
+        &mut self,
+        entities: impl IntoIterator<Item = GameObject>,
+    ) -> Result<Vec<u64>, String> {
+        let entities = entities.into_iter().collect::<Vec<_>>();
+        let mut ids = self
+            .units
+            .iter()
+            .map(|entity| entity.id)
+            .collect::<BTreeSet<_>>();
+        for entity in &entities {
+            if !ids.insert(entity.id) {
+                return Err(format!("duplicate runtime entity id {}", entity.id));
+            }
+        }
+        let added_ids = entities.iter().map(|entity| entity.id).collect::<Vec<_>>();
+        self.units.reserve(entities.len());
+        self.units.extend(entities);
+        self.mark_changed();
+        self.rebuild_index();
+        Ok(added_ids)
+    }
+
+    pub fn reserve_entities(&mut self, additional: usize) {
+        self.units.reserve(additional);
     }
 
     pub fn mark_changed(&mut self) {
@@ -112,6 +157,7 @@ impl RuntimeWorld {
     }
 
     pub fn rebuild_index(&mut self) {
+        self.rebuild_entity_lookup();
         self.spatial_index.rebuild(&self.units);
         self.indexed_revision = self.structural_revision;
     }
@@ -156,6 +202,27 @@ impl RuntimeWorld {
 
     pub fn pack_scene_from_root(&self, root_id: u64) -> Result<PackedScene2D, String> {
         PackedScene2D::pack_from_root(&self.units, root_id)
+    }
+
+    fn entity_index(&self, entity_id: u64) -> Option<usize> {
+        self.entity_lookup
+            .get(&entity_id)
+            .copied()
+            .filter(|index| {
+                self.units
+                    .get(*index)
+                    .is_some_and(|entity| entity.id == entity_id)
+            })
+            // Legacy callers can still mutate the public vector directly. The
+            // verified fallback keeps lookups correct until the next rebuild.
+            .or_else(|| self.units.iter().position(|entity| entity.id == entity_id))
+    }
+
+    fn rebuild_entity_lookup(&mut self) {
+        self.entity_lookup.clear();
+        for (index, entity) in self.units.iter().enumerate() {
+            self.entity_lookup.entry(entity.id).or_insert(index);
+        }
     }
 
     pub fn validate(&self) -> WorldValidationReport {
@@ -266,5 +333,46 @@ mod tests {
         let report = world.validate();
         assert_eq!(report.hierarchy_cycles.len(), 1);
         assert!(!report.is_valid());
+    }
+
+    #[test]
+    fn runtime_world_batch_extend_is_atomic_and_indexed_once() {
+        let mut world = RuntimeWorld::default();
+        let first = GameObject::new(1.0, 1.0, Some("First".to_string()));
+        let duplicate = first.clone();
+        assert!(world.extend([first, duplicate]).is_err());
+        assert!(world.units.is_empty());
+
+        let entities = (0..512)
+            .map(|index| GameObject::new(index as f64, 0.0, None))
+            .collect::<Vec<_>>();
+        let expected_id = entities[400].id;
+        assert_eq!(world.extend(entities).expect("batch").len(), 512);
+        assert_eq!(
+            world.entity(expected_id).map(|entity| entity.id),
+            Some(expected_id)
+        );
+        assert!(world.index_is_current());
+    }
+
+    #[test]
+    fn unordered_removal_repairs_lookup_for_swapped_entity() {
+        let entities = (0..3)
+            .map(|index| GameObject::new(index as f64, 0.0, None))
+            .collect::<Vec<_>>();
+        let removed_id = entities[0].id;
+        let moved_id = entities[2].id;
+        let mut world = RuntimeWorld::new(entities);
+
+        assert_eq!(
+            world.remove_unordered(removed_id).map(|entity| entity.id),
+            Some(removed_id)
+        );
+        assert_eq!(
+            world.entity(moved_id).map(|entity| entity.id),
+            Some(moved_id)
+        );
+        assert_eq!(world.units.len(), 2);
+        assert!(world.index_is_current());
     }
 }

@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 import "../themes" as Theme
 import "../components"
 
@@ -16,6 +17,61 @@ Rectangle {
             detail: consoleList.count + " runtime entries"
             badge: editorBridge.lastError.length > 0 ? "Error" : "Live"
             badgeColor: editorBridge.lastError.length > 0 ? Theme.DarkTheme.danger : Theme.DarkTheme.accent
+        }
+
+        Row {
+            width: parent.width
+            height: 32
+            spacing: 7
+
+            MfSearchBar {
+                width: Math.max(80, parent.width - severityFilter.width - latestButton.width - clearButton.width - errorsButton.width - 35)
+                placeholderText: "Filter channel, message or frame"
+                onTextChanged: consoleModel.filter = text
+            }
+
+            ComboBox {
+                id: severityFilter
+                width: 104
+                height: 32
+                model: ["All", "Info+", "Warning+", "Errors"]
+                onCurrentIndexChanged: consoleModel.minimumSeverity = currentIndex
+
+                contentItem: Text {
+                    leftPadding: 9
+                    text: severityFilter.displayText
+                    color: Theme.DarkTheme.text
+                    font.pixelSize: 11
+                    verticalAlignment: Text.AlignVCenter
+                }
+
+                background: Rectangle {
+                    radius: Theme.DarkTheme.radius
+                    color: Theme.DarkTheme.surface
+                    border.color: severityFilter.activeFocus ? Theme.DarkTheme.focus : Theme.DarkTheme.border
+                    border.width: 1
+                }
+            }
+
+            MfButton {
+                id: latestButton
+                width: 64
+                text: "Latest"
+                enabled: consoleList.count > 0
+                onClicked: consoleList.positionViewAtEnd()
+            }
+            MfButton {
+                id: clearButton
+                width: 58
+                text: "Clear"
+                onClicked: editorBridge.executeCommand("console.clear")
+            }
+            MfButton {
+                id: errorsButton
+                width: 86
+                text: "Clear Errors"
+                onClicked: editorBridge.executeCommand("console.clear_errors")
+            }
         }
 
         ListView {
@@ -81,7 +137,7 @@ Rectangle {
             Text {
                 visible: consoleList.count === 0
                 anchors.centerIn: parent
-                text: "No console entries"
+                text: editorBridge.projectOpen ? "No matching console entries" : "Open a project to view runtime events"
                 color: Theme.DarkTheme.muted
                 font.pixelSize: 12
                 horizontalAlignment: Text.AlignHCenter

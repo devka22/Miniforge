@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+QML_ROOT="$ROOT/editor-qml"
+
+if ! command -v rg >/dev/null 2>&1; then
+    echo "check-qt-backend-contract requires ripgrep (rg)." >&2
+    exit 2
+fi
+
+failures=0
+
+qml_methods() {
+    local object_name="$1"
+    rg -o --no-filename "${object_name}\\.[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\\(" \
+        "$QML_ROOT" -g '*.qml' \
+        | sed -E "s/${object_name}\\.([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*\\(.*/\\1/" \
+        | LC_ALL=C sort -u
+}
+
+qml_members() {
+    local object_name="$1"
+    rg -o --no-filename "${object_name}\\.[A-Za-z_][A-Za-z0-9_]*" \
+        "$QML_ROOT" -g '*.qml' \
+        | sed -E "s/${object_name}\\.//" \
+        | LC_ALL=C sort -u
+}
+
+check_method_surface() {
+    local object_name="$1"
+    local class_name="$2"
+    local header="$3"
+    local implementation="$4"
+    local method
+
+    while IFS= read -r method; do
+        [[ -z "$method" ]] && continue
+        if ! rg -q "Q_INVOKABLE[^;]*[[:space:]]${method}[[:space:]]*\\(" "$header"; then
+            echo "Missing Q_INVOKABLE: ${object_name}.${method} -> ${header#$ROOT/}" >&2
+            failures=$((failures + 1))
+        fi
+        if ! rg -q "${class_name}::${method}[[:space:]]*\\(" "$implementation"; then
+            echo "Missing C++ implementation: ${object_name}.${method} -> ${implementation#$ROOT/}" >&2
+            failures=$((failures + 1))
+        fi
+    done < <(qml_methods "$object_name")
+}
+
+check_bridge_properties() {
+    local member
+    local methods
+    methods="$(qml_methods editorBridge)"
+
+    while IFS= read -r member; do
+        [[ -z "$member" ]] && continue
+        if grep -qxF "$member" <<<"$methods"; then
+            continue
+        fi
+        if ! rg -q "Q_PROPERTY\\([^)]*[[:space:]]${member}[[:space:]]+READ[[:space:]]" \
+            "$ROOT/editor-cpp/src/MfBridge.h"; then
+            echo "Missing Q_PROPERTY: editorBridge.${member} -> editor-cpp/src/MfBridge.h" >&2
+            failures=$((failures + 1))
+        fi
+    done < <(qml_members editorBridge)
+}
+
+check_method_surface \
+    editorBridge \
+    MfBridge \
+    "$ROOT/editor-cpp/src/MfBridge.h" \
+    "$ROOT/editor-cpp/src/MfBridge.cpp"
+
+check_method_surface \
+    editorShell \
+    MainWindow \
+    "$ROOT/editor-cpp/src/MainWindow.h" \
+    "$ROOT/editor-cpp/src/MainWindow.cpp"
+
+check_method_surface \
+    editorController \
+    MfEditorController \
+    "$ROOT/editor-cpp/src/MfModels.h" \
+    "$ROOT/editor-cpp/src/MfModels.cpp"
+
+check_bridge_properties
+
+if (( failures > 0 )); then
+    echo "Qt/QML backend contract failed with $failures missing binding(s)." >&2
+    exit 1
+fi
+
+method_count="$(qml_methods editorBridge | wc -l | tr -d ' ')"
+property_count="$({ qml_members editorBridge; qml_methods editorBridge; } | LC_ALL=C sort | uniq -u | wc -l | tr -d ' ')"
+echo "Qt/QML backend contract is complete: ${method_count} bridge calls and ${property_count} bridge properties are bound."

@@ -1,4 +1,4 @@
-//! Shared editor UI services: icons, fuzzy search, desktop integration and previews.
+//! Frontend-neutral editor services: search, highlighting, desktop integration and previews.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -11,87 +11,6 @@ use nucleo_matcher::{Config, Matcher};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EditorIcon {
-    Save,
-    Open,
-    NewEntity,
-    Component,
-    Camera,
-    Audio,
-    Script,
-    Prefab,
-    Folder,
-    Error,
-    Warning,
-    Search,
-    Settings,
-    Delete,
-    Copy,
-    Paste,
-    ExternalLink,
-    Scene,
-    Play,
-    Stop,
-    Refresh,
-    Validate,
-    Graph,
-    Image,
-}
-
-impl EditorIcon {
-    pub fn glyph(self) -> &'static str {
-        use egui_phosphor::regular as icon;
-        match self {
-            Self::Save => icon::FLOPPY_DISK,
-            Self::Open => icon::FOLDER_OPEN,
-            Self::NewEntity => icon::CUBE,
-            Self::Component => icon::PUZZLE_PIECE,
-            Self::Camera => icon::CAMERA,
-            Self::Audio => icon::SPEAKER_HIGH,
-            Self::Script => icon::FILE_CODE,
-            Self::Prefab => icon::PACKAGE,
-            Self::Folder => icon::FOLDER,
-            Self::Error => icon::X_CIRCLE,
-            Self::Warning => icon::WARNING,
-            Self::Search => icon::MAGNIFYING_GLASS,
-            Self::Settings => icon::GEAR,
-            Self::Delete => icon::TRASH,
-            Self::Copy => icon::COPY,
-            Self::Paste => icon::CLIPBOARD_TEXT,
-            Self::ExternalLink => icon::ARROW_SQUARE_OUT,
-            Self::Scene => icon::LAYOUT,
-            Self::Play => icon::PLAY,
-            Self::Stop => icon::STOP,
-            Self::Refresh => icon::ARROWS_CLOCKWISE,
-            Self::Validate => icon::CHECK_CIRCLE,
-            Self::Graph => icon::GRAPH,
-            Self::Image => icon::IMAGE,
-        }
-    }
-
-    pub fn label(self, text: &str) -> String {
-        format!("{}  {text}", self.glyph())
-    }
-}
-
-pub fn install_phosphor_fonts(ctx: &egui::Context) {
-    let installed = egui::Id::new("miniforge.phosphor-font-installed");
-    if ctx.data(|data| data.get_temp::<bool>(installed).unwrap_or(false)) {
-        return;
-    }
-    let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        "phosphor".into(),
-        egui::FontData::from_static(egui_phosphor::Variant::Regular.font_bytes()).into(),
-    );
-    if let Some(font_keys) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
-        font_keys.insert(1, "phosphor".into());
-    }
-    ctx.set_fonts(fonts);
-    ctx.data_mut(|data| data.insert_temp(installed, true));
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FuzzySearchResult {
@@ -353,9 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn icons_and_syntax_are_ready_for_editor_surfaces() {
-        assert!(!EditorIcon::Save.glyph().is_empty());
-        assert!(EditorIcon::Warning.label("Warnings").contains("Warnings"));
+    fn syntax_highlighting_is_ready_for_native_frontends() {
         let spans = EditorSyntaxHighlighter::default().highlight_line("fn update() {}", "rs");
         assert!(!spans.is_empty());
         assert_eq!(

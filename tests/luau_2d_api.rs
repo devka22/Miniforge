@@ -222,6 +222,94 @@ return Player
     assert!(projectile.get_component("Rigidbody2D").is_some());
 }
 
+#[test]
+fn luau_utility_queries_spawn_handles_and_component_removal_work_together() {
+    let project = temp_project("luau-productivity-api");
+    fs::write(
+        project.join("scripts").join("Utility.luau"),
+        r#"
+local Utility = {}
+
+function Utility:on_start()
+    local next_position = Vector2.move_towards(
+        Vector2.new(0, 0),
+        Vector2.new(10, 0),
+        2.5
+    )
+    set_blackboard("next_x", next_position.x)
+    set_blackboard("distance", Vector2.distance(next_position, Vector2.new(10, 0)))
+
+    local nearest = Entity.nearest(self.entity, 20.0, { tag = "Enemy" })
+    set_blackboard("enemy_exists", Entity.exists("EnemyNear"))
+    set_blackboard("enemy_count", Entity.count_with_tag("Enemy"))
+    if nearest then
+        set_blackboard("nearest", nearest.name)
+    end
+
+    Component.remove(self.entity, "Collider2D")
+    local projectile = Spawner.spawn("UtilityProjectile", 1.0, 2.0)
+    Rigidbody2D.set_velocity(projectile, 12.0, -3.0)
+end
+
+return Utility
+"#,
+    )
+    .unwrap();
+
+    let mut actor = GameObject::new(0.0, 0.0, Some("UtilityActor".to_string()));
+    actor.script = Some("Utility.luau".to_string());
+    let mut near = GameObject::new(3.0, 0.0, Some("EnemyNear".to_string()));
+    near.tag = "Enemy".to_string();
+    let mut far = GameObject::new(9.0, 0.0, Some("EnemyFar".to_string()));
+    far.tag = "Enemy".to_string();
+    let existing_projectile = GameObject::new(-2.0, 0.0, Some("UtilityProjectile".to_string()));
+    let existing_projectile_id = existing_projectile.id;
+    let mut entities = vec![actor, near, far, existing_projectile];
+
+    let mut runtime = LuauScriptRuntime::new(&project);
+    let report = runtime.update_entities(&mut entities, 1.0 / 60.0, "PLAY");
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+    let actor = entities
+        .iter()
+        .find(|entity| entity.name == "UtilityActor")
+        .unwrap();
+    assert_eq!(
+        GameAPI::get_blackboard(actor, "next_x", json!(0)),
+        json!(2.5)
+    );
+    assert_eq!(
+        GameAPI::get_blackboard(actor, "distance", json!(0)),
+        json!(7.5)
+    );
+    assert_eq!(
+        GameAPI::get_blackboard(actor, "nearest", json!("")),
+        json!("EnemyNear")
+    );
+    assert_eq!(
+        GameAPI::get_blackboard(actor, "enemy_exists", json!(false)),
+        json!(true)
+    );
+    assert_eq!(
+        GameAPI::get_blackboard(actor, "enemy_count", json!(0)),
+        json!(2)
+    );
+    assert!(actor.get_component("Collider2D").is_none());
+
+    let spawned_id = *report.spawned.last().expect("reserved spawn id");
+    let projectile = entities
+        .iter()
+        .find(|entity| entity.id == spawned_id)
+        .expect("spawn handle should target the queued entity");
+    assert_eq!(projectile.name, "UtilityProjectile");
+    assert_ne!(projectile.id, existing_projectile_id);
+    let body = projectile.get_component("Rigidbody2D").unwrap();
+    assert_eq!(body.get_f64("velocity_x", 0.0), 12.0);
+    assert_eq!(body.get_f64("velocity_y", 0.0), -3.0);
+
+    fs::remove_dir_all(project).unwrap();
+}
+
 fn tile_at(entity: &GameObject, layer: &str, x: usize, y: usize) -> Option<i64> {
     let tilemap = entity.get_component("Tilemap2D")?;
     let width = tilemap.get_usize("width", 0);

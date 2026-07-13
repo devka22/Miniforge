@@ -158,7 +158,8 @@ impl PythonAutomationHost {
         let mut installed = Vec::new();
         for (name, contents) in builtins {
             let path = tools.join(name);
-            if !path.exists() {
+            let current = fs::read_to_string(&path).ok();
+            if current.as_deref() != Some(contents) {
                 fs::write(&path, contents)?;
             }
             installed.push(path);

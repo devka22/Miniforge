@@ -6,10 +6,18 @@
 
 #include <QAction>
 #include <QColorDialog>
+#include <QInputDialog>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QSignalBlocker>
+#include <QSlider>
+#include <QSpinBox>
 #include <QToolBar>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
@@ -38,6 +46,25 @@ public:
     QColor primaryColor() const { return m_primary; }
     QColor secondaryColor() const { return m_secondary; }
     int zoom() const { return m_zoom; }
+
+    void setSheetGrid(int frameWidth, int frameHeight)
+    {
+        m_frameWidth = std::max(1, frameWidth);
+        m_frameHeight = std::max(1, frameHeight);
+        update();
+    }
+
+    void setFrameOverlayVisible(bool visible)
+    {
+        m_frameOverlayVisible = visible;
+        update();
+    }
+
+    void setCurrentFrame(int frame)
+    {
+        m_currentFrame = std::max(0, frame);
+        update();
+    }
 
     void setPrimaryColor(const QColor& color)
     {
@@ -126,6 +153,43 @@ protected:
             for (int y = 0; y <= m_image.height(); ++y) {
                 const int py = canvas.top() + y * m_zoom;
                 painter.drawLine(canvas.left(), py, canvas.right(), py);
+            }
+        }
+        if (m_frameOverlayVisible && m_frameWidth > 0 && m_frameHeight > 0) {
+            const int columns = std::max(1, m_image.width() / m_frameWidth);
+            const int rows = std::max(1, m_image.height() / m_frameHeight);
+            const int frameCount = columns * rows;
+            if (frameCount > 0) {
+                const int selected = std::clamp(m_currentFrame, 0, frameCount - 1);
+                const int selectedX = selected % columns;
+                const int selectedY = selected / columns;
+                const QRect active(
+                    canvas.left() + selectedX * m_frameWidth * m_zoom,
+                    canvas.top() + selectedY * m_frameHeight * m_zoom,
+                    m_frameWidth * m_zoom,
+                    m_frameHeight * m_zoom
+                );
+                painter.fillRect(canvas, QColor(0, 0, 0, 72));
+                painter.drawImage(active, m_image, QRect(
+                    selectedX * m_frameWidth,
+                    selectedY * m_frameHeight,
+                    m_frameWidth,
+                    m_frameHeight
+                ));
+                painter.setPen(QPen(QColor(108, 197, 143, 210), 1, Qt::DashLine));
+                for (int x = 0; x <= columns; ++x) {
+                    const int px = canvas.left() + x * m_frameWidth * m_zoom;
+                    painter.drawLine(px, canvas.top(), px, canvas.top() + rows * m_frameHeight * m_zoom);
+                }
+                for (int y = 0; y <= rows; ++y) {
+                    const int py = canvas.top() + y * m_frameHeight * m_zoom;
+                    painter.drawLine(canvas.left(), py, canvas.left() + columns * m_frameWidth * m_zoom, py);
+                }
+                painter.setPen(QPen(QColor(255, 211, 91), 2));
+                painter.drawRect(active.adjusted(1, 1, -2, -2));
+                painter.setPen(QColor(255, 236, 168));
+                painter.drawText(active.adjusted(5, 3, -3, -3), Qt::AlignLeft | Qt::AlignTop,
+                    tr("F%1").arg(selected + 1));
             }
         }
         painter.setPen(QColor(108, 197, 143, 180));
@@ -269,6 +333,10 @@ private:
     bool m_gridVisible = true;
     bool m_painting = false;
     bool m_panning = false;
+    bool m_frameOverlayVisible = false;
+    int m_frameWidth = 16;
+    int m_frameHeight = 16;
+    int m_currentFrame = 0;
     Qt::MouseButton m_paintButton = Qt::NoButton;
     QPoint m_lastPixel;
     QPointF m_lastMouse;
@@ -296,10 +364,48 @@ SpriteEditorWidget::SpriteEditorWidget(MfBridge* bridge, QWidget* parent)
     grid->setCheckable(true);
     grid->setChecked(true);
     toolbar->addSeparator();
+    QAction* flipH = toolbar->addAction(tr("Flip H"));
+    QAction* flipV = toolbar->addAction(tr("Flip V"));
+    QAction* rotate = toolbar->addAction(tr("Rotate 90°"));
+    QAction* crop = toolbar->addAction(tr("Crop"));
+    QAction* outline = toolbar->addAction(tr("Outline"));
+    toolbar->addSeparator();
     m_primaryAction = toolbar->addAction(tr("Primary"));
     m_secondaryAction = toolbar->addAction(tr("Secondary"));
     QAction* save = toolbar->addAction(tr("Save"));
     layout->addWidget(toolbar);
+
+    auto* animationToolbar = new QToolBar(this);
+    animationToolbar->setIconSize(QSize(16, 16));
+    animationToolbar->addWidget(new QLabel(tr("Sprite sheet"), animationToolbar));
+    m_frameWidth = new QSpinBox(animationToolbar);
+    m_frameWidth->setRange(1, 512);
+    m_frameWidth->setValue(16);
+    m_frameWidth->setPrefix(tr(" W "));
+    m_frameWidth->setToolTip(tr("Frame width in pixels"));
+    animationToolbar->addWidget(m_frameWidth);
+    m_frameHeight = new QSpinBox(animationToolbar);
+    m_frameHeight->setRange(1, 512);
+    m_frameHeight->setValue(16);
+    m_frameHeight->setPrefix(tr(" H "));
+    m_frameHeight->setToolTip(tr("Frame height in pixels"));
+    animationToolbar->addWidget(m_frameHeight);
+    m_fps = new QSpinBox(animationToolbar);
+    m_fps->setRange(1, 120);
+    m_fps->setValue(12);
+    m_fps->setSuffix(tr(" fps"));
+    animationToolbar->addWidget(m_fps);
+    QAction* overlay = animationToolbar->addAction(tr("Frames"));
+    overlay->setCheckable(true);
+    overlay->setChecked(true);
+    m_playAction = animationToolbar->addAction(tr("Play"));
+    m_playAction->setCheckable(true);
+    m_frameSlider = new QSlider(Qt::Horizontal, animationToolbar);
+    m_frameSlider->setRange(0, 0);
+    m_frameSlider->setMinimumWidth(120);
+    m_frameSlider->setToolTip(tr("Animation frame scrubber"));
+    animationToolbar->addWidget(m_frameSlider);
+    layout->addWidget(animationToolbar);
 
     m_canvas = new SpriteCanvasView(bridge, this);
     layout->addWidget(m_canvas, 1);
@@ -307,7 +413,10 @@ SpriteEditorWidget::SpriteEditorWidget(MfBridge* bridge, QWidget* parent)
     m_status->setContentsMargins(9, 4, 9, 4);
     layout->addWidget(m_status);
 
-    m_canvas->stateChanged = [this] { refreshState(); };
+    m_canvas->stateChanged = [this] {
+        refreshAnimationTimeline();
+        refreshState();
+    };
     connect(new16, &QAction::triggered, this, [this] { newCanvas(16); });
     connect(new32, &QAction::triggered, this, [this] { newCanvas(32); });
     connect(m_undoAction, &QAction::triggered, this, [this] {
@@ -323,12 +432,63 @@ SpriteEditorWidget::SpriteEditorWidget(MfBridge* bridge, QWidget* parent)
     connect(clear, &QAction::triggered, this, [this] { clearCanvas(); });
     connect(fit, &QAction::triggered, m_canvas, [this] { m_canvas->fitToView(); });
     connect(grid, &QAction::toggled, m_canvas, &SpriteCanvasView::setGridVisible);
+    connect(flipH, &QAction::triggered, this, [this] {
+        transformCanvas(QStringLiteral("flip_horizontal"));
+    });
+    connect(flipV, &QAction::triggered, this, [this] {
+        transformCanvas(QStringLiteral("flip_vertical"));
+    });
+    connect(rotate, &QAction::triggered, this, [this] {
+        transformCanvas(QStringLiteral("rotate_right"));
+    });
+    connect(crop, &QAction::triggered, this, [this] {
+        bool accepted = false;
+        const int padding = QInputDialog::getInt(
+            this, tr("Crop to content"), tr("Padding"), 0, 0, 64, 1, &accepted);
+        if (!accepted) {
+            return;
+        }
+        transformCanvas(QStringLiteral("crop_to_content"),
+            QStringLiteral("{\"padding\":%1}").arg(padding));
+    });
+    connect(outline, &QAction::triggered, this, [this] {
+        bool accepted = false;
+        const int thickness = QInputDialog::getInt(
+            this, tr("Sprite outline"), tr("Thickness"), 1, 1, 16, 1, &accepted);
+        if (!accepted) {
+            return;
+        }
+        const QColor color = m_canvas->primaryColor();
+        transformCanvas(QStringLiteral("outline"),
+            QStringLiteral("{\"thickness\":%1,\"color\":{\"r\":%2,\"g\":%3,\"b\":%4,\"a\":%5}}")
+                .arg(thickness)
+                .arg(color.red())
+                .arg(color.green())
+                .arg(color.blue())
+                .arg(color.alpha()));
+    });
     connect(m_primaryAction, &QAction::triggered, this, [this] { choosePrimaryColor(); });
     connect(m_secondaryAction, &QAction::triggered, this, [this] { chooseSecondaryColor(); });
     connect(save, &QAction::triggered, this, [this] { saveCanvas(); });
     connect(m_bridge, &MfBridge::spriteChanged, m_canvas, &SpriteCanvasView::refreshImage);
     connect(m_bridge, &MfBridge::projectChanged, m_canvas, &SpriteCanvasView::refreshImage);
+    connect(overlay, &QAction::toggled, m_canvas, &SpriteCanvasView::setFrameOverlayVisible);
+    connect(m_frameWidth, &QSpinBox::valueChanged, this, &SpriteEditorWidget::refreshAnimationTimeline);
+    connect(m_frameHeight, &QSpinBox::valueChanged, this, &SpriteEditorWidget::refreshAnimationTimeline);
+    connect(m_fps, &QSpinBox::valueChanged, this, &SpriteEditorWidget::refreshAnimationTimeline);
+    connect(m_frameSlider, &QSlider::valueChanged, m_canvas, &SpriteCanvasView::setCurrentFrame);
+    connect(m_frameSlider, &QSlider::valueChanged, this, [this] { refreshState(); });
+    connect(m_playAction, &QAction::toggled, this, &SpriteEditorWidget::setAnimationPlaying);
+    m_animationTimer = new QTimer(this);
+    connect(m_animationTimer, &QTimer::timeout, this, [this] {
+        const int next = m_frameSlider->value() >= m_frameSlider->maximum()
+            ? m_frameSlider->minimum()
+            : m_frameSlider->value() + 1;
+        m_frameSlider->setValue(next);
+    });
+    m_canvas->setFrameOverlayVisible(true);
     refreshState();
+    refreshAnimationTimeline();
 }
 
 void SpriteEditorWidget::refreshState()
@@ -338,10 +498,12 @@ void SpriteEditorWidget::refreshState()
     m_redoAction->setEnabled(info.can_redo != 0);
     m_primaryAction->setToolTip(m_canvas->primaryColor().name(QColor::HexArgb));
     m_secondaryAction->setToolTip(m_canvas->secondaryColor().name(QColor::HexArgb));
-    m_status->setText(tr("%1 × %2 · %3 px zoom · left: primary · right: secondary · middle: pan")
+    m_status->setText(tr("%1 × %2 · %3 px zoom · frame %4/%5 · left: primary · right: secondary · middle: pan")
         .arg(info.width)
         .arg(info.height)
-        .arg(m_canvas->zoom()));
+        .arg(m_canvas->zoom())
+        .arg(m_frameSlider ? m_frameSlider->value() + 1 : 1)
+        .arg(m_frameSlider ? m_frameSlider->maximum() + 1 : 1));
 }
 
 void SpriteEditorWidget::newCanvas(int size)
@@ -389,5 +551,69 @@ void SpriteEditorWidget::saveCanvas()
     const QString path = m_bridge->saveSprite(QStringLiteral("Sprite"));
     if (!path.isEmpty()) {
         m_status->setText(tr("Saved %1").arg(path));
+    }
+}
+
+void SpriteEditorWidget::transformCanvas(const QString& action, const QString& payloadJson)
+{
+    if (m_bridge->transformSprite(action, payloadJson)) {
+        m_canvas->refreshImage();
+    }
+}
+
+void SpriteEditorWidget::refreshAnimationTimeline()
+{
+    if (!m_frameWidth || !m_frameHeight || !m_fps || !m_frameSlider || !m_canvas) {
+        return;
+    }
+    const MfSpriteInfo& info = m_canvas->info();
+    if (info.width == 0 || info.height == 0) {
+        const QSignalBlocker blocker(m_frameSlider);
+        m_frameSlider->setRange(0, 0);
+        return;
+    }
+    {
+        const QSignalBlocker widthBlocker(m_frameWidth);
+        const QSignalBlocker heightBlocker(m_frameHeight);
+        m_frameWidth->setMaximum(static_cast<int>(info.width));
+        m_frameHeight->setMaximum(static_cast<int>(info.height));
+        m_frameWidth->setValue(std::min(m_frameWidth->value(), static_cast<int>(info.width)));
+        m_frameHeight->setValue(std::min(m_frameHeight->value(), static_cast<int>(info.height)));
+    }
+    m_canvas->setSheetGrid(m_frameWidth->value(), m_frameHeight->value());
+    const QJsonDocument document = QJsonDocument::fromJson(
+        m_bridge->spriteAnimationClipJson(m_frameWidth->value(), m_frameHeight->value(), m_fps->value()).toUtf8());
+    const int frameCount = document.object()
+                               .value(QStringLiteral("timeline"))
+                               .toObject()
+                               .value(QStringLiteral("frame_count"))
+                               .toInt(1);
+    const int oldFrame = m_frameSlider->value();
+    {
+        const QSignalBlocker blocker(m_frameSlider);
+        m_frameSlider->setRange(0, std::max(0, frameCount - 1));
+        m_frameSlider->setValue(std::min(oldFrame, m_frameSlider->maximum()));
+    }
+    m_canvas->setCurrentFrame(m_frameSlider->value());
+    if (m_animationTimer && m_animationTimer->isActive()) {
+        m_animationTimer->setInterval(std::max(8, 1000 / m_fps->value()));
+    }
+}
+
+void SpriteEditorWidget::setAnimationPlaying(bool playing)
+{
+    m_playAction->setText(playing ? tr("Pause") : tr("Play"));
+    if (!m_animationTimer) {
+        return;
+    }
+    if (playing && m_frameSlider->maximum() > 0) {
+        m_animationTimer->start(std::max(8, 1000 / m_fps->value()));
+    } else {
+        m_animationTimer->stop();
+        if (playing) {
+            const QSignalBlocker blocker(m_playAction);
+            m_playAction->setChecked(false);
+            m_playAction->setText(tr("Play"));
+        }
     }
 }

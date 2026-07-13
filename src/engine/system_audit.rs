@@ -11,6 +11,7 @@ use crate::engine::plugin_manager::PluginManager;
 use crate::engine::project_validator::ProjectValidator;
 use crate::engine::resource_manager::{ResourceManager, ResourceReport};
 use crate::engine::runtime_config::{RuntimeConfig, RuntimeTuning};
+use crate::engine::runtime_stability::RuntimeStabilityConfig;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AuditSeverity {
@@ -69,6 +70,7 @@ struct AuditContext {
     validator_errors: Vec<String>,
     validator_warnings: Vec<String>,
     runtime_tuning: RuntimeTuning,
+    runtime_stability: RuntimeStabilityConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -89,7 +91,7 @@ impl SystemReadinessReport {
             .unwrap_or_default();
         let mut validator = ProjectValidator::default();
         validator.validate(&project_path);
-        let runtime_tuning = read_runtime_tuning(&paths.settings);
+        let (runtime_tuning, runtime_stability) = read_runtime_settings(&paths.settings);
         let ctx = AuditContext {
             project_path: project_path.clone(),
             paths,
@@ -97,6 +99,7 @@ impl SystemReadinessReport {
             validator_errors: validator.errors,
             validator_warnings: validator.warnings,
             runtime_tuning,
+            runtime_stability,
         };
 
         let mut report = Self {
@@ -580,6 +583,36 @@ fn audit_runtime(ctx: &AuditContext) -> AreaBuilder {
             "subir max_frame_steps para estabilidad del fixed timestep",
         );
     }
+    if ctx.runtime_stability.enabled {
+        area = area.strength(format!(
+            "Stability Guard activo con delta maximo de {:.0}ms",
+            ctx.runtime_stability.max_delta_seconds * 1000.0
+        ));
+    } else {
+        area = area.gap(
+            "Stability Guard desactivado",
+            "activar stability_guard.enabled antes de exportar",
+        );
+    }
+    if ctx.runtime_stability.max_delta_seconds > 0.15 {
+        area = area.gap(
+            "delta maximo permite saltos de simulacion mayores a 150ms",
+            "bajar stability_guard.max_delta_seconds a 0.1 o menos",
+        );
+    }
+    if ctx.runtime_stability.repair_invalid_numbers
+        && ctx.runtime_stability.quarantine_corrupt_entities
+    {
+        area = area.strength("reparacion numerica y cuarentena runtime activas");
+    } else {
+        area = area.gap(
+            "proteccion parcial ante estado numerico corrupto",
+            "activar repair_invalid_numbers y quarantine_corrupt_entities",
+        );
+    }
+    if ctx.runtime_stability.throttle_optional_systems {
+        area = area.strength("degradacion gradual limitada a sistemas cosmeticos");
+    }
     area
 }
 
@@ -637,10 +670,12 @@ fn count(ctx: &AuditContext, kind: &str) -> usize {
     ctx.resources.counts.get(kind).copied().unwrap_or(0)
 }
 
-fn read_runtime_tuning(settings: &Path) -> RuntimeTuning {
+fn read_runtime_settings(settings: &Path) -> (RuntimeTuning, RuntimeStabilityConfig) {
     let data =
         read_json(settings.join("runtime_config.json")).unwrap_or_else(RuntimeConfig::default_data);
-    RuntimeTuning::from_value(&data)
+    let tuning = RuntimeTuning::from_value(&data);
+    let stability = RuntimeStabilityConfig::from_runtime_config(&data, tuning.max_entities);
+    (tuning, stability)
 }
 
 fn read_json(path: impl AsRef<Path>) -> Option<Value> {

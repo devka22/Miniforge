@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::engine::miniforge_2d::ui_framework::{
-    Anchor2D, UiAnimation2D, UiCanvas2D, UiRect2D, UiResolvedWidget2D, UiStyle2D, UiWidget2D,
-    main_menu_canvas, minimal_ui_canvas, pause_menu_canvas, settings_menu_canvas,
+    Anchor2D, UiAnimation2D, UiBinding2D, UiCallback2D, UiCanvas2D, UiRect2D, UiResolvedWidget2D,
+    UiStyle2D, UiWidget2D, main_menu_canvas, minimal_ui_canvas, pause_menu_canvas,
+    settings_menu_canvas,
 };
 use crate::engine::miniforge_2d::validation::ValidationReport2D;
 use crate::engine::ui_advanced::{
@@ -238,6 +239,156 @@ impl UiDesigner2D {
         self.add_widget_to_root(clone);
         self.selected_widget = Some(new_id.to_string());
         true
+    }
+
+    /// Moves a widget to another container without allowing missing targets,
+    /// duplicate-ID trees, self-parenting, or descendant cycles. `None` moves
+    /// the widget to the canvas root list. Returns `false` for a no-op.
+    pub fn reparent_widget(
+        &mut self,
+        widget_id: &str,
+        new_parent_id: Option<&str>,
+    ) -> Result<bool, String> {
+        validate_ui_edit_key(widget_id, "widget id")?;
+        if !self.canvas.validate_widget_ids() {
+            return Err("cannot reparent a canvas with duplicate widget IDs".to_string());
+        }
+        let new_parent_id = new_parent_id
+            .map(str::trim)
+            .map(|value| {
+                validate_ui_edit_key(value, "parent widget id")?;
+                Ok::<_, String>(value)
+            })
+            .transpose()?;
+        if new_parent_id == Some(widget_id) {
+            return Err("a widget cannot be its own parent".to_string());
+        }
+        let current_parent = widget_parent_id(&self.canvas.widgets, widget_id, None)
+            .ok_or_else(|| format!("widget not found: {widget_id}"))?;
+        if current_parent.as_deref() == new_parent_id {
+            return Ok(false);
+        }
+        let source = self
+            .canvas
+            .find_widget(widget_id)
+            .ok_or_else(|| format!("widget not found: {widget_id}"))?;
+        if let Some(parent_id) = new_parent_id {
+            if self.canvas.find_widget(parent_id).is_none() {
+                return Err(format!("parent widget not found: {parent_id}"));
+            }
+            if widget_contains_id(source, parent_id) {
+                return Err(format!(
+                    "reparent would create a cycle: {parent_id} is inside {widget_id}"
+                ));
+            }
+        }
+
+        let widget = detach_widget(&mut self.canvas.widgets, widget_id)
+            .ok_or_else(|| format!("widget not found: {widget_id}"))?;
+        if let Some(parent_id) = new_parent_id {
+            let Some(parent) = find_widget_mut_in_canvas(&mut self.canvas, parent_id) else {
+                self.canvas.widgets.push(widget);
+                return Err(format!(
+                    "parent widget disappeared while reparenting: {parent_id}"
+                ));
+            };
+            parent.children.push(widget);
+        } else {
+            self.canvas.widgets.push(widget);
+        }
+        Ok(true)
+    }
+
+    /// Inserts or replaces one binding, keyed by widget property. Returns
+    /// whether the document changed.
+    pub fn upsert_widget_binding(
+        &mut self,
+        widget_id: &str,
+        mut binding: UiBinding2D,
+    ) -> Result<bool, String> {
+        validate_ui_edit_key(widget_id, "widget id")?;
+        binding.property = binding.property.trim().to_string();
+        binding.source_path = binding.source_path.trim().to_string();
+        validate_ui_edit_key(&binding.property, "binding property")?;
+        validate_ui_edit_value(&binding.source_path, "binding source", 512)?;
+        let widget = find_widget_mut_in_canvas(&mut self.canvas, widget_id)
+            .ok_or_else(|| format!("widget not found: {widget_id}"))?;
+        if let Some(existing) = widget
+            .bindings
+            .iter_mut()
+            .find(|existing| existing.property == binding.property)
+        {
+            if existing == &binding {
+                return Ok(false);
+            }
+            *existing = binding;
+        } else {
+            widget.bindings.push(binding);
+        }
+        Ok(true)
+    }
+
+    pub fn remove_widget_binding(
+        &mut self,
+        widget_id: &str,
+        property: &str,
+    ) -> Result<bool, String> {
+        validate_ui_edit_key(widget_id, "widget id")?;
+        let property = property.trim();
+        validate_ui_edit_key(property, "binding property")?;
+        let widget = find_widget_mut_in_canvas(&mut self.canvas, widget_id)
+            .ok_or_else(|| format!("widget not found: {widget_id}"))?;
+        let previous_len = widget.bindings.len();
+        widget
+            .bindings
+            .retain(|binding| binding.property != property);
+        Ok(widget.bindings.len() != previous_len)
+    }
+
+    /// Inserts or replaces one callback, keyed case-insensitively by event.
+    pub fn upsert_widget_callback(
+        &mut self,
+        widget_id: &str,
+        mut callback: UiCallback2D,
+    ) -> Result<bool, String> {
+        validate_ui_edit_key(widget_id, "widget id")?;
+        callback.event = callback.event.trim().to_string();
+        validate_ui_edit_key(&callback.event, "callback event")?;
+        callback.graph = normalize_optional_ui_target(callback.graph, "callback graph")?;
+        callback.function = normalize_optional_ui_target(callback.function, "callback function")?;
+        if callback.graph.is_none() && callback.function.is_none() {
+            return Err("callback requires a graph or function target".to_string());
+        }
+        let widget = find_widget_mut_in_canvas(&mut self.canvas, widget_id)
+            .ok_or_else(|| format!("widget not found: {widget_id}"))?;
+        let event_key = ui_event_key(&callback.event);
+        if let Some(existing) = widget
+            .callbacks
+            .iter_mut()
+            .find(|existing| ui_event_key(&existing.event) == event_key)
+        {
+            if existing == &callback {
+                return Ok(false);
+            }
+            *existing = callback;
+        } else {
+            widget.callbacks.push(callback);
+        }
+        Ok(true)
+    }
+
+    pub fn remove_widget_callback(&mut self, widget_id: &str, event: &str) -> Result<bool, String> {
+        validate_ui_edit_key(widget_id, "widget id")?;
+        let event = event.trim();
+        validate_ui_edit_key(event, "callback event")?;
+        let widget = find_widget_mut_in_canvas(&mut self.canvas, widget_id)
+            .ok_or_else(|| format!("widget not found: {widget_id}"))?;
+        let previous_len = widget.callbacks.len();
+        let event_key = ui_event_key(event);
+        widget
+            .callbacks
+            .retain(|callback| ui_event_key(&callback.event) != event_key);
+        Ok(widget.callbacks.len() != previous_len)
     }
 
     pub fn align_selected(&mut self, alignment: &str) -> bool {
@@ -545,10 +696,213 @@ fn find_widget_mut<'a>(widget: &'a mut UiWidget2D, id: &str) -> Option<&'a mut U
     None
 }
 
+fn widget_parent_id(
+    widgets: &[UiWidget2D],
+    id: &str,
+    parent_id: Option<&str>,
+) -> Option<Option<String>> {
+    for widget in widgets {
+        if widget.id == id {
+            return Some(parent_id.map(ToString::to_string));
+        }
+        if let Some(found) = widget_parent_id(&widget.children, id, Some(&widget.id)) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn widget_contains_id(widget: &UiWidget2D, id: &str) -> bool {
+    widget.id == id
+        || widget
+            .children
+            .iter()
+            .any(|child| widget_contains_id(child, id))
+}
+
+fn detach_widget(widgets: &mut Vec<UiWidget2D>, id: &str) -> Option<UiWidget2D> {
+    if let Some(index) = widgets.iter().position(|widget| widget.id == id) {
+        return Some(widgets.remove(index));
+    }
+    for widget in widgets {
+        if let Some(found) = detach_widget(&mut widget.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn validate_ui_edit_key(value: &str, label: &str) -> Result<(), String> {
+    validate_ui_edit_value(value, label, 128)?;
+    if value != value.trim() || value.contains(['/', '\\']) {
+        return Err(format!(
+            "{label} cannot contain surrounding whitespace or path separators"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_ui_edit_value(value: &str, label: &str, max_len: usize) -> Result<(), String> {
+    if value.is_empty() || value.len() > max_len || value.chars().any(char::is_control) {
+        return Err(format!(
+            "{label} must contain between 1 and {max_len} printable characters"
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_optional_ui_target(
+    value: Option<String>,
+    label: &str,
+) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    validate_ui_edit_value(&value, label, 512)?;
+    Ok(Some(value))
+}
+
+fn ui_event_key(value: &str) -> String {
+    let normalized = value.trim().to_ascii_lowercase();
+    normalized
+        .strip_prefix("on")
+        .filter(|event| !event.is_empty())
+        .unwrap_or(&normalized)
+        .to_string()
+}
+
 fn snap_value(value: f32, step: f32) -> f32 {
     if step <= 1.0 {
         value
     } else {
         (value / step).round() * step
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reparent_is_noop_aware_and_rejects_cycles_without_losing_widgets() {
+        let mut designer = UiDesigner2D::default();
+        assert_eq!(
+            widget_parent_id(&designer.canvas.widgets, "StartButton", None),
+            Some(Some("RootCanvas".to_string()))
+        );
+        assert!(
+            designer
+                .reparent_widget("StartButton", Some("HealthPanel"))
+                .unwrap()
+        );
+        assert_eq!(
+            widget_parent_id(&designer.canvas.widgets, "StartButton", None),
+            Some(Some("HealthPanel".to_string()))
+        );
+        assert!(
+            designer
+                .reparent_widget("HealthPanel", Some("HealthBar"))
+                .is_err()
+        );
+        assert!(designer.canvas.find_widget("HealthPanel").is_some());
+        assert!(designer.canvas.find_widget("HealthBar").is_some());
+        assert!(designer.canvas.find_widget("StartButton").is_some());
+        assert!(
+            !designer
+                .reparent_widget("StartButton", Some("HealthPanel"))
+                .unwrap()
+        );
+        assert!(designer.reparent_widget("StartButton", None).unwrap());
+        assert_eq!(
+            widget_parent_id(&designer.canvas.widgets, "StartButton", None),
+            Some(None)
+        );
+        assert!(designer.reparent_widget("Missing", None).is_err());
+    }
+
+    #[test]
+    fn bindings_and_callbacks_upsert_remove_and_validate_targets() {
+        let mut designer = UiDesigner2D::default();
+        let binding = UiBinding2D {
+            property: "text".to_string(),
+            source_path: "player.score".to_string(),
+            fallback: serde_json::json!(0),
+        };
+        assert!(
+            designer
+                .upsert_widget_binding("CoinText", binding.clone())
+                .unwrap()
+        );
+        assert!(!designer.upsert_widget_binding("CoinText", binding).unwrap());
+        let coin_text = designer.canvas.find_widget("CoinText").unwrap();
+        assert_eq!(coin_text.bindings.len(), 1);
+        assert_eq!(coin_text.bindings[0].source_path, "player.score");
+        assert!(designer.remove_widget_binding("CoinText", "text").unwrap());
+        assert!(!designer.remove_widget_binding("CoinText", "text").unwrap());
+        assert!(
+            designer
+                .upsert_widget_binding(
+                    "CoinText",
+                    UiBinding2D {
+                        property: "text".to_string(),
+                        source_path: "".to_string(),
+                        fallback: Value::Null,
+                    },
+                )
+                .is_err()
+        );
+
+        let callback = UiCallback2D {
+            event: "OnClick".to_string(),
+            graph: None,
+            function: Some("open_inventory".to_string()),
+            payload: serde_json::json!({"tab": "items"}),
+        };
+        assert!(
+            designer
+                .upsert_widget_callback("StartButton", callback.clone())
+                .unwrap()
+        );
+        assert!(
+            !designer
+                .upsert_widget_callback("StartButton", callback)
+                .unwrap()
+        );
+        let button = designer.canvas.find_widget("StartButton").unwrap();
+        assert_eq!(button.callbacks.len(), 1);
+        assert_eq!(
+            button.callbacks[0].function.as_deref(),
+            Some("open_inventory")
+        );
+        assert!(
+            designer
+                .remove_widget_callback("StartButton", "click")
+                .unwrap()
+        );
+        assert!(
+            designer
+                .canvas
+                .find_widget("StartButton")
+                .unwrap()
+                .callbacks
+                .is_empty()
+        );
+        assert!(
+            designer
+                .upsert_widget_callback(
+                    "StartButton",
+                    UiCallback2D {
+                        event: "click".to_string(),
+                        graph: None,
+                        function: None,
+                        payload: Value::Null,
+                    },
+                )
+                .is_err()
+        );
     }
 }

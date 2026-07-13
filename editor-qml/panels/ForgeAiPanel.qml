@@ -1,10 +1,33 @@
 import QtQuick
+import QtQuick.Controls
 import "../themes" as Theme
 import "../components"
 
 Rectangle {
     id: root
     color: Theme.DarkTheme.panel
+    property bool scanning: false
+    property bool testing: false
+
+    function runDoctor() {
+        if (scanning || !editorBridge.projectOpen)
+            return
+        scanning = true
+        Qt.callLater(function() {
+            forgeAiModel.runDoctor()
+            scanning = false
+        })
+    }
+
+    function runSmokeTest() {
+        if (testing || !editorBridge.projectOpen)
+            return
+        testing = true
+        Qt.callLater(function() {
+            forgeAiModel.runEnemySmoke()
+            testing = false
+        })
+    }
 
     function severityColor(severity) {
         if (severity === "Critical" || severity === "Error")
@@ -31,10 +54,12 @@ Rectangle {
             width: parent.width
             title: "Forge AI"
             detail: forgeAiModel.scanSummary
-            badge: forgeAiModel.criticalCount + forgeAiModel.errorCount > 0 ? "Action" : "Doctor"
+            badge: root.scanning || root.testing
+                ? "Working"
+                : (forgeAiModel.criticalCount + forgeAiModel.errorCount > 0 ? "Action" : "Doctor")
             badgeColor: forgeAiModel.criticalCount + forgeAiModel.errorCount > 0
                 ? Theme.DarkTheme.danger
-                : Theme.DarkTheme.accent
+                : (root.scanning || root.testing ? Theme.DarkTheme.warning : Theme.DarkTheme.accent)
         }
 
         Row {
@@ -44,17 +69,24 @@ Rectangle {
 
             MfButton {
                 width: 116
-                text: "Run Doctor"
+                text: root.scanning ? "Scanning…" : "Run Doctor"
                 accent: true
-                enabled: editorBridge.projectOpen
-                onClicked: forgeAiModel.runDoctor()
+                enabled: editorBridge.projectOpen && !root.scanning && !root.testing
+                onClicked: root.runDoctor()
             }
 
             MfButton {
                 width: 138
-                text: "Enemy Smoke"
-                enabled: editorBridge.projectOpen
-                onClicked: forgeAiModel.runEnemySmoke()
+                text: root.testing ? "Testing…" : "Enemy Smoke"
+                enabled: editorBridge.projectOpen && !root.scanning && !root.testing
+                onClicked: root.runSmokeTest()
+            }
+
+            BusyIndicator {
+                width: 26
+                height: 26
+                running: root.scanning || root.testing
+                visible: running
             }
 
             Text {
@@ -66,6 +98,38 @@ Rectangle {
                 horizontalAlignment: Text.AlignRight
                 verticalAlignment: Text.AlignVCenter
                 elide: Text.ElideRight
+            }
+        }
+
+        Row {
+            width: parent.width
+            height: 36
+            spacing: 6
+
+            Repeater {
+                model: [
+                    ["Blocking", forgeAiModel.criticalCount + forgeAiModel.errorCount, Theme.DarkTheme.danger],
+                    ["Warnings", forgeAiModel.warningCount, Theme.DarkTheme.warning],
+                    ["Suggestions", forgeAiModel.suggestionCount, Theme.DarkTheme.info]
+                ]
+
+                Rectangle {
+                    required property var modelData
+                    width: (parent.width - 12) / 3
+                    height: parent.height
+                    radius: Theme.DarkTheme.cardRadius
+                    color: Theme.DarkTheme.surface
+                    border.color: modelData[2]
+                    border.width: 1
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: modelData[0] + " · " + modelData[1]
+                        color: modelData[2]
+                        font.pixelSize: 10
+                        font.bold: true
+                    }
+                }
             }
         }
 
@@ -116,7 +180,13 @@ Rectangle {
                 required property var model
 
                 width: ListView.view.width
-                height: Math.max(82, messageText.implicitHeight + fixText.implicitHeight + 46)
+                height: Math.max(
+                    82,
+                    messageText.implicitHeight
+                        + (evidenceText.visible ? evidenceText.implicitHeight + 4 : 0)
+                        + fixText.implicitHeight
+                        + 46
+                )
                 radius: Theme.DarkTheme.cardRadius
                 color: Theme.DarkTheme.surfaceRaised
                 border.color: root.severityColor(diagnosticCard.model.severity)
@@ -173,6 +243,17 @@ Rectangle {
                         text: diagnosticCard.model.message
                         color: Theme.DarkTheme.text
                         font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+
+                    Text {
+                        id: evidenceText
+                        visible: diagnosticCard.model.evidence.length > 0
+                        width: parent.width
+                        text: "Evidence: " + diagnosticCard.model.evidence
+                        color: Theme.DarkTheme.muted
+                        font.family: "Menlo"
+                        font.pixelSize: 9
                         wrapMode: Text.Wrap
                     }
 

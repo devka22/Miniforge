@@ -232,20 +232,7 @@ impl GameObject {
     }
 
     pub fn sync_to_components(&mut self) {
-        let (x, y, rotation, scale_x, scale_y) =
-            (self.x, self.y, self.rotation, self.scale_x, self.scale_y);
-        if let Some(transform) = self.get_component_mut("Transform") {
-            transform.set_f64("x", x);
-            transform.set_f64("y", y);
-            transform.set_f64("rotation", rotation);
-            transform.set_f64("scale_x", scale_x);
-            transform.set_f64("scale_y", scale_y);
-        }
-
-        let speed = self.speed;
-        if let Some(movement) = self.get_component_mut("RTSMovement") {
-            movement.set_f64("speed", speed);
-        }
+        self.sync_runtime_motion_to_components();
 
         let sprite_name = self.sprite_name.clone();
         let sprite_guid = self.sprite_guid.clone();
@@ -262,21 +249,43 @@ impl GameObject {
         }
     }
 
+    /// Synchronizes only fields mutated by the per-frame movement pass.
+    ///
+    /// The full component sync also rewrites sprite and collider JSON values;
+    /// doing that for every moving entity every frame creates avoidable string
+    /// clones and map churn.
+    pub fn sync_runtime_motion_to_components(&mut self) {
+        let (x, y, rotation, scale_x, scale_y) =
+            (self.x, self.y, self.rotation, self.scale_x, self.scale_y);
+        if let Some(transform) = self.get_component_mut("Transform") {
+            transform.set_f64("x", x);
+            transform.set_f64("y", y);
+            transform.set_f64("rotation", rotation);
+            transform.set_f64("scale_x", scale_x);
+            transform.set_f64("scale_y", scale_y);
+        }
+
+        let speed = self.speed;
+        if let Some(movement) = self.get_component_mut("RTSMovement") {
+            movement.set_f64("speed", speed);
+        }
+    }
+
     pub fn update_movement(&mut self, dt: f64) {
         if self.command == "HOLD" {
             self.path.clear();
-            self.state = "HOLD".to_string();
+            self.set_runtime_state("HOLD");
             return;
         }
 
         let Some(&(target_x, target_y)) = self.path.first() else {
             if !["HOLD", "STOP", "FOLLOW", "GUARD", "GATHER"].contains(&self.command.as_str()) {
-                self.state = "IDLE".to_string();
+                self.set_runtime_state("IDLE");
             }
             return;
         };
 
-        self.state = "MOVING".to_string();
+        self.set_runtime_state("MOVING");
         let dx = target_x - self.x;
         let dy = target_y - self.y;
         let distance = (dx * dx + dy * dy).sqrt();
@@ -294,6 +303,13 @@ impl GameObject {
             let target_step_y = self.y + (dy / distance) * step;
             self.x += (target_step_x - self.x) * smoothing;
             self.y += (target_step_y - self.y) * smoothing;
+        }
+    }
+
+    pub fn set_runtime_state(&mut self, state: &str) {
+        if self.state != state {
+            self.state.clear();
+            self.state.push_str(state);
         }
     }
 

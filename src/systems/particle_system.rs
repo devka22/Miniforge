@@ -1,10 +1,13 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::engine::component::Component;
 use crate::entities::game_object::GameObject;
+
+const MAX_PARTICLES_PER_EMITTER: usize = 1_000_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ParticleEmitterConfig {
@@ -70,6 +73,7 @@ pub struct ParticleSystem {
     pub emitters: BTreeMap<u64, ParticleEmitterState>,
     pub previews: BTreeMap<u64, ParticlePreview>,
     pub stats: BTreeMap<String, usize>,
+    live_scratch: HashSet<u64>,
 }
 
 impl ParticleSystem {
@@ -87,7 +91,8 @@ impl ParticleSystem {
         } else {
             0.0
         };
-        let mut live = BTreeMap::new();
+        self.live_scratch.clear();
+        self.live_scratch.reserve(entities.len());
         for entity in entities {
             let Some(component) = entity.get_component("ParticleEmitter") else {
                 continue;
@@ -95,10 +100,10 @@ impl ParticleSystem {
             if !component.enabled {
                 continue;
             }
-            let config = config_from_value(&component.serialize());
+            let config = config_from_component(component);
             let state = self.emitters.entry(entity.id).or_default();
             update_emitter(entity, &config, state, dt);
-            live.insert(entity.id, ());
+            self.live_scratch.insert(entity.id);
             self.previews.insert(
                 entity.id,
                 ParticlePreview {
@@ -108,16 +113,15 @@ impl ParticleSystem {
                 },
             );
         }
-        self.emitters.retain(|id, _| live.contains_key(id));
-        self.previews.retain(|id, _| live.contains_key(id));
+        self.emitters.retain(|id, _| self.live_scratch.contains(id));
+        self.previews.retain(|id, _| self.live_scratch.contains(id));
         let particles = self
             .emitters
             .values()
             .map(|state| state.particles.len())
             .sum();
-        self.stats
-            .insert("emitters".to_string(), self.emitters.len());
-        self.stats.insert("particles".to_string(), particles);
+        set_stat(&mut self.stats, "emitters", self.emitters.len());
+        set_stat(&mut self.stats, "particles", particles);
     }
 
     pub fn preview(&self, entity_id: u64) -> Option<&ParticlePreview> {
@@ -128,7 +132,7 @@ impl ParticleSystem {
         let Some(component) = entity.get_component("ParticleEmitter") else {
             return;
         };
-        let mut config = config_from_value(&component.serialize());
+        let mut config = config_from_component(component);
         config.burst_count = count;
         let state = self.emitters.entry(entity.id).or_default();
         emit(entity, &config, state, count);
@@ -196,8 +200,11 @@ fn emit(
     count: usize,
 ) {
     let available = config.max_particles.saturating_sub(state.particles.len());
-    for index in 0..count.min(available) {
-        let jitter = deterministic_jitter(entity.id, state.particles.len() + index);
+    let emit_count = count.min(available);
+    let first_index = state.particles.len();
+    state.particles.reserve(emit_count);
+    for index in 0..emit_count {
+        let jitter = deterministic_jitter(entity.id, first_index + index);
         state.particles.push(Particle {
             x: entity.x,
             y: entity.y,
@@ -233,8 +240,8 @@ fn particle_bounds(particles: &[Particle]) -> Option<(f64, f64, f64, f64)> {
     Some((min_x, min_y, max_x - min_x, max_y - min_y))
 }
 
-fn config_from_value(value: &Value) -> ParticleEmitterConfig {
-    let color = value
+fn config_from_component(component: &Component) -> ParticleEmitterConfig {
+    let color = component
         .get("color")
         .and_then(Value::as_array)
         .map(|items| {
@@ -246,31 +253,61 @@ fn config_from_value(value: &Value) -> ParticleEmitterConfig {
         })
         .unwrap_or([255, 210, 120, 220]);
     ParticleEmitterConfig {
-        looped: value.get("looped").and_then(Value::as_bool).unwrap_or(true),
-        rate: value.get("rate").and_then(Value::as_f64).unwrap_or(16.0),
-        burst_count: value
-            .get("burst_count")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize,
-        lifetime: value.get("lifetime").and_then(Value::as_f64).unwrap_or(1.0),
-        velocity_x: value
-            .get("velocity_x")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0),
-        velocity_y: value
-            .get("velocity_y")
-            .and_then(Value::as_f64)
-            .unwrap_or(-40.0),
-        spread: value.get("spread").and_then(Value::as_f64).unwrap_or(18.0),
-        start_size: value
-            .get("start_size")
-            .and_then(Value::as_f64)
-            .unwrap_or(8.0),
-        end_size: value.get("end_size").and_then(Value::as_f64).unwrap_or(0.0),
+        looped: component.get_bool("looped", true),
+        rate: finite_or(component.get_f64("rate", 16.0), 16.0).clamp(0.0, 1_000_000.0),
+        burst_count: component
+            .get_usize("burst_count", 0)
+            .min(MAX_PARTICLES_PER_EMITTER),
+        lifetime: finite_or(component.get_f64("lifetime", 1.0), 1.0).clamp(0.01, 3_600.0),
+        velocity_x: finite_or(component.get_f64("velocity_x", 0.0), 0.0),
+        velocity_y: finite_or(component.get_f64("velocity_y", -40.0), -40.0),
+        spread: finite_or(component.get_f64("spread", 18.0), 18.0).clamp(0.0, 1_000_000.0),
+        start_size: finite_or(component.get_f64("start_size", 8.0), 8.0).max(0.0),
+        end_size: finite_or(component.get_f64("end_size", 0.0), 0.0).max(0.0),
         color,
-        max_particles: value
-            .get("max_particles")
-            .and_then(Value::as_u64)
-            .unwrap_or(128) as usize,
+        max_particles: component
+            .get_usize("max_particles", 128)
+            .min(MAX_PARTICLES_PER_EMITTER),
+    }
+}
+
+fn set_stat(stats: &mut BTreeMap<String, usize>, key: &str, value: usize) {
+    if let Some(existing) = stats.get_mut(key) {
+        *existing = value;
+    } else {
+        stats.insert(key.to_string(), value);
+    }
+}
+
+fn finite_or(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() { value } else { fallback }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_PARTICLES_PER_EMITTER, ParticleSystem, config_from_component};
+    use crate::engine::component::default_component;
+    use crate::entities::game_object::GameObject;
+    use serde_json::json;
+
+    #[test]
+    fn emitter_configuration_is_bounded_and_dead_state_is_cleaned() {
+        let mut extreme = default_component("ParticleEmitter").expect("emitter");
+        extreme.set("rate", json!(2_000_000.0));
+        extreme.set("burst_count", json!(u64::MAX));
+        extreme.set("max_particles", json!(u64::MAX));
+        let config = config_from_component(&extreme);
+        assert_eq!(config.rate, 1_000_000.0);
+        assert_eq!(config.burst_count, MAX_PARTICLES_PER_EMITTER);
+        assert_eq!(config.max_particles, MAX_PARTICLES_PER_EMITTER);
+
+        let mut entity = GameObject::new(0.0, 0.0, Some("Emitter".to_string()));
+        entity.add_component(default_component("ParticleEmitter").expect("emitter"));
+        let mut system = ParticleSystem::default();
+        system.update_previews(&[entity], 0.0);
+        assert_eq!(system.emitters.len(), 1);
+        system.update_previews(&[], 0.0);
+        assert!(system.emitters.is_empty());
+        assert!(system.previews.is_empty());
     }
 }

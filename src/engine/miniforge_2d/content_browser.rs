@@ -544,7 +544,7 @@ pub fn supported_content_operations() -> Vec<&'static str> {
     ]
 }
 
-fn asset_from_record(record: &AssetRecord) -> ContentAsset2D {
+pub(crate) fn asset_from_record(record: &AssetRecord) -> ContentAsset2D {
     ContentAsset2D {
         guid: record.guid.clone(),
         path: record.relative_path.clone(),
@@ -571,7 +571,7 @@ fn normalize_type(asset_type: &str) -> String {
         "AnimationBlueprint2D" | "FlipbookAnimation2D" | "Animation" => asset_type,
         "prefab" => "Prefab2D",
         "scene" => "Scene2D",
-        "mfgraph" | "visual_graph" => "BlueprintGraph2D",
+        "mfgraph" | "visual_graph" | "VisualGraph" => "BlueprintGraph2D",
         "json" => "DataAsset2D",
         other => other,
     }

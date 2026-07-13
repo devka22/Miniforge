@@ -2,6 +2,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::engine::asset_tools::AssetTools;
@@ -21,7 +22,7 @@ pub struct SceneManager {
     pub transition: Option<SceneTransition>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SceneTransition {
     pub from_scene: String,
     pub to_scene: String,

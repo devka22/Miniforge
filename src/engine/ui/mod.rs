@@ -1,6 +1,6 @@
 //! Shared, renderer-agnostic editor UI state.
 //!
-//! Macroquad, egui and future frontends consume these models instead of keeping
+//! Runtime and native editor frontends consume these models instead of keeping
 //! separate copies of menu, toolbar and interaction state.
 
 pub mod button;
