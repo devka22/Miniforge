@@ -88,7 +88,12 @@ impl Component {
     }
 
     pub fn set_f64(&mut self, key: &str, value: f64) {
-        self.set(key, json!(value));
+        let value = json!(value);
+        if let Some(existing) = self.data.get_mut(key) {
+            *existing = value;
+        } else {
+            self.data.insert(key.to_string(), value);
+        }
     }
 
     pub fn get_i64(&self, key: &str, default: i64) -> i64 {

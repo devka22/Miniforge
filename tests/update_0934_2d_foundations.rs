@@ -1,3 +1,5 @@
+#![cfg(feature = "editor_core")]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};

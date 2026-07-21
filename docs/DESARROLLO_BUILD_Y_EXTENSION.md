@@ -1,6 +1,8 @@
-# MiniForge - Desarrollo, Build y Extension
+# MiniForge - Desarrollo, build y extensión
 
-Este documento consolida el flujo de desarrollo del motor, comandos, pruebas, exportacion, empaquetado, plugins, automatizacion, MCP y ForgeAI.
+Esta guía cubre toolchain, build, pruebas, exportación, packaging y extensiones. Para la
+arquitectura consulta [Arquitectura y runtime](ARQUITECTURA_Y_RUNTIME.md); para operar la
+aplicación consulta [Editor y flujo de uso](EDITOR_Y_FLUJO_DE_USO.md).
 
 ## Requisitos
 
@@ -12,9 +14,27 @@ El crate declara:
 - version Cargo `0.9.3`.
 - version runtime visible `0.9.3.4`.
 
+Toolchain mínima:
+
+| Herramienta | Requisito |
+|---|---|
+| Rust/Cargo | Rust `1.95+`, edition 2024 |
+| CMake | `3.24+` |
+| C++ | C++20 |
+| Qt | Qt `6.5+`: Widgets, Quick, QuickWidgets y QML |
+| Git | Repositorio y colaboración |
+| Node/npm | Opcional; typecheck de plugins TypeScript |
+| Python | Opcional; automation tools de proyecto |
+
+En macOS instala Xcode Command Line Tools, CMake y Qt 6. Si CMake no localiza Qt, exporta
+`CMAKE_PREFIX_PATH` con el prefijo de Qt. En Windows usa Rust MSVC y Visual Studio C++ Build
+Tools. En Linux añade los development packages de Qt, audio, OpenGL/windowing y un compilador
+C++ de la distribución.
+
 Dependencias relevantes:
 
-- UI/editor: `egui`, `egui_dock`, `egui_extras`, `egui-phosphor`, `rfd`, `arboard`, `syntect`.
+- Editor nativo: Qt 6/C++/QML en `editor-cpp` y `editor-qml`.
+- Backend de editor: `EditorCore`, C ABI, `arboard`, `syntect` y servicios de filesystem sin toolkit visual Rust.
 - Runtime/render: `macroquad`, `image`, `guillotiere`.
 - Audio: `kira`.
 - Fisica: `rapier2d`.
@@ -28,30 +48,33 @@ Dependencias relevantes:
 ## Features De Cargo
 
 ```toml
-default = ["editor"]
+default = ["editor_core"]
 runtime = []
-editor_ffi = ["editor"]
-editor = ["runtime", ...]
+editor_ffi = ["editor_core"]
+editor_core = ["runtime", ...]
 ```
 
 Reglas:
 
-- Codigo runtime debe compilar sin feature `editor`.
-- Servicios de editor deben estar bajo `#[cfg(feature = "editor")]`.
-- FFI del editor depende de `editor`.
+- Codigo runtime debe compilar sin feature `editor_core`.
+- Servicios no visuales del editor deben estar bajo `#[cfg(feature = "editor_core")]`.
+- FFI del editor depende de `editor_core` y no incorpora un toolkit UI Rust.
 - Export runtime usa `EngineRuntime`, no `Game`.
 
 ## Binaries
 
 ```bash
-cargo run --bin miniforge --features editor
-cargo run --bin miniforge_editor --features editor
-cargo run --bin miniforge_runtime --features runtime
-cargo run --bin miniforge_headless --features runtime
-cargo run --bin miniforge_dev --features editor -- help
+cargo run --no-default-features --features runtime --bin miniforge_runtime \
+  -- --build path/to/export
+cargo run --no-default-features --features runtime --bin miniforge_headless \
+  -- projects/DefaultProject 120
+cargo dev -- help
 ```
 
 `miniforge_runtime` abre el jugador runtime con macroquad.
+
+`miniforge_headless` simula el proyecto sin ventana y devuelve un reporte JSON. Su estado de
+salida es no-cero si el mundo es inválido o si Luau falla, por lo que sirve para CI.
 
 `miniforge_dev` contiene herramientas de desarrollo:
 
@@ -78,6 +101,33 @@ scripts/package-editor
 
 `scripts/run-editor` compila el editor Qt si hace falta y abre el proyecto indicado. Por defecto usa `projects/DefaultProject`.
 
+Responsabilidad de cada script:
+
+| Script | Responsabilidad |
+|---|---|
+| `configure-editor` | Detectar CMake/Qt y generar `build/editor-qt` |
+| `build-editor` | Configurar y compilar incrementalmente |
+| `run-editor` | Compilar y ejecutar el bundle/binario con argumentos intactos |
+| `test-editor` | Gates Rust, runtime-only, CMake, CTest, QML y TypeScript opcional |
+| `package-editor` | Construir el target CMake `package` |
+| `check-no-rust-editor` | Impedir que vuelva el target/editor visual Rust retirado |
+| `check-qt-backend-contract` | Verificar que métodos/propiedades usados por QML existan en C++ |
+
+Opciones útiles del ejecutable:
+
+```bash
+scripts/run-editor --project projects/DefaultProject --workspace Scripting
+scripts/run-editor --project projects/DefaultProject --safe-mode
+scripts/run-editor --launcher
+scripts/run-editor --project projects/DefaultProject --runtime
+scripts/run-editor --project projects/DefaultProject --headless-once
+scripts/run-editor --create-project projects/MiJuego --template TopDown
+scripts/run-editor --create-project projects/MiRTS --template RTS --force
+scripts/run-editor --reset-layout projects/DefaultProject
+QT_QPA_PLATFORM=offscreen scripts/run-editor \
+  --project projects/DefaultProject --screenshot /tmp/miniforge.png
+```
+
 Variables utiles:
 
 - `MINIFORGE_QT_BUILD_DIR`
@@ -85,30 +135,38 @@ Variables utiles:
 - `MINIFORGE_RUNTIME`
 - `MINIFORGE_ENGINE_ROOT`
 
+Variables CMake relevantes:
+
+- `MINIFORGE_EDITOR_RUST_PROFILE=debug|release` controla el bridge Rust enlazado.
+- `MINIFORGE_EDITOR_BUILD_APP=ON|OFF` controla la aplicación.
+- `MINIFORGE_EDITOR_BUILD_TESTS=ON|OFF` controla los smoke tests.
+- `MINIFORGE_EDITOR_ENABLE_QML_LINT=ON|OFF` controla el target de lint si existe.
+- `MINIFORGE_DEFAULT_PROJECT` selecciona el fixture usado por los smoke tests.
+
 ## Desarrollo Diario
 
 Flujo recomendado:
 
-1. `cargo fmt`
-2. `cargo check --features editor`
-3. `cargo check --no-default-features --features runtime`
-4. `cargo test --features editor`
-5. `cargo run --bin miniforge_dev --features editor -- doctor`
-6. `cargo run --bin miniforge_dev --features editor -- project projects/DefaultProject`
-7. Probar editor o runtime segun la tarea.
+1. `cargo fmt --all --check`
+2. `cargo check --locked --all-targets --all-features`
+3. `cargo check --locked --no-default-features --features runtime --all-targets`
+4. `cargo test --locked --features editor_core`
+5. `cargo dev -- doctor`
+6. `cargo dev -- project projects/DefaultProject`
+7. Probar editor o runtime según la tarea.
 
 Para cambios de runtime, ejecutar tambien:
 
 ```bash
-cargo run --bin miniforge_dev --features editor -- export projects/DefaultProject
+cargo dev -- export projects/DefaultProject builds debug
 ```
 
 Para cambios en la capa de escena inspirada en Godot, cubrir al menos:
 
 ```bash
-cargo check --features editor
-cargo check --no-default-features --features runtime
-cargo test --features editor --lib
+cargo check --locked --features editor_core
+cargo check --locked --no-default-features --features runtime --all-targets
+cargo test --locked --features editor_core --lib
 ```
 
 Archivos principales:
@@ -145,6 +203,40 @@ Los fixtures de formato viven en `tests/fixtures/formats`:
 
 - `scene_v0.scene`, `scene_v1.scene`, `scene_future.scene`, `scene_broken.scene`.
 - `prefab_v0.prefab`, `prefab_v1.prefab`, `prefab_future.prefab`, `prefab_broken.prefab`.
+
+## Matriz De Validación
+
+| Cambio | Validación mínima |
+|---|---|
+| Rust compartido | fmt, check all-features, runtime-only y tests afectados |
+| EditorCore/FFI | `scripts/test-editor` |
+| QML/C++ | build CMake, CTest y qmllint si está instalado |
+| Contrato QML/C++ | `scripts/check-qt-backend-contract` |
+| Luau API | tests Luau, `types/miniforge.luau`, snippets y API browser |
+| Schema | tests de round-trip, legacy, actual, futuro y documento roto |
+| Assets | import/move/duplicate/trash, GUID y dependency graph |
+| Runtime | headless, export fixture y `miniforge_runtime --build` |
+| Performance | `cargo dev -- bench` antes/después con workload anotado |
+| Packaging | paquete local, manifest, runtime incluido/warning y launch |
+
+`scripts/test-editor` ejecuta:
+
+1. gate anti-editor-Rust;
+2. rustfmt específico de `editor_core.rs` y `editor_ffi.rs`;
+3. check del ABI/editor core;
+4. tests `editor_core`;
+5. check runtime-only;
+6. configuración y build de `miniforge_editor_checks`;
+7. CTest;
+8. qmllint global cuando está disponible;
+9. typecheck TypeScript cuando existen `node_modules`.
+
+Los pasos opcionales se anuncian como omitidos; que falte qmllint o npm dependencies no equivale
+a que esos checks hayan pasado.
+
+Ejecuta además `scripts/check-qt-backend-contract` cuando cambies un nombre invocable o una
+propiedad usada desde QML. El script compara referencias QML con `Q_INVOKABLE`, `Q_PROPERTY` y sus
+implementaciones C++ para detectar bridges visuales sin backend.
 
 ## Configuracion De Proyecto
 
@@ -185,7 +277,7 @@ Puntos actuales de config:
 Comando:
 
 ```bash
-cargo run --bin miniforge_dev --features editor -- export projects/DefaultProject projects/DefaultProject/builds debug
+cargo dev -- export projects/DefaultProject projects/DefaultProject/builds debug
 ```
 
 La exportacion:
@@ -280,14 +372,41 @@ Reglas:
 
 Capacidades del bridge:
 
-- abrir proyecto.
-- listar entidades y seleccion.
-- leer/editar inspector.
-- listar assets.
-- listar/ejecutar comandos.
-- leer consola.
-- leer readiness.
-- snapshot de viewport RGBA.
+- proyecto con opciones, launcher, creación/reparación y settings;
+- jerarquía, selección, acciones de entidad y Scene Browser;
+- inspector single/multi y catálogo de componentes;
+- viewport RGBA/state, picking y transform batch;
+- sesiones de Animation, Tilemap, UI Designer y otras tools;
+- Prefab Studio y Visual Graph;
+- assets, Content Browser, texto y operaciones seguras;
+- profiler, dependencies, readiness y Runtime Health;
+- Luau read/save/validate/API/recovery/debugger;
+- Python automation, editor externo y ForgeAI;
+- export, project operations y external launch;
+- canvas de sprite, edición transaccional, transforms y save.
+
+El frontend se reparte entre:
+
+- `MainWindow.cpp`: shell, menús, toolbar, docks, workspaces y proceso externo;
+- `MfBridge`: wrapper QObject del ABI;
+- `MfModels`: modelos de jerarquía, assets, comandos, consola y readiness;
+- `ViewportWidget`: Scene/Game View, input, selección y gizmos;
+- `SpriteEditorWidget`: pixel/spritesheet editing;
+- `LuauSyntaxHighlighter`: highlighting nativo;
+- `editor-qml/panels`: herramientas QML;
+- `editor-qml/components` y `Theme.qml`: componentes y tokens visuales.
+
+Cuando añadas una herramienta:
+
+1. define el estado y la mutación en un servicio frontend-neutral si contiene lógica;
+2. expón DTO/ABI sin punteros internos;
+3. agrega wrapper `MfBridge` y signal de refresh;
+4. implementa panel/widget con estados empty/loading/error;
+5. añade round-trip y smoke test;
+6. registra dock, workspace, command palette y documentación.
+
+Una acción destructiva no debe exponerse como consulta measure/retry. Usa función status-only y
+un snapshot separado para que el probe de tamaño no repita la operación.
 
 ## Plugins
 
@@ -332,7 +451,7 @@ Uso recomendado:
 `miniforge_dev scaffold-csharp-plugin` crea scaffolding de plugin C#:
 
 ```bash
-cargo run --bin miniforge_dev --features editor -- csharp-plugin projects/DefaultProject RenderDiagnostics
+cargo dev -- scaffold-csharp-plugin projects/DefaultProject RenderDiagnostics
 ```
 
 El ejemplo `projects/MCP_LoveStoryLab/plugins/RenderDiagnostics` muestra:
@@ -381,7 +500,7 @@ Safe Mode puede impedir carga de librerias nativas.
 Puede instalar herramientas Python del motor al proyecto:
 
 ```bash
-cargo run --bin miniforge_dev --features editor -- automation projects/DefaultProject --install-tools
+cargo dev -- automation projects/DefaultProject --install-python
 ```
 
 Herramientas de produccion incluidas:
@@ -482,6 +601,25 @@ El comando `project` muestra:
 - warnings.
 - next actions.
 
+El alias se define en `.cargo/config.toml`; la forma recomendada es `cargo dev -- <comando>`.
+
+| Comando | Función |
+|---|---|
+| `doctor [--json]` | Toolchain requerido/opcional y salud del entorno |
+| `project [path] [--json]` | Validez, readiness, errores, warnings y acciones |
+| `assets [path] [--json]` | Reescanear y persistir metadata |
+| `automation [path] [--install-python]` | Inspeccionar/instalar automation tools |
+| `scaffold-csharp-plugin [project] [name]` | Crear manifest, csproj y fuente base |
+| `export [project] [output] [profile]` | Validar, exportar y verificar assets |
+| `bench [flags]` | Microbenchmarks de mundo, queries, física y Luau |
+| `quick` | Feedback loop corto |
+| `verify` | Gates de calidad/CI |
+| `test` | Workflow de tests |
+| `docs` | Workflow de documentación |
+| `ship` | Gates y build del runtime shipping |
+
+Los workflows aceptan `--json`; `quick` y `verify` aceptan además `--keep-going`.
+
 ## Benchmarks
 
 `miniforge_dev bench` mide cargas de runtime:
@@ -512,9 +650,13 @@ Capacidades ya presentes:
 - asset GUIDs.
 - Luau y visual graphs.
 - scheduler de mundo abierto con prioridad/distancia y `Entity.nearby` indexado.
+- `RuntimeStabilityGuard`, Runtime Health y cuarentena/saneamiento de entidades.
+- `SystemScheduler` con Fixed/Update/Late, dependencias, criticidad y budgets como base extensible.
 - runtime 2D con fisica, camara, controllers y tilemap.
 - RTS, gameplay, UI, particulas, audio, narrativa.
 - Qt/C++ bridge.
+- workbench Qt con workspaces, Content Browser profesional, Luau Studio y editores de sprite,
+  graph, animation, tilemap, UI y prefabs.
 - export/packaging.
 - plugin manager, native ABI, TypeScript/C#/Python tooling.
 - ForgeAI vertical slice.
@@ -527,6 +669,8 @@ Capacidades en estado inicial/futuro:
 - 3D hibrido productivo.
 - sandbox fuerte para plugins externos.
 - documentacion generada automaticamente desde registry.
+- adopción del scheduler programable como orquestador universal del loop principal.
+- debugger Luau instrucción-a-instrucción.
 
 ## Reglas Para Contribuir
 
@@ -546,10 +690,10 @@ Capacidades en estado inicial/futuro:
 
 Antes de publicar una version:
 
-1. `cargo fmt`.
-2. `cargo check --features editor`.
-3. `cargo check --no-default-features --features runtime`.
-4. `cargo test --features editor`.
+1. `cargo fmt --all --check`.
+2. `cargo check --locked --all-targets --all-features`.
+3. `cargo check --locked --no-default-features --features runtime --all-targets`.
+4. `cargo test --locked --features editor_core`.
 5. Tests de fixtures de escena/prefab.
 6. Abrir proyecto demo en editor.
 7. Validar `miniforge_dev doctor`.
@@ -561,3 +705,9 @@ Antes de publicar una version:
 13. Probar `miniforge_runtime`.
 14. Revisar readiness score y acciones.
 15. Actualizar version/documentacion consolidada.
+
+Además ejecuta `scripts/check-no-rust-editor` y `scripts/test-editor` antes de declarar listo un
+cambio de release que toque la superficie desktop.
+
+Consulta el [índice de documentación](README.md) para las fuentes canónicas y la clasificación
+del feedback histórico.

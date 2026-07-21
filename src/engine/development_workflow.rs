@@ -388,7 +388,7 @@ fn benchmark_entity_creation(
             elapsed_ms,
             vec![
                 "GameObject::new plus RuntimeWorld::push".to_string(),
-                "includes current duplicate-id scan and spatial-index insert".to_string(),
+                "includes indexed duplicate-id lookup and spatial-index insert".to_string(),
             ],
         ),
     ))
@@ -418,7 +418,7 @@ fn benchmark_entity_removal(world: &mut RuntimeWorld, ids: &[u64]) -> BenchmarkC
     let started = Instant::now();
     let mut removed = 0usize;
     for id in ids {
-        if world.remove(*id).is_some() {
+        if world.remove_unordered(*id).is_some() {
             removed += 1;
         }
     }
@@ -428,8 +428,8 @@ fn benchmark_entity_removal(world: &mut RuntimeWorld, ids: &[u64]) -> BenchmarkC
         removed,
         elapsed_ms(started),
         vec![
-            "RuntimeWorld::remove by id".to_string(),
-            "captures current vector removal and spatial-index cleanup cost".to_string(),
+            "RuntimeWorld::remove_unordered by indexed id".to_string(),
+            "use RuntimeWorld::remove when stable render/editor order is required".to_string(),
         ],
     )
 }

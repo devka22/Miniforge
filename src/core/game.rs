@@ -22,7 +22,7 @@ use crate::engine::component_registry::ComponentRegistry;
 use crate::engine::content_drag::{ContentDropper, DragAssetKind, DragPayload, DropOutcome};
 use crate::engine::developer_console::DeveloperConsole;
 use crate::engine::diagnostics::Diagnostics;
-use crate::engine::docking_panel::{EditorDockTab, EguiDockingWorkspace};
+use crate::engine::docking_panel::{EditorDockTab, EditorDockingWorkspace};
 use crate::engine::editor_command::{EditorCommand, EditorCommandKind, EditorSnapshot};
 use crate::engine::editor_history::EditorHistory;
 use crate::engine::editor_workspace::{EditorWorkspace, WorkspaceMode};
@@ -51,6 +51,7 @@ use crate::engine::project_validator::ProjectValidator;
 use crate::engine::resource_manager::ResourceManager;
 use crate::engine::runtime_config::RuntimeConfig;
 use crate::engine::runtime_exporter::{ExportProfile, RuntimeExportReport, RuntimeExporter};
+use crate::engine::runtime_stability::RuntimeStabilityGuard;
 use crate::engine::safe_mode::SafeModeSettings;
 use crate::engine::scene_manager::SceneManager;
 use crate::engine::scene_save_manager::SceneSaveManager;
@@ -181,7 +182,8 @@ pub struct Game {
     pub history: EditorHistory,
     pub profiler: Profiler,
     pub diagnostics: Diagnostics,
-    pub docking_workspace: EguiDockingWorkspace,
+    pub stability_guard: RuntimeStabilityGuard,
+    pub docking_workspace: EditorDockingWorkspace,
     pub audio_mixer: AudioMixer,
     pub audio_system: AudioSystem,
     pub animation_graphs: AnimationGraphLibrary,
@@ -413,6 +415,11 @@ impl Game {
         let project_path = project_path.as_ref().to_path_buf();
         let project_paths = AssetTools::ensure_project_folders(&project_path)?;
         let engine_config = EngineConfig::new(&project_path)?;
+        let autosave_interval_seconds = engine_config
+            .get("autosave_interval_seconds")
+            .and_then(Value::as_u64)
+            .unwrap_or(60)
+            .clamp(5, 3600);
         let config_warnings = engine_config.status.warnings.clone();
         let mut resources = ResourceManager::new(&project_paths.assets);
         resources.scan_all().ok();
@@ -425,6 +432,10 @@ impl Game {
         let runtime_config =
             RuntimeConfig::new(project_paths.settings.join("runtime_config.json"))?;
         let runtime_tuning = runtime_config.optimized_tuning();
+        let stability_guard = RuntimeStabilityGuard::from_runtime_config(
+            &runtime_config.data,
+            runtime_tuning.max_entities,
+        );
         let tags_layers_manager = TagsLayersManager::new(&project_paths.settings)?;
         let grid = Grid::new(60, 40, 32, 8);
         let tilemap_layers = TilemapLayers::new(grid.width, grid.height);
@@ -494,11 +505,12 @@ impl Game {
             scene_validator: SceneValidator::default(),
             scene_save_manager: SceneSaveManager::new(),
             ui_canvases: json!([]),
-            autosave_manager: AutosaveManager::new(&project_path, 60),
+            autosave_manager: AutosaveManager::new(&project_path, autosave_interval_seconds),
             history,
             profiler: Profiler::new(),
             diagnostics: Diagnostics::default(),
-            docking_workspace: EguiDockingWorkspace::new(),
+            stability_guard,
+            docking_workspace: EditorDockingWorkspace::new(),
             audio_mixer: AudioMixer::new(),
             audio_system: AudioSystem::default(),
             animation_graphs: AnimationGraphLibrary::new(),
@@ -715,24 +727,41 @@ impl Game {
     pub fn run_headless_once(&mut self, dt: f64) {
         self.console.advance_frame();
         self.profiler.begin_frame();
-        let clock_advance = self.clock.advance(dt);
         let mut marker = Instant::now();
-        self.sprite_animation_system
-            .update_entities(&mut self.runtime_world.units, dt, &self.mode);
+        let safe_dt = self.stability_guard.begin_frame(dt);
+        let clock_advance = self.clock.advance(safe_dt);
+        let simulation_dt = clock_advance.scaled_dt;
+        self.stability_guard
+            .sanitize_entities(&mut self.runtime_world.units);
+        self.profiler.record_system(
+            "StabilityPreflight",
+            marker.elapsed().as_secs_f64() * 1000.0,
+        );
+        marker = Instant::now();
+        self.sprite_animation_system.update_entities(
+            &mut self.runtime_world.units,
+            simulation_dt,
+            &self.mode,
+        );
         self.profiler
             .record_system("SpriteFrames2D", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
         AnimationSystem.update_entities(
             &mut self.runtime_world.units,
             &self.animation_graphs,
-            dt,
+            simulation_dt,
             &self.mode,
         );
         self.profiler
             .record_system("Animation", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
-        self.particle_system
-            .update_entities(&self.runtime_world.units, dt, &self.mode);
+        if let Some(particle_dt) = self.stability_guard.optional_system_delta(simulation_dt) {
+            self.particle_system.update_entities(
+                &self.runtime_world.units,
+                particle_dt,
+                &self.mode,
+            );
+        }
         self.profiler
             .record_system("Particles", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
@@ -747,7 +776,7 @@ impl Game {
         if self.safe_mode.allows_graphs() {
             self.visual_script_runtime.update_entities(
                 &mut self.runtime_world.units,
-                dt,
+                simulation_dt,
                 &self.mode,
             );
             for error in self.visual_script_runtime.last_errors.iter().take(4) {
@@ -761,7 +790,7 @@ impl Game {
             self.luau_script_runtime.set_camera_state(&self.camera);
             let luau_report = self.luau_script_runtime.update_entities_with_fixed_steps(
                 &mut self.runtime_world.units,
-                dt,
+                simulation_dt,
                 self.clock.fixed_delta,
                 clock_advance.fixed_steps,
                 &self.mode,
@@ -771,31 +800,37 @@ impl Game {
         self.profiler
             .record_system("Luau", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
-        self.runtime_2d_system
-            .update_entities(&mut self.runtime_world.units, dt, &self.mode);
+        self.runtime_2d_system.update_entities(
+            &mut self.runtime_world.units,
+            simulation_dt,
+            &self.mode,
+        );
         self.profiler
             .record_system("Runtime2D", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
         self.gameplay_system.update_entities_with_grid(
             &mut self.runtime_world.units,
             &self.grid,
-            dt,
+            simulation_dt,
             &self.mode,
         );
         self.profiler
             .record_system("Gameplay", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
         self.rts_system
-            .update_entities(&mut self.runtime_world.units, dt, &self.mode);
+            .update_entities(&mut self.runtime_world.units, simulation_dt, &self.mode);
         self.profiler
             .record_system("RTS", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
-        MovementSystem.update_entities(&mut self.runtime_world.units, dt);
+        MovementSystem.update_entities(&mut self.runtime_world.units, simulation_dt);
         self.profiler
             .record_system("Movement", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
-        self.physics_system
-            .update_entities_mut(&mut self.runtime_world.units, dt, &self.mode);
+        self.physics_system.update_entities_mut(
+            &mut self.runtime_world.units,
+            simulation_dt,
+            &self.mode,
+        );
         self.profiler
             .record_system("Physics", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
@@ -804,12 +839,15 @@ impl Game {
             &self.grid,
             &self.mode,
         );
-        self.runtime_2d_system
-            .advance_camera_shakes(&mut self.runtime_world.units, dt, &self.mode);
+        self.runtime_2d_system.advance_camera_shakes(
+            &mut self.runtime_world.units,
+            simulation_dt,
+            &self.mode,
+        );
         self.runtime_2d_system.update_camera(
             &mut self.camera,
             &self.runtime_world.units,
-            dt,
+            simulation_dt,
             &self.mode,
             self.grid.tile_size.max(1) as f64,
         );
@@ -922,12 +960,24 @@ impl Game {
         self.profiler
             .record_system("LuauCollision", marker.elapsed().as_secs_f64() * 1000.0);
         marker = Instant::now();
+        self.stability_guard
+            .sanitize_entities(&mut self.runtime_world.units);
+        self.profiler.record_system(
+            "StabilityPostflight",
+            marker.elapsed().as_secs_f64() * 1000.0,
+        );
+        marker = Instant::now();
         self.runtime_world.mark_changed();
         self.runtime_world.rebuild_index();
         self.profiler
             .record_system("WorldSync", marker.elapsed().as_secs_f64() * 1000.0);
+        self.stability_guard.observe_frame(
+            clock_advance,
+            self.profiler.systems_time_total_ms(),
+            self.runtime_world.units.len(),
+        );
         self.diagnostics
-            .update_with_budget(dt, clock_advance.target_frame_delta * 1000.0);
+            .update_with_budget(safe_dt, clock_advance.target_frame_delta * 1000.0);
         self.diagnostics.record_frame_runtime(
             clock_advance,
             self.clock.fixed_delta,
@@ -935,6 +985,10 @@ impl Game {
             self.profiler.systems_time_total_ms(),
             self.profiler.slowest_system(),
         );
+        for warning in self.stability_guard.take_events() {
+            self.diagnostics.push_warning(warning.clone());
+            self.console.log(warning, "STABILITY");
+        }
         self.profiler
             .set_counter("Entities", self.runtime_world.units.len());
         self.profiler.set_counter(
@@ -1054,6 +1108,38 @@ impl Game {
             .set_metric("InterpolationAlpha", clock_advance.interpolation_alpha);
         self.profiler
             .set_metric("DroppedTimeMs", clock_advance.dropped_time * 1000.0);
+        self.profiler.set_counter(
+            "StabilityLevel",
+            match self.stability_guard.level() {
+                crate::engine::runtime_stability::StabilityLevel::Stable => 0,
+                crate::engine::runtime_stability::StabilityLevel::Guarded => 1,
+                crate::engine::runtime_stability::StabilityLevel::Recovery => 2,
+            },
+        );
+        self.profiler.set_counter(
+            "StabilityRepairs",
+            self.stability_guard.last_frame.repaired_values,
+        );
+        self.profiler.set_counter(
+            "StabilityQuarantined",
+            self.stability_guard.quarantined_entity_count(),
+        );
+        self.profiler.set_counter(
+            "StabilityOptionalCadence",
+            self.stability_guard.last_frame.optional_cadence_divisor as usize,
+        );
+        self.profiler.set_counter(
+            "StabilityEntityOverflow",
+            self.stability_guard.last_frame.entity_limit_exceeded_by,
+        );
+        self.profiler.set_metric(
+            "RawFrameDtMs",
+            self.stability_guard.last_frame.raw_delta_seconds * 1000.0,
+        );
+        self.profiler.set_metric(
+            "SafeFrameDtMs",
+            self.stability_guard.last_frame.safe_delta_seconds * 1000.0,
+        );
         self.profiler
             .set_counter("SpatialCells", self.runtime_world.spatial_index.cells.len());
         self.play_mode_manager.tick_frame();
@@ -1359,6 +1445,19 @@ impl Game {
     pub fn set_entity_parent(&mut self, child_id: u64, parent_id: u64) -> bool {
         if child_id == parent_id {
             return false;
+        }
+        // Reject cycles before mutating the hierarchy. The editor exposes
+        // reparenting through drag-and-drop, so invalid drops must be harmless
+        // instead of producing a scene that can no longer be saved.
+        let mut ancestor = Some(parent_id);
+        let mut visited = std::collections::BTreeSet::new();
+        while let Some(ancestor_id) = ancestor {
+            if ancestor_id == child_id || !visited.insert(ancestor_id) {
+                return false;
+            }
+            ancestor = self
+                .get_entity_by_id(ancestor_id)
+                .and_then(|entity| entity.parent_id);
         }
         let Some(parent) = self.get_entity_by_id(parent_id).cloned() else {
             return false;
@@ -1953,12 +2052,30 @@ impl Game {
 
     pub fn delete_entity(&mut self, entity_id: u64) -> bool {
         let snapshot_before = self.capture_editor_snapshot();
+        let parent_id = self
+            .runtime_world
+            .units
+            .iter()
+            .find(|entity| entity.id == entity_id)
+            .and_then(|entity| entity.parent_id);
         let len_before = self.runtime_world.units.len();
         self.runtime_world
             .units
             .retain(|entity| entity.id != entity_id);
         let deleted = self.runtime_world.units.len() != len_before;
         if deleted {
+            // Preserve the deleted node's branch by promoting direct children
+            // to its parent (or to scene roots). This keeps parent references
+            // valid and makes deletion safe for both the Qt hierarchy and API
+            // callers.
+            for child in self
+                .runtime_world
+                .units
+                .iter_mut()
+                .filter(|entity| entity.parent_id == Some(entity_id))
+            {
+                child.parent_id = parent_id;
+            }
             self.selected_units
                 .retain(|selected| *selected != entity_id);
             self.sync_world();
@@ -2474,7 +2591,11 @@ impl Game {
         Ok(report)
     }
 
-    pub fn package_distributable(&mut self, profile: ExportProfile, label: &str) -> io::Result<()> {
+    pub fn package_distributable(
+        &mut self,
+        profile: ExportProfile,
+        label: &str,
+    ) -> io::Result<crate::engine::packaging_manager::PackageReport> {
         self.save_project()?;
         let dest =
             self.project_path
@@ -2506,7 +2627,7 @@ impl Game {
             ),
             "BUILD",
         );
-        Ok(())
+        Ok(report)
     }
 
     pub fn recover_from_autosave(&mut self) -> Result<(), String> {
@@ -2874,6 +2995,7 @@ impl Game {
         let Some(id) = self.selected_units.first().copied() else {
             return Ok(None);
         };
+        let before = self.capture_editor_snapshot();
         let Some(index) = self
             .runtime_world
             .units
@@ -2897,6 +3019,13 @@ impl Game {
         };
         self.refresh_assets().ok();
         self.mark_scene_dirty("Save Prefab");
+        self.push_editor_command(
+            "Create Prefab",
+            EditorCommandKind::SceneOperation {
+                name: "Create Prefab".to_string(),
+            },
+            before,
+        );
         self.console
             .log(format!("Prefab guardado: {}", path.display()), "PREFAB");
         Ok(Some(path))
@@ -2981,6 +3110,7 @@ impl Game {
         let Some(id) = self.selected_units.first().copied() else {
             return Ok(false);
         };
+        let before = self.capture_editor_snapshot();
         let Some(index) = self
             .runtime_world
             .units
@@ -3007,6 +3137,13 @@ impl Game {
         self.select_entity(id);
         self.sync_world();
         self.mark_scene_dirty("Revert Prefab");
+        self.push_editor_command(
+            "Revert Prefab",
+            EditorCommandKind::SceneOperation {
+                name: "Revert Prefab".to_string(),
+            },
+            before,
+        );
         self.console
             .log(format!("Prefab revertido #{id}"), "PREFAB");
         Ok(true)
@@ -3016,6 +3153,7 @@ impl Game {
         let Some(id) = self.selected_units.first().copied() else {
             return false;
         };
+        let before = self.capture_editor_snapshot();
         let Some(entity) = self.get_entity_by_id_mut(id) else {
             return false;
         };
@@ -3023,6 +3161,13 @@ impl Game {
         entity.prefab_source = None;
         entity.prefab_guid = None;
         self.mark_scene_dirty("Detach Prefab");
+        self.push_editor_command(
+            "Detach Prefab",
+            EditorCommandKind::SceneOperation {
+                name: "Detach Prefab".to_string(),
+            },
+            before,
+        );
         self.console
             .log(format!("Prefab desconectado de entity #{id}"), "PREFAB");
         true

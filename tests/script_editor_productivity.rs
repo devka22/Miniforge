@@ -1,3 +1,5 @@
+#![cfg(feature = "editor_core")]
+
 use std::path::PathBuf;
 
 use miniforge::engine::script_editor::{ScriptDocument, ScriptEditor};

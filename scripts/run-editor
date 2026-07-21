@@ -3,7 +3,16 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${MINIFORGE_QT_BUILD_DIR:-"$ROOT/build/editor-qt"}"
-PROJECT_PATH="${1:-"$ROOT/projects/DefaultProject"}"
+
+if [[ $# -eq 0 ]]; then
+    set -- "$ROOT/projects/DefaultProject"
+fi
 
 "$ROOT/scripts/build-editor"
-"$BUILD_DIR/miniforge_qt_editor" "$PROJECT_PATH"
+if [[ -x "$BUILD_DIR/MiniForge.app/Contents/MacOS/MiniForge" ]]; then
+    EDITOR_BINARY="$BUILD_DIR/MiniForge.app/Contents/MacOS/MiniForge"
+else
+    EDITOR_BINARY="$BUILD_DIR/miniforge_qt_editor"
+fi
+
+exec "$EDITOR_BINARY" "$@"

@@ -33,7 +33,7 @@ impl Default for GameClock {
 impl GameClock {
     pub fn new(fixed_delta: f64) -> Self {
         Self {
-            fixed_delta: fixed_delta.max(0.0001),
+            fixed_delta: finite_or(fixed_delta, 1.0 / 60.0).max(0.0001),
             max_steps_per_frame: 5,
             target_frame_delta: 1.0 / 60.0,
             time_scale: 1.0,
@@ -46,6 +46,7 @@ impl GameClock {
     }
 
     pub fn advance(&mut self, real_dt: f64) -> ClockAdvance {
+        self.sanitize_configuration();
         self.frame = self.frame.saturating_add(1);
         if self.paused {
             return ClockAdvance {
@@ -59,7 +60,8 @@ impl GameClock {
             };
         }
 
-        let scaled_dt = (real_dt.max(0.0) * self.time_scale.max(0.0)).min(0.25);
+        let real_dt = finite_or(real_dt, 0.0).clamp(0.0, 0.25);
+        let scaled_dt = (real_dt * self.time_scale).min(0.25);
         self.total_time += scaled_dt;
         self.accumulator += scaled_dt;
 
@@ -94,11 +96,11 @@ impl GameClock {
     }
 
     pub fn set_time_scale(&mut self, time_scale: f64) {
-        self.time_scale = time_scale.clamp(0.0, 8.0);
+        self.time_scale = finite_or(time_scale, 1.0).clamp(0.0, 8.0);
     }
 
     pub fn configure_fixed_step(&mut self, fixed_delta: f64, max_steps_per_frame: usize) {
-        self.fixed_delta = fixed_delta.clamp(0.0001, 0.25);
+        self.fixed_delta = finite_or(fixed_delta, 1.0 / 60.0).clamp(0.0001, 0.25);
         self.max_steps_per_frame = max_steps_per_frame.clamp(1, 16);
         self.accumulator = self
             .accumulator
@@ -129,5 +131,59 @@ impl GameClock {
         self.total_time = 0.0;
         self.frame = 0;
         self.tick = 0;
+    }
+
+    fn sanitize_configuration(&mut self) {
+        self.fixed_delta = finite_or(self.fixed_delta, 1.0 / 60.0).clamp(0.0001, 0.25);
+        self.target_frame_delta =
+            finite_or(self.target_frame_delta, 1.0 / 60.0).clamp(1.0 / 360.0, 1.0);
+        self.time_scale = finite_or(self.time_scale, 1.0).clamp(0.0, 8.0);
+        self.accumulator = finite_or(self.accumulator, 0.0).clamp(
+            0.0,
+            self.fixed_delta * self.max_steps_per_frame.clamp(1, 16) as f64,
+        );
+        self.max_steps_per_frame = self.max_steps_per_frame.clamp(1, 16);
+        self.total_time = finite_or(self.total_time, 0.0).max(0.0);
+    }
+}
+
+fn finite_or(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() { value } else { fallback }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GameClock;
+
+    #[test]
+    fn invalid_public_clock_state_cannot_poison_the_simulation() {
+        let mut clock = GameClock::new(f64::NAN);
+        clock.fixed_delta = f64::NAN;
+        clock.target_frame_delta = f64::INFINITY;
+        clock.time_scale = f64::NAN;
+        clock.accumulator = f64::NEG_INFINITY;
+        clock.total_time = f64::NAN;
+        clock.max_steps_per_frame = 0;
+
+        let advance = clock.advance(f64::NAN);
+
+        assert_eq!(advance.scaled_dt, 0.0);
+        assert!(clock.fixed_delta.is_finite());
+        assert!(clock.target_frame_delta.is_finite());
+        assert!(clock.time_scale.is_finite());
+        assert!(clock.accumulator.is_finite());
+        assert!(clock.total_time.is_finite());
+        assert_eq!(clock.max_steps_per_frame, 1);
+    }
+
+    #[test]
+    fn paused_clock_returns_zero_simulation_delta() {
+        let mut clock = GameClock {
+            paused: true,
+            ..GameClock::default()
+        };
+        let advance = clock.advance(1.0);
+        assert_eq!(advance.scaled_dt, 0.0);
+        assert_eq!(advance.fixed_steps, 0);
     }
 }

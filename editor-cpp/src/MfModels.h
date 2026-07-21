@@ -29,6 +29,7 @@ public:
         PositionRole,
         SelectedRole,
         VisibleRole,
+        EnabledRole,
         LockedRole,
         ComponentCountRole,
         ChildCountRole,
@@ -67,6 +68,7 @@ private:
 class InspectorModel final : public QAbstractListModel {
     Q_OBJECT
     Q_PROPERTY(qulonglong entityId READ entityId WRITE setEntityId NOTIFY entityIdChanged)
+    Q_PROPERTY(QString filter READ filter WRITE setFilter NOTIFY filterChanged)
 public:
     enum Roles {
         TargetRole = Qt::UserRole + 1,
@@ -76,21 +78,30 @@ public:
         ValueJsonRole,
         ValueTypeRole,
         EditableRole,
+        MixedRole,
     };
 
     explicit InspectorModel(MfBridge* bridge, QObject* parent = nullptr);
     qulonglong entityId() const;
     void setEntityId(qulonglong entityId);
+    QString filter() const;
+    void setFilter(const QString& filter);
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;
     QVariant data(const QModelIndex& index, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
 signals:
     void entityIdChanged();
+    void filterChanged();
 public slots:
     void refresh();
 private:
+    QVector<MfInspectorItem> filteredRows() const;
+    void resetRows();
+
     MfBridge* m_bridge = nullptr;
     quint64 m_entityId = 0;
+    QString m_filter;
+    QVector<MfInspectorItem> m_allRows;
     QVector<MfInspectorItem> m_rows;
 };
 
@@ -161,6 +172,8 @@ private:
 
 class ConsoleModel final : public QAbstractTableModel {
     Q_OBJECT
+    Q_PROPERTY(QString filter READ filter WRITE setFilter NOTIFY filterChanged)
+    Q_PROPERTY(int minimumSeverity READ minimumSeverity WRITE setMinimumSeverity NOTIFY minimumSeverityChanged)
 public:
     enum Columns {
         FrameColumn = 0,
@@ -178,15 +191,28 @@ public:
     };
 
     explicit ConsoleModel(MfBridge* bridge, QObject* parent = nullptr);
+    QString filter() const;
+    void setFilter(const QString& filter);
+    int minimumSeverity() const;
+    void setMinimumSeverity(int severity);
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;
     int columnCount(const QModelIndex& parent = QModelIndex()) const override;
     QVariant data(const QModelIndex& index, int role) const override;
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
+signals:
+    void filterChanged();
+    void minimumSeverityChanged();
 public slots:
     void refresh();
 private:
+    QVector<MfConsoleItem> filteredRows() const;
+    void resetRows();
+
     MfBridge* m_bridge = nullptr;
+    QString m_filter;
+    int m_minimumSeverity = 0;
+    QVector<MfConsoleItem> m_allRows;
     QVector<MfConsoleItem> m_rows;
 };
 

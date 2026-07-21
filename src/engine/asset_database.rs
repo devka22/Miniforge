@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
@@ -181,6 +181,10 @@ impl AssetDatabase {
             })
             .collect::<Vec<_>>();
 
+        let live_paths = scanned
+            .iter()
+            .map(|asset| asset.relative_path.clone())
+            .collect::<BTreeSet<_>>();
         let mut previous = std::mem::take(&mut self.assets);
         let mut next = BTreeMap::new();
         let mut moved_paths = BTreeMap::new();
@@ -189,7 +193,7 @@ impl AssetDatabase {
             let moved_from = if previous.contains_key(&existing_path) {
                 None
             } else {
-                unique_content_match(&previous, &scanned)
+                unique_content_match(&previous, &scanned, &live_paths)
             };
             let mut record = if let Some(record) = previous.remove(&existing_path) {
                 record
@@ -356,7 +360,11 @@ impl AssetDatabase {
         self.scan()?;
         let mut graph = BTreeMap::new();
         let project_files = walk_files(&self.project_root)?;
-        let asset_paths: Vec<String> = self.assets.keys().cloned().collect();
+        let asset_paths = self
+            .assets
+            .iter()
+            .map(|(path, record)| (path.clone(), record.guid.clone()))
+            .collect::<Vec<_>>();
         for file in project_files {
             let relative = file
                 .strip_prefix(&self.project_root)
@@ -374,14 +382,20 @@ impl AssetDatabase {
             let text = fs::read_to_string(&file).unwrap_or_default();
             let deps: Vec<String> = asset_paths
                 .iter()
-                .filter(|asset| {
+                .filter(|(asset, guid)| {
+                    if asset == &relative {
+                        return false;
+                    }
                     let stem = Path::new(asset)
                         .file_stem()
                         .and_then(|value| value.to_str())
                         .unwrap_or(asset);
-                    text.contains(asset.as_str()) || text.contains(stem)
+                    text.contains(asset.as_str())
+                        || (!guid.is_empty() && text.contains(guid))
+                        || text.contains(&format!("\"{stem}\""))
+                        || text.contains(&format!("'{stem}'"))
                 })
-                .cloned()
+                .map(|(path, _)| path.clone())
                 .collect();
             if !deps.is_empty() {
                 graph.insert(relative, deps);
@@ -489,14 +503,16 @@ fn make_guid(seed: &str) -> String {
 fn unique_content_match(
     previous: &BTreeMap<String, AssetRecord>,
     scanned: &ScannedAsset,
+    live_paths: &BTreeSet<String>,
 ) -> Option<String> {
     if scanned.content_hash.is_empty() {
         return None;
     }
     let mut matches = previous
         .iter()
-        .filter(|(_, record)| {
-            record.content_hash == scanned.content_hash
+        .filter(|(path, record)| {
+            !live_paths.contains(*path)
+                && record.content_hash == scanned.content_hash
                 && record.size_bytes == scanned.size_bytes
                 && record.asset_type == scanned.asset_type
         })
@@ -942,6 +958,28 @@ mod tests {
                 .count(),
             1
         );
+        let _ = fs::remove_dir_all(project);
+    }
+
+    #[test]
+    fn scan_duplicate_does_not_steal_the_original_assets_guid() {
+        let project = test_project("external_duplicate");
+        let paths = AssetTools::ensure_project_folders(&project).expect("project folders");
+        let source = paths.sprites.join("hero.png");
+        fs::write(&source, "same bytes for duplicate").expect("source asset");
+        let mut database = AssetDatabase::new(&paths.assets, &project).expect("database");
+        database.scan().expect("initial scan");
+        let original_guid = database.assets["assets/sprites/hero.png"].guid.clone();
+
+        let duplicate = paths.audio.join("hero.png");
+        fs::copy(&source, &duplicate).expect("duplicate asset");
+        database.scan().expect("duplicate scan");
+
+        assert_eq!(
+            database.assets["assets/sprites/hero.png"].guid, original_guid,
+            "a byte-identical copy in an earlier sort position must not inherit the source identity"
+        );
+        assert_ne!(database.assets["assets/audio/hero.png"].guid, original_guid);
         let _ = fs::remove_dir_all(project);
     }
 

@@ -77,7 +77,21 @@ if tool_id not in operations:
     result.message = f"Unknown production automation: {tool_id}"
 else:
     operation, target, value = operations[tool_id]
-    result.operation(operation, target, value)
+    if operation == "batch_import_assets":
+        result.batch_import_assets(target, value["destination"])
+    elif operation == "convert_sprites":
+        result.convert_sprites(target, value["destination"])
+    elif operation == "generate_atlas":
+        result.generate_atlas(
+            target,
+            value["destination"],
+            size=value["size"],
+            extrude=value["extrude"],
+        )
+    elif operation == "set_editor_property":
+        result.set_selection_properties(**value)
+    else:
+        result.operation(operation, target, value)
     result.log(result.message)
 
 result.emit()

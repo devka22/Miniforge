@@ -6,7 +6,60 @@
 #include <QJsonParseError>
 #include <QSet>
 
+#include <algorithm>
 #include <utility>
+
+namespace {
+
+MfCommandItem shellCommand(
+    const QString& id,
+    const QString& label,
+    const QString& category,
+    const QString& shortcut = {})
+{
+    MfCommandItem item;
+    item.enabled = true;
+    item.id = id;
+    item.label = label;
+    item.category = category;
+    item.shortcut = shortcut;
+    return item;
+}
+
+QVector<MfCommandItem> shellCommands()
+{
+    return {
+        shellCommand(QStringLiteral("workspace.2d"), QStringLiteral("Open 2D Workspace"), QStringLiteral("Workspace"), QStringLiteral("Ctrl+1")),
+        shellCommand(QStringLiteral("workspace.scripting"), QStringLiteral("Open Scripting Workspace"), QStringLiteral("Workspace"), QStringLiteral("Ctrl+2")),
+        shellCommand(QStringLiteral("workspace.animation"), QStringLiteral("Open Animation Workspace"), QStringLiteral("Workspace"), QStringLiteral("Ctrl+3")),
+        shellCommand(QStringLiteral("workspace.world"), QStringLiteral("Open World Workspace"), QStringLiteral("Workspace"), QStringLiteral("Ctrl+4")),
+        shellCommand(QStringLiteral("workspace.ui"), QStringLiteral("Open UI Workspace"), QStringLiteral("Workspace"), QStringLiteral("Ctrl+5")),
+        shellCommand(QStringLiteral("workspace.prefab"), QStringLiteral("Open Prefab Workspace"), QStringLiteral("Workspace"), QStringLiteral("Ctrl+6")),
+        shellCommand(QStringLiteral("workspace.project"), QStringLiteral("Open Project Workspace"), QStringLiteral("Workspace"), QStringLiteral("Ctrl+7")),
+        shellCommand(QStringLiteral("workspace.assets"), QStringLiteral("Open Assets Workspace"), QStringLiteral("Workspace"), QStringLiteral("Ctrl+8")),
+        shellCommand(QStringLiteral("workspace.profiler"), QStringLiteral("Open Profiler Workspace"), QStringLiteral("Workspace"), QStringLiteral("Ctrl+9")),
+        shellCommand(QStringLiteral("workspace.automation"), QStringLiteral("Open Automation Workspace"), QStringLiteral("Workspace"), QStringLiteral("Ctrl+0")),
+        shellCommand(QStringLiteral("workspace.ai"), QStringLiteral("Open Forge AI Workspace"), QStringLiteral("Workspace")),
+        shellCommand(QStringLiteral("workspace.build"), QStringLiteral("Open Build Workspace"), QStringLiteral("Workspace")),
+        shellCommand(QStringLiteral("workspace.debug"), QStringLiteral("Open Debug Workspace"), QStringLiteral("Workspace")),
+        shellCommand(QStringLiteral("panel.content"), QStringLiteral("Focus Content Browser"), QStringLiteral("Panels"), QStringLiteral("Ctrl+Space")),
+        shellCommand(QStringLiteral("panel.console"), QStringLiteral("Focus Console"), QStringLiteral("Panels"), QStringLiteral("Ctrl+`")),
+        shellCommand(QStringLiteral("panel.hierarchy"), QStringLiteral("Focus Hierarchy"), QStringLiteral("Panels"), QStringLiteral("Ctrl+Shift+H")),
+        shellCommand(QStringLiteral("panel.inspector"), QStringLiteral("Focus Inspector"), QStringLiteral("Panels"), QStringLiteral("Ctrl+Shift+I")),
+        shellCommand(QStringLiteral("panel.luau"), QStringLiteral("Focus Luau Studio"), QStringLiteral("Panels"), QStringLiteral("Ctrl+Shift+L")),
+        shellCommand(QStringLiteral("panel.sprite"), QStringLiteral("Focus Sprite Studio"), QStringLiteral("Panels")),
+        shellCommand(QStringLiteral("panel.scenes"), QStringLiteral("Focus Scene Browser"), QStringLiteral("Panels")),
+        shellCommand(QStringLiteral("panel.assets"), QStringLiteral("Focus Asset Management"), QStringLiteral("Panels")),
+        shellCommand(QStringLiteral("panel.profiler"), QStringLiteral("Focus Profiler"), QStringLiteral("Panels")),
+        shellCommand(QStringLiteral("panel.project_settings"), QStringLiteral("Focus Project Settings"), QStringLiteral("Panels")),
+        shellCommand(QStringLiteral("panel.forge_ai"), QStringLiteral("Focus Forge AI"), QStringLiteral("Panels")),
+        shellCommand(QStringLiteral("panel.build"), QStringLiteral("Focus Build & Export"), QStringLiteral("Panels")),
+        shellCommand(QStringLiteral("panel.launcher"), QStringLiteral("Focus Project Launcher"), QStringLiteral("Panels")),
+        shellCommand(QStringLiteral("view.reset_workspace"), QStringLiteral("Reset Current Workspace Layout"), QStringLiteral("View")),
+    };
+}
+
+} // namespace
 
 struct EntityTreeNode {
     MfEntityItem item;
@@ -86,6 +139,7 @@ QVariant EntityModel::data(const QModelIndex& index, int role) const
     case PositionRole: return QStringLiteral("%1, %2").arg(row.x, 0, 'f', 2).arg(row.y, 0, 'f', 2);
     case SelectedRole: return row.selected;
     case VisibleRole: return row.visible;
+    case EnabledRole: return row.enabled;
     case LockedRole: return row.locked;
     case ComponentCountRole: return row.componentCount;
     case ChildCountRole: return row.childCount;
@@ -106,6 +160,7 @@ QHash<int, QByteArray> EntityModel::roleNames() const
         { PositionRole, "position" },
         { SelectedRole, "selected" },
         { VisibleRole, "visible" },
+        { EnabledRole, "enabled" },
         { LockedRole, "locked" },
         { ComponentCountRole, "componentCount" },
         { ChildCountRole, "childCount" },
@@ -139,12 +194,19 @@ void EntityModel::refresh()
 
 void EntityModel::updateSelection(qulonglong entityId)
 {
+    Q_UNUSED(entityId);
+    const QVector<quint64> selectedIds = m_bridge->selectedEntities();
+    QSet<quint64> selected;
+    selected.reserve(selectedIds.size());
+    for (quint64 id : selectedIds) {
+        selected.insert(id);
+    }
     for (const auto& node : m_nodes) {
-        const bool selected = node->item.id == entityId;
-        if (node->item.selected == selected) {
+        const bool isSelected = selected.contains(node->item.id);
+        if (node->item.selected == isSelected) {
             continue;
         }
-        node->item.selected = selected;
+        node->item.selected = isSelected;
         const QModelIndex changed = indexForNode(node.get());
         if (changed.isValid()) {
             emit dataChanged(changed, changed, { SelectedRole });
@@ -272,12 +334,26 @@ qulonglong InspectorModel::entityId() const
 
 void InspectorModel::setEntityId(qulonglong entityId)
 {
-    if (m_entityId == entityId) {
+    if (m_entityId != entityId) {
+        m_entityId = entityId;
+        emit entityIdChanged();
+    }
+    refresh();
+}
+
+QString InspectorModel::filter() const
+{
+    return m_filter;
+}
+
+void InspectorModel::setFilter(const QString& filter)
+{
+    if (m_filter == filter) {
         return;
     }
-    m_entityId = entityId;
-    emit entityIdChanged();
-    refresh();
+    m_filter = filter;
+    resetRows();
+    emit filterChanged();
 }
 
 int InspectorModel::rowCount(const QModelIndex& parent) const
@@ -299,6 +375,7 @@ QVariant InspectorModel::data(const QModelIndex& index, int role) const
     case ValueJsonRole: return row.valueJson;
     case ValueTypeRole: return row.valueType;
     case EditableRole: return row.editable;
+    case MixedRole: return row.mixed;
     default: return {};
     }
 }
@@ -313,13 +390,75 @@ QHash<int, QByteArray> InspectorModel::roleNames() const
         { ValueJsonRole, "valueJson" },
         { ValueTypeRole, "valueType" },
         { EditableRole, "editable" },
+        { MixedRole, "mixed" },
     };
 }
 
 void InspectorModel::refresh()
 {
+    const QVector<quint64> selected = m_bridge->selectedEntities();
+    if (selected.isEmpty()) {
+        m_allRows.clear();
+        resetRows();
+        return;
+    }
+    if (!selected.contains(m_entityId)) {
+        m_entityId = selected.first();
+        emit entityIdChanged();
+    }
+    m_allRows = m_bridge->inspectorFields(m_entityId);
+    for (qsizetype selectionIndex = 0; selectionIndex < selected.size(); ++selectionIndex) {
+        const quint64 entityId = selected.at(selectionIndex);
+        if (entityId == m_entityId) {
+            continue;
+        }
+        const QVector<MfInspectorItem> fields = m_bridge->inspectorFields(entityId);
+        QHash<QString, MfInspectorItem> common;
+        common.reserve(fields.size());
+        for (const MfInspectorItem& field : fields) {
+            common.insert(field.target + QChar(0x1f) + field.key, field);
+        }
+        QVector<MfInspectorItem> intersection;
+        intersection.reserve(m_allRows.size());
+        for (MfInspectorItem field : std::as_const(m_allRows)) {
+            const auto match = common.constFind(field.target + QChar(0x1f) + field.key);
+            if (match == common.constEnd()
+                || match->valueType != field.valueType
+                || match->editable != field.editable) {
+                continue;
+            }
+            field.mixed = field.mixed || match->valueJson != field.valueJson;
+            intersection.push_back(field);
+        }
+        m_allRows = std::move(intersection);
+    }
+    resetRows();
+}
+
+QVector<MfInspectorItem> InspectorModel::filteredRows() const
+{
+    const QString query = m_filter.trimmed();
+    if (query.isEmpty()) {
+        return m_allRows;
+    }
+    QVector<MfInspectorItem> rows;
+    rows.reserve(m_allRows.size());
+    for (const MfInspectorItem& row : m_allRows) {
+        if (row.target.contains(query, Qt::CaseInsensitive)
+            || row.key.contains(query, Qt::CaseInsensitive)
+            || row.displayName.contains(query, Qt::CaseInsensitive)
+            || row.valueType.contains(query, Qt::CaseInsensitive)
+            || row.valueJson.contains(query, Qt::CaseInsensitive)) {
+            rows.push_back(row);
+        }
+    }
+    return rows;
+}
+
+void InspectorModel::resetRows()
+{
     beginResetModel();
-    m_rows = m_entityId == 0 ? QVector<MfInspectorItem> {} : m_bridge->inspectorFields(m_entityId);
+    m_rows = filteredRows();
     endResetModel();
 }
 
@@ -469,7 +608,8 @@ QHash<int, QByteArray> CommandModel::roleNames() const
 
 void CommandModel::refresh()
 {
-    m_allRows = m_bridge->commands();
+    m_allRows = shellCommands();
+    m_allRows += m_bridge->commands();
     resetRows();
 }
 
@@ -505,6 +645,37 @@ ConsoleModel::ConsoleModel(MfBridge* bridge, QObject* parent)
     , m_bridge(bridge)
 {
     connect(m_bridge, &MfBridge::consoleChanged, this, &ConsoleModel::refresh);
+}
+
+QString ConsoleModel::filter() const
+{
+    return m_filter;
+}
+
+void ConsoleModel::setFilter(const QString& filter)
+{
+    if (m_filter == filter) {
+        return;
+    }
+    m_filter = filter;
+    resetRows();
+    emit filterChanged();
+}
+
+int ConsoleModel::minimumSeverity() const
+{
+    return m_minimumSeverity;
+}
+
+void ConsoleModel::setMinimumSeverity(int severity)
+{
+    const int clamped = std::clamp(severity, 0, 3);
+    if (m_minimumSeverity == clamped) {
+        return;
+    }
+    m_minimumSeverity = clamped;
+    resetRows();
+    emit minimumSeverityChanged();
 }
 
 int ConsoleModel::rowCount(const QModelIndex& parent) const
@@ -567,8 +738,34 @@ QHash<int, QByteArray> ConsoleModel::roleNames() const
 
 void ConsoleModel::refresh()
 {
+    m_allRows = m_bridge->consoleEntries();
+    resetRows();
+}
+
+QVector<MfConsoleItem> ConsoleModel::filteredRows() const
+{
+    const QString query = m_filter.trimmed();
+    QVector<MfConsoleItem> rows;
+    rows.reserve(m_allRows.size());
+    for (const MfConsoleItem& row : m_allRows) {
+        if (static_cast<int>(row.severity) < m_minimumSeverity) {
+            continue;
+        }
+        if (!query.isEmpty()
+            && !row.channel.contains(query, Qt::CaseInsensitive)
+            && !row.message.contains(query, Qt::CaseInsensitive)
+            && !QString::number(row.frame).contains(query, Qt::CaseInsensitive)) {
+            continue;
+        }
+        rows.push_back(row);
+    }
+    return rows;
+}
+
+void ConsoleModel::resetRows()
+{
     beginResetModel();
-    m_rows = m_bridge->consoleEntries();
+    m_rows = filteredRows();
     endResetModel();
 }
 
@@ -819,7 +1016,10 @@ void MfEditorController::executeCommand(const QString& commandId)
 
 void MfEditorController::setInspectorValue(qulonglong entityId, const QString& target, const QString& key, const QString& valueJson)
 {
-    if (m_bridge->setInspectorValueJson(entityId, target, key, valueJson)) {
+    const bool updated = m_bridge->selectedEntityCount() > 1
+        ? m_bridge->setSelectedInspectorValueJson(target, key, valueJson)
+        : m_bridge->setInspectorValueJson(entityId, target, key, valueJson);
+    if (updated) {
         m_inspector->setEntityId(entityId);
         m_inspector->refresh();
     }

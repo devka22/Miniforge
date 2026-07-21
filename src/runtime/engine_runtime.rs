@@ -25,6 +25,7 @@ use crate::engine::luau_scripting::{LuauRunReport, LuauScriptRuntime, ScriptSche
 use crate::engine::profiler::Profiler;
 use crate::engine::resource_manager::ResourceManager;
 use crate::engine::runtime_config::RuntimeConfig;
+use crate::engine::runtime_stability::RuntimeStabilityGuard;
 use crate::engine::safe_mode::SafeModeSettings;
 use crate::engine::scene_manager::SceneManager;
 use crate::engine::tilemap_layers::TilemapLayers;
@@ -124,6 +125,7 @@ pub struct EngineRuntime {
     pub clock: GameClock,
     pub profiler: Profiler,
     pub diagnostics: Diagnostics,
+    pub stability_guard: RuntimeStabilityGuard,
     pub animation_graphs: AnimationGraphLibrary,
     pub audio_mixer: AudioMixer,
     pub audio_system: AudioSystem,
@@ -169,6 +171,10 @@ impl EngineRuntime {
         let runtime_config =
             RuntimeConfig::new(project_paths.settings.join("runtime_config.json"))?;
         let runtime_tuning = runtime_config.optimized_tuning();
+        let stability_guard = RuntimeStabilityGuard::from_runtime_config(
+            &runtime_config.data,
+            runtime_tuning.max_entities,
+        );
         let start_scene = engine_config
             .get("start_scene")
             .and_then(Value::as_str)
@@ -216,6 +222,7 @@ impl EngineRuntime {
             clock: GameClock::from_tuning(&runtime_tuning),
             profiler: Profiler::new(),
             diagnostics: Diagnostics::default(),
+            stability_guard,
             animation_graphs: AnimationGraphLibrary::new(),
             audio_mixer: AudioMixer::new(),
             audio_system: AudioSystem::default(),
@@ -341,20 +348,33 @@ impl EngineRuntime {
     pub fn run_headless_once(&mut self, dt: f64) {
         self.console.advance_frame();
         self.profiler.begin_frame();
-        let clock_advance = self.clock.advance(dt);
         let mut marker = Instant::now();
-        self.sprite_animation_system
-            .update_entities(&mut self.runtime_world.units, dt, &self.mode);
+        let safe_dt = self.stability_guard.begin_frame(dt);
+        let clock_advance = self.clock.advance(safe_dt);
+        let simulation_dt = clock_advance.scaled_dt;
+        self.stability_guard
+            .sanitize_entities(&mut self.runtime_world.units);
+        self.record_system("StabilityPreflight", &mut marker);
+        self.sprite_animation_system.update_entities(
+            &mut self.runtime_world.units,
+            simulation_dt,
+            &self.mode,
+        );
         self.record_system("SpriteFrames2D", &mut marker);
         AnimationSystem.update_entities(
             &mut self.runtime_world.units,
             &self.animation_graphs,
-            dt,
+            simulation_dt,
             &self.mode,
         );
         self.record_system("Animation", &mut marker);
-        self.particle_system
-            .update_entities(&self.runtime_world.units, dt, &self.mode);
+        if let Some(particle_dt) = self.stability_guard.optional_system_delta(simulation_dt) {
+            self.particle_system.update_entities(
+                &self.runtime_world.units,
+                particle_dt,
+                &self.mode,
+            );
+        }
         self.record_system("Particles", &mut marker);
         self.audio_system.update_entities(
             &mut self.runtime_world.units,
@@ -365,7 +385,7 @@ impl EngineRuntime {
         if self.safe_mode.allows_graphs() {
             self.visual_script_runtime.update_entities(
                 &mut self.runtime_world.units,
-                dt,
+                simulation_dt,
                 &self.mode,
             );
         }
@@ -374,7 +394,7 @@ impl EngineRuntime {
             self.luau_script_runtime.set_camera_state(&self.camera);
             let report = self.luau_script_runtime.update_entities_with_fixed_steps(
                 &mut self.runtime_world.units,
-                dt,
+                simulation_dt,
                 self.clock.fixed_delta,
                 clock_advance.fixed_steps,
                 &self.mode,
@@ -382,47 +402,64 @@ impl EngineRuntime {
             self.handle_luau_report(report);
         }
         self.record_system("Luau", &mut marker);
-        self.runtime_2d_system
-            .update_entities(&mut self.runtime_world.units, dt, &self.mode);
+        self.runtime_2d_system.update_entities(
+            &mut self.runtime_world.units,
+            simulation_dt,
+            &self.mode,
+        );
         self.record_system("Runtime2D", &mut marker);
         self.gameplay_system.update_entities_with_grid(
             &mut self.runtime_world.units,
             &self.grid,
-            dt,
+            simulation_dt,
             &self.mode,
         );
         self.record_system("Gameplay", &mut marker);
         self.rts_system
-            .update_entities(&mut self.runtime_world.units, dt, &self.mode);
+            .update_entities(&mut self.runtime_world.units, simulation_dt, &self.mode);
         self.record_system("RTS", &mut marker);
-        MovementSystem.update_entities(&mut self.runtime_world.units, dt);
+        MovementSystem.update_entities(&mut self.runtime_world.units, simulation_dt);
         self.record_system("Movement", &mut marker);
-        self.physics_system
-            .update_entities_mut(&mut self.runtime_world.units, dt, &self.mode);
+        self.physics_system.update_entities_mut(
+            &mut self.runtime_world.units,
+            simulation_dt,
+            &self.mode,
+        );
         self.record_system("Physics", &mut marker);
         self.runtime_2d_system.resolve_tilemap_collisions(
             &mut self.runtime_world.units,
             &self.grid,
             &self.mode,
         );
-        self.runtime_2d_system
-            .advance_camera_shakes(&mut self.runtime_world.units, dt, &self.mode);
+        self.runtime_2d_system.advance_camera_shakes(
+            &mut self.runtime_world.units,
+            simulation_dt,
+            &self.mode,
+        );
         self.runtime_2d_system.update_camera(
             &mut self.camera,
             &self.runtime_world.units,
-            dt,
+            simulation_dt,
             &self.mode,
             self.grid.tile_size.max(1) as f64,
         );
         self.record_system("Runtime2DLate", &mut marker);
         self.dispatch_collision_scripts();
         self.record_system("LuauCollision", &mut marker);
+        self.stability_guard
+            .sanitize_entities(&mut self.runtime_world.units);
+        self.record_system("StabilityPostflight", &mut marker);
         self.runtime_world.mark_changed();
         self.runtime_world.rebuild_index();
         self.record_system("WorldSync", &mut marker);
 
+        self.stability_guard.observe_frame(
+            clock_advance,
+            self.profiler.systems_time_total_ms(),
+            self.runtime_world.units.len(),
+        );
         self.diagnostics
-            .update_with_budget(dt, clock_advance.target_frame_delta * 1000.0);
+            .update_with_budget(safe_dt, clock_advance.target_frame_delta * 1000.0);
         self.diagnostics.record_frame_runtime(
             clock_advance,
             self.clock.fixed_delta,
@@ -430,6 +467,10 @@ impl EngineRuntime {
             self.profiler.systems_time_total_ms(),
             self.profiler.slowest_system(),
         );
+        for warning in self.stability_guard.take_events() {
+            self.diagnostics.push_warning(warning.clone());
+            self.console.log(warning, "STABILITY");
+        }
         self.profiler
             .set_counter("Entities", self.runtime_world.units.len());
         self.profiler
@@ -498,6 +539,38 @@ impl EngineRuntime {
             .set_metric("InterpolationAlpha", clock_advance.interpolation_alpha);
         self.profiler
             .set_metric("DroppedTimeMs", clock_advance.dropped_time * 1000.0);
+        self.profiler.set_counter(
+            "StabilityLevel",
+            match self.stability_guard.level() {
+                crate::engine::runtime_stability::StabilityLevel::Stable => 0,
+                crate::engine::runtime_stability::StabilityLevel::Guarded => 1,
+                crate::engine::runtime_stability::StabilityLevel::Recovery => 2,
+            },
+        );
+        self.profiler.set_counter(
+            "StabilityRepairs",
+            self.stability_guard.last_frame.repaired_values,
+        );
+        self.profiler.set_counter(
+            "StabilityQuarantined",
+            self.stability_guard.quarantined_entity_count(),
+        );
+        self.profiler.set_counter(
+            "StabilityOptionalCadence",
+            self.stability_guard.last_frame.optional_cadence_divisor as usize,
+        );
+        self.profiler.set_counter(
+            "StabilityEntityOverflow",
+            self.stability_guard.last_frame.entity_limit_exceeded_by,
+        );
+        self.profiler.set_metric(
+            "RawFrameDtMs",
+            self.stability_guard.last_frame.raw_delta_seconds * 1000.0,
+        );
+        self.profiler.set_metric(
+            "SafeFrameDtMs",
+            self.stability_guard.last_frame.safe_delta_seconds * 1000.0,
+        );
         self.profiler
             .set_counter("SpatialCells", self.runtime_world.spatial_index.cells.len());
         self.profiler.end_frame();

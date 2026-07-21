@@ -133,7 +133,7 @@ impl AiProjectContext {
         };
     }
 
-    #[cfg(feature = "editor")]
+    #[cfg(feature = "editor_core")]
     pub fn from_editor_core(
         core: &crate::engine::editor_core::EditorCore,
     ) -> Result<Self, crate::engine::editor_core::EditorCoreError> {
@@ -219,7 +219,7 @@ fn sorted_layers(entities: &[AiEntityContext]) -> Vec<String> {
     layers
 }
 
-#[cfg(feature = "editor")]
+#[cfg(feature = "editor_core")]
 fn tags_from_row(tag: &str) -> Vec<String> {
     if tag.trim().is_empty() || tag == "Untagged" {
         Vec::new()

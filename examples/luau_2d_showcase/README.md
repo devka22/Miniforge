@@ -1,16 +1,24 @@
 # Luau 2D Showcase
 
-This example demonstrates the public MiniForge 2D Luau API:
+Este ejemplo demuestra la API Luau 2D pública de MiniForge:
 
-- movement through `CharacterBody2D`
-- physics, collision callbacks, triggers and `Physics2D.raycast`
-- `AnimatedSprite` / `AnimationPlayer`
-- `Camera.main():follow`, zoom, pixel-perfect mode and shake
-- projectiles spawned from Luau
-- enemies, events and timers
-- `Tilemap` queries/edits
-- hot reload by saving files under `scripts/`
+- movimiento con `CharacterBody2D`;
+- física, callbacks de colisión, triggers y `Physics2D.raycast`;
+- `AnimatedSprite` / `AnimationPlayer`;
+- `Camera.main():follow`, zoom, pixel-perfect y shake;
+- proyectiles creados desde Luau;
+- enemigos, eventos y timers;
+- consultas/edición de `Tilemap`;
+- hot reload al guardar archivos de `scripts/`.
 
-Open this folder as a MiniForge project, run the main scene, then edit
-`scripts/PlayerController.luau` while play mode is running. The Luau watcher
-reloads changed scripts automatically.
+Desde la raíz del motor:
+
+```bash
+scripts/run-editor --project examples/luau_2d_showcase --workspace Scripting
+cargo run --no-default-features --features runtime --bin miniforge_headless \
+  -- examples/luau_2d_showcase 120
+```
+
+Abre la escena principal, entra en Play Mode y edita `scripts/PlayerController.luau`. El watcher
+recarga los scripts guardados. Usa Luau Studio para diagnostics, completions y debugger. Consulta
+la [guía de scripting](../../docs/DATOS_SCRIPTING_Y_APIS.md#luau).

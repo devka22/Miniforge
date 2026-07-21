@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use miniforge::engine::asset_tools::AssetTools;
 use miniforge::engine::component::default_component;
-use miniforge::engine::luau_scripting::LuauScriptRuntime;
+use miniforge::engine::luau_scripting::{LuauScriptRuntime, ScriptBreakpoint};
 use miniforge::entities::game_object::GameObject;
 use serde_json::json;
 
@@ -173,6 +173,65 @@ return Hang
         "{:?}",
         report.errors
     );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn luau_callback_debugger_pauses_steps_and_evaluates_safe_watches() {
+    let root = temp_dir("luau-callback-debugger");
+    AssetTools::ensure_project_folders(&root).unwrap();
+    fs::write(
+        root.join("scripts").join("DebugActor.luau"),
+        r#"local DebugActor = { speed = 12 }
+
+function DebugActor:on_update(dt)
+    self.speed += 1
+end
+
+return DebugActor
+"#,
+    )
+    .unwrap();
+
+    let mut entity = GameObject::new(0.0, 0.0, Some("DebugActor".to_string()));
+    entity.script = Some("DebugActor.luau".to_string());
+    let mut entities = vec![entity];
+    let mut runtime = LuauScriptRuntime::new(&root);
+    runtime.set_debug_breakpoints(vec![ScriptBreakpoint {
+        path: "scripts/DebugActor.luau".to_string(),
+        line: Some(3),
+        function: Some("on_update".to_string()),
+        enabled: true,
+    }]);
+
+    let paused_report = runtime.update_entities(&mut entities, 1.0 / 60.0, "PLAY");
+    assert_eq!(paused_report.scripts_run, 0);
+    let state = runtime.debugger_state();
+    assert!(state.paused);
+    let frame = state.frame.expect("paused callback frame");
+    assert_eq!(frame.function, "on_update");
+    assert_eq!(frame.line, Some(3));
+
+    let watches = runtime.evaluate_debug_watches(&[
+        "self.speed".to_string(),
+        "entity.name".to_string(),
+        "self.speed + 1".to_string(),
+    ]);
+    assert_eq!(watches[0].value, json!(12));
+    assert_eq!(watches[1].value, json!("DebugActor"));
+    assert!(watches[2].error.is_some());
+
+    assert!(runtime.step_debugger());
+    let stepped = runtime.update_entities(&mut entities, 1.0 / 60.0, "PLAY");
+    assert_eq!(stepped.scripts_run, 1);
+    assert!(!runtime.debugger_state().paused);
+    assert!(runtime.debugger_state().pause_requested);
+
+    runtime.update_entities(&mut entities, 1.0 / 60.0, "PLAY");
+    assert!(runtime.debugger_state().paused);
+    let watches = runtime.evaluate_debug_watches(&["self.speed".to_string()]);
+    assert_eq!(watches[0].value, json!(13));
 
     fs::remove_dir_all(root).unwrap();
 }

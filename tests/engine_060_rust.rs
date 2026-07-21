@@ -1,3 +1,5 @@
+#![cfg(feature = "editor_core")]
+
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -23,7 +25,7 @@ use miniforge::engine::component_validation::ComponentValidation;
 use miniforge::engine::content_drag::DragPayload;
 use miniforge::engine::developer_console::{ConsoleSeverity, DeveloperConsole};
 use miniforge::engine::diagnostics::{Diagnostics, FrameHealth};
-use miniforge::engine::docking_panel::{EditorDockTab, EguiDockingWorkspace};
+use miniforge::engine::docking_panel::{EditorDockTab, EditorDockingWorkspace};
 use miniforge::engine::editor_workspace::{EditorPanelKind, EditorWorkspace, WorkspaceMode};
 use miniforge::engine::engine_programming::ProgrammingEnvironment;
 use miniforge::engine::event_bus::EventBus;
@@ -40,7 +42,7 @@ use miniforge::engine::plugin_manager::PluginManager;
 use miniforge::engine::prefab_manager::PrefabManager;
 use miniforge::engine::prefab_overrides::PrefabOverrides;
 use miniforge::engine::profiler::Profiler;
-use miniforge::engine::project_launcher::{EguiProjectLauncher, LauncherTemplate};
+use miniforge::engine::project_launcher::{LauncherTemplate, ProjectLauncherState};
 use miniforge::engine::project_package::ProjectPackageManager;
 use miniforge::engine::project_templates::ProjectTemplates;
 use miniforge::engine::project_validator::ProjectValidator;
@@ -272,19 +274,14 @@ fn godot_core_patterns_improve_registry_resource_loader_signals_and_xcode() {
 }
 
 #[test]
-fn egui_docking_workspace_tracks_professional_editor_windows() {
-    let mut docking = EguiDockingWorkspace::new();
+fn native_docking_intents_track_professional_editor_windows() {
+    let mut docking = EditorDockingWorkspace::new();
     docking.open_tab(EditorDockTab::ScriptEditor);
     docking.open_tab(EditorDockTab::BlueprintEditor);
     docking.set_floating_visibility("script_editor", true);
-    assert!(
-        docking
-            .dock_state
-            .iter_all_tabs()
-            .any(|(_, tab)| *tab == EditorDockTab::ScriptEditor)
-    );
+    assert!(docking.is_open(EditorDockTab::ScriptEditor));
     assert!(docking.floating_panel("script_editor").is_some());
-    assert!(docking.dock_summary().contains("egui_dock"));
+    assert!(docking.dock_summary().contains("native:"));
 }
 
 #[test]
@@ -698,7 +695,10 @@ fn game_loop_runs_luau_and_records_profiler_counters() {
     game.units = vec![entity];
     game.set_script_input_pressed("D", true);
     game.run_headless_once(0.25);
-    assert_eq!(game.units[0].x, 1.0);
+    assert_eq!(game.units[0].x, 0.4);
+    assert!(game.stability_guard.last_frame.delta_was_clamped);
+    assert_eq!(game.profiler.metrics["RawFrameDtMs"], 250.0);
+    assert_eq!(game.profiler.metrics["SafeFrameDtMs"], 100.0);
     assert!(
         game.profiler
             .counters
@@ -869,7 +869,7 @@ fn production_polish_launcher_export_autosave_debugger_and_demo() {
     assert!(!debugger.active_scripts.is_empty());
     assert!(!debugger.has_errors());
 
-    let mut launcher = EguiProjectLauncher::new(temp_dir("launcher-polish"));
+    let mut launcher = ProjectLauncherState::new(temp_dir("launcher-polish"));
     launcher.settings.validate_on_open = true;
     let repair_notes = launcher.repair_project(&tmp).unwrap();
     assert!(!repair_notes.is_empty());
@@ -1302,7 +1302,7 @@ fn asset_browser_templates_launcher_and_kira_audio_cover_game_creation_flow() {
     }));
 
     let workspace = temp_dir("launcher-workspace");
-    let mut launcher = EguiProjectLauncher::new(&workspace);
+    let mut launcher = ProjectLauncherState::new(&workspace);
     launcher.project_name = "LauncherGame".to_string();
     launcher.selected_template = LauncherTemplate::Rts;
     let project = launcher.create_new_project().unwrap();
@@ -1336,7 +1336,7 @@ fn asset_browser_templates_launcher_and_kira_audio_cover_game_creation_flow() {
 fn launcher_creates_projects_in_free_locations_and_surfaces_patch_notes() {
     let workspace = temp_dir("launcher-free-root");
     let free_location = temp_dir("launcher-free-location");
-    let mut launcher = EguiProjectLauncher::new(&workspace);
+    let mut launcher = ProjectLauncherState::new(&workspace);
     launcher.project_location = free_location.display().to_string();
     launcher.project_name = "Free Location Game".to_string();
     launcher.selected_template = LauncherTemplate::TopDown;
@@ -1371,7 +1371,7 @@ fn launcher_creates_projects_in_free_locations_and_surfaces_patch_notes() {
     launcher.export_profile = ExportProfile::Release;
     launcher.save_state().unwrap();
 
-    let restored = EguiProjectLauncher::new(&workspace);
+    let restored = ProjectLauncherState::new(&workspace);
     assert_eq!(restored.recent_projects.first(), Some(&project));
     assert!(!restored.settings.validate_on_open);
     assert!(!restored.settings.analyze_before_export);

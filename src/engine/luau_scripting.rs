@@ -19,6 +19,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::{Value, json};
 
 use crate::engine::camera::Camera;
+use crate::engine::entity_id::generate_entity_id;
 use crate::engine::game_api::GameAPI;
 use crate::engine::spatial_index::{SpatialEntry, SpatialIndex};
 use crate::entities::game_object::GameObject;
@@ -57,6 +58,13 @@ pub enum ScriptCommand {
         x: f64,
         y: f64,
         data: Value,
+    },
+    SpawnWithId {
+        entity_id: u64,
+        name: String,
+        x: f64,
+        y: f64,
+        data: Option<Value>,
     },
     Destroy {
         target: ScriptTarget,
@@ -115,6 +123,10 @@ pub enum ScriptCommand {
         target: ScriptTarget,
         component: String,
         data: Value,
+    },
+    RemoveComponent {
+        target: ScriptTarget,
+        component: String,
     },
     SetComponentValue {
         target: ScriptTarget,
@@ -299,6 +311,75 @@ pub struct ScriptDebugSnapshot {
     pub cached_scripts: usize,
     #[serde(default)]
     pub persistent_contexts: usize,
+    #[serde(default)]
+    pub last_frame_scripts: usize,
+    #[serde(default)]
+    pub memory_bytes: usize,
+    #[serde(default)]
+    pub scheduler: ScriptSchedulerFrameStats,
+    #[serde(default)]
+    pub queries: ScriptQueryFrameStats,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LuauSourceDiagnostic {
+    pub source: String,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
+    pub message: String,
+    pub incomplete_input: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ScriptBreakpoint {
+    pub path: String,
+    pub line: Option<usize>,
+    pub function: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ScriptPausedFrame {
+    pub entity_id: u64,
+    pub entity_name: String,
+    pub path: String,
+    pub function: String,
+    pub line: Option<usize>,
+    pub event: String,
+    pub context: Value,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ScriptWatchResult {
+    pub expression: String,
+    pub value: Value,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ScriptDebuggerState {
+    pub paused: bool,
+    pub pause_requested: bool,
+    pub step_pending: bool,
+    pub frame: Option<ScriptPausedFrame>,
+    pub breakpoints: Vec<ScriptBreakpoint>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl LuauSourceDiagnostic {
+    pub fn display_message(&self) -> String {
+        match (self.line, self.column) {
+            (Some(line), Some(column)) => {
+                format!("{}:{line}:{column}: {}", self.source, self.message)
+            }
+            (Some(line), None) => format!("{}:{line}: {}", self.source, self.message),
+            _ => format!("{}: {}", self.source, self.message),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -345,6 +426,13 @@ struct LuauScriptContext {
     method_style: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DebugCallbackKey {
+    entity_id: u64,
+    path: PathBuf,
+    function: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScriptSchedulerConfig {
     pub enabled: bool,
@@ -375,7 +463,7 @@ struct ScriptUpdateState {
     next_update_time: f64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ScriptSchedulerFrameStats {
     pub update_candidates: usize,
     pub update_budget_used: usize,
@@ -385,7 +473,7 @@ pub struct ScriptSchedulerFrameStats {
     pub distance_throttled: usize,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ScriptQueryFrameStats {
     pub nearby_queries: usize,
     pub nearby_indexed: usize,
@@ -393,7 +481,7 @@ pub struct ScriptQueryFrameStats {
     pub nearby_candidates: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum ScriptSimulationClass {
     Critical,
     Police,
@@ -401,13 +489,8 @@ enum ScriptSimulationClass {
     Pedestrian,
     Pickup,
     Background,
+    #[default]
     Default,
-}
-
-impl Default for ScriptSimulationClass {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -525,6 +608,7 @@ pub struct LuauScriptRuntime {
     project_path: PathBuf,
     cache: BTreeMap<PathBuf, CachedLuauScript>,
     contexts: BTreeMap<(u64, PathBuf), LuauScriptContext>,
+    created_scripts: BTreeSet<(u64, PathBuf)>,
     ready_scripts: BTreeSet<(u64, PathBuf)>,
     destroying_entities: BTreeSet<u64>,
     update_states: BTreeMap<(u64, PathBuf), ScriptUpdateState>,
@@ -537,6 +621,11 @@ pub struct LuauScriptRuntime {
     pub last_scheduler_stats: ScriptSchedulerFrameStats,
     pub last_query_stats: ScriptQueryFrameStats,
     pub last_errors: Vec<String>,
+    debug_breakpoints: Vec<ScriptBreakpoint>,
+    debug_paused: Option<ScriptPausedFrame>,
+    debug_pause_requested: bool,
+    debug_step_after_callback: bool,
+    debug_skip_once: Option<DebugCallbackKey>,
 }
 
 impl std::fmt::Debug for LuauScriptRuntime {
@@ -545,6 +634,7 @@ impl std::fmt::Debug for LuauScriptRuntime {
             .field("project_path", &self.project_path)
             .field("cache_len", &self.cache.len())
             .field("context_len", &self.contexts.len())
+            .field("created_scripts_len", &self.created_scripts.len())
             .field("ready_scripts_len", &self.ready_scripts.len())
             .field("watcher_active", &self.watcher_active)
             .field("reload_count", &self.reload_count)
@@ -552,6 +642,8 @@ impl std::fmt::Debug for LuauScriptRuntime {
             .field("last_scheduler_stats", &self.last_scheduler_stats)
             .field("last_query_stats", &self.last_query_stats)
             .field("last_errors", &self.last_errors)
+            .field("debug_breakpoints", &self.debug_breakpoints.len())
+            .field("debug_paused", &self.debug_paused)
             .finish()
     }
 }
@@ -576,6 +668,7 @@ impl LuauScriptRuntime {
             project_path,
             cache: BTreeMap::new(),
             contexts: BTreeMap::new(),
+            created_scripts: BTreeSet::new(),
             ready_scripts: BTreeSet::new(),
             destroying_entities: BTreeSet::new(),
             update_states: BTreeMap::new(),
@@ -588,6 +681,11 @@ impl LuauScriptRuntime {
             last_scheduler_stats: ScriptSchedulerFrameStats::default(),
             last_query_stats: ScriptQueryFrameStats::default(),
             last_errors: Vec::new(),
+            debug_breakpoints: Vec::new(),
+            debug_paused: None,
+            debug_pause_requested: false,
+            debug_step_after_callback: false,
+            debug_skip_once: None,
         };
         let _ = runtime.watch_project();
         runtime
@@ -597,8 +695,11 @@ impl LuauScriptRuntime {
         self.project_path = project_path.as_ref().to_path_buf();
         self.cache.clear();
         self.contexts.clear();
+        self.created_scripts.clear();
         self.ready_scripts.clear();
         self.update_states.clear();
+        self.debug_paused = None;
+        self.debug_skip_once = None;
         self.rebuild_vm();
         let _ = self.watch_project();
     }
@@ -666,6 +767,8 @@ impl LuauScriptRuntime {
             self.cache.remove(&path);
             self.contexts
                 .retain(|(_, context_path), _| context_path != &path);
+            self.created_scripts
+                .retain(|(_, context_path)| context_path != &path);
             self.ready_scripts
                 .retain(|(_, context_path)| context_path != &path);
             reloaded += 1;
@@ -674,8 +777,11 @@ impl LuauScriptRuntime {
         if reloaded > 0 {
             self.cache.clear();
             self.contexts.clear();
+            self.created_scripts.clear();
             self.ready_scripts.clear();
             self.update_states.clear();
+            self.debug_paused = None;
+            self.debug_skip_once = None;
             self.rebuild_vm();
         }
         reloaded
@@ -748,8 +854,11 @@ impl LuauScriptRuntime {
         let count = self.cache.len();
         self.cache.clear();
         self.contexts.clear();
+        self.created_scripts.clear();
         self.ready_scripts.clear();
         self.update_states.clear();
+        self.debug_paused = None;
+        self.debug_skip_once = None;
         self.rebuild_vm();
         self.reload_count += count.max(1);
         count
@@ -790,7 +899,107 @@ impl LuauScriptRuntime {
             traces,
             cached_scripts: self.cache.len(),
             persistent_contexts: self.contexts.len(),
+            last_frame_scripts: self.last_frame_scripts,
+            memory_bytes: self.lua.used_memory(),
+            scheduler: self.last_scheduler_stats,
+            queries: self.last_query_stats,
         }
+    }
+
+    pub fn set_debug_breakpoints(&mut self, breakpoints: Vec<ScriptBreakpoint>) {
+        self.debug_breakpoints = breakpoints
+            .into_iter()
+            .filter(|breakpoint| {
+                !breakpoint.path.trim().is_empty()
+                    && (breakpoint.line.is_some() || breakpoint.function.is_some())
+            })
+            .collect();
+    }
+
+    pub fn debugger_state(&self) -> ScriptDebuggerState {
+        ScriptDebuggerState {
+            paused: self.debug_paused.is_some(),
+            pause_requested: self.debug_pause_requested,
+            step_pending: self.debug_step_after_callback,
+            frame: self.debug_paused.clone(),
+            breakpoints: self.debug_breakpoints.clone(),
+        }
+    }
+
+    pub fn request_debug_pause(&mut self) {
+        self.debug_pause_requested = true;
+    }
+
+    pub fn resume_debugger(&mut self) -> bool {
+        let Some(frame) = self.debug_paused.take() else {
+            self.debug_pause_requested = false;
+            return false;
+        };
+        self.debug_skip_once = Some(DebugCallbackKey {
+            entity_id: frame.entity_id,
+            path: normalize_path(if Path::new(&frame.path).is_absolute() {
+                PathBuf::from(&frame.path)
+            } else {
+                self.project_path.join(&frame.path)
+            }),
+            function: frame.function,
+        });
+        self.debug_pause_requested = false;
+        self.debug_step_after_callback = false;
+        true
+    }
+
+    pub fn step_debugger(&mut self) -> bool {
+        if !self.resume_debugger() {
+            return false;
+        }
+        self.debug_step_after_callback = true;
+        true
+    }
+
+    pub fn evaluate_debug_watches(&self, expressions: &[String]) -> Vec<ScriptWatchResult> {
+        expressions
+            .iter()
+            .map(|expression| {
+                let expression = expression.trim();
+                if expression.is_empty()
+                    || !expression
+                        .split('.')
+                        .all(|part| !part.is_empty() && is_luau_debug_identifier(part))
+                {
+                    return ScriptWatchResult {
+                        expression: expression.to_string(),
+                        value: Value::Null,
+                        error: Some(
+                            "watch expressions are limited to dotted identifiers".to_string(),
+                        ),
+                    };
+                }
+                let Some(frame) = self.debug_paused.as_ref() else {
+                    return ScriptWatchResult {
+                        expression: expression.to_string(),
+                        value: Value::Null,
+                        error: Some("runtime is not paused".to_string()),
+                    };
+                };
+                let mut value = &frame.context;
+                for part in expression.split('.') {
+                    let Some(next) = value.get(part) else {
+                        return ScriptWatchResult {
+                            expression: expression.to_string(),
+                            value: Value::Null,
+                            error: Some(format!("`{part}` is not available in this frame")),
+                        };
+                    };
+                    value = next;
+                }
+                ScriptWatchResult {
+                    expression: expression.to_string(),
+                    value: value.clone(),
+                    error: None,
+                }
+            })
+            .collect()
     }
 
     pub fn update_entities(
@@ -844,7 +1053,9 @@ impl LuauScriptRuntime {
                 let Some(cached_script) = self.load_script(&script.path) else {
                     continue;
                 };
-                if cached_script.supports_event(&LuauScriptEvent::Create) {
+                if !self.created_scripts.contains(&key)
+                    && cached_script.supports_event(&LuauScriptEvent::Create)
+                {
                     self.call_script_event(
                         entities,
                         &call,
@@ -853,6 +1064,12 @@ impl LuauScriptRuntime {
                         &LuauScriptEvent::Create,
                         &mut report,
                     );
+                    if self.debug_paused.is_some() {
+                        report.errors = self.last_errors.clone();
+                        self.sync_query_stats();
+                        return report;
+                    }
+                    self.created_scripts.insert(key.clone());
                     if self.apply_pending_commands(entities, &mut report) {
                         self.refresh_world_snapshot(entities);
                     }
@@ -866,6 +1083,11 @@ impl LuauScriptRuntime {
                         &LuauScriptEvent::Ready,
                         &mut report,
                     );
+                    if self.debug_paused.is_some() {
+                        report.errors = self.last_errors.clone();
+                        self.sync_query_stats();
+                        return report;
+                    }
                     if self.apply_pending_commands(entities, &mut report) {
                         self.refresh_world_snapshot(entities);
                     }
@@ -964,6 +1186,8 @@ impl LuauScriptRuntime {
         }
         self.ready_scripts
             .retain(|(ready_entity_id, _)| *ready_entity_id != entity_id);
+        self.created_scripts
+            .retain(|(created_entity_id, _)| *created_entity_id != entity_id);
         self.destroying_entities.remove(&entity_id);
         report.errors = self.last_errors.clone();
         report
@@ -977,15 +1201,25 @@ impl LuauScriptRuntime {
     }
 
     pub fn validate_source(source: &str, name: &str) -> Result<(), String> {
-        let bytecode = luau_compiler()
-            .compile(source)
-            .map_err(|error| format!("{name}: {error}"))?;
+        match Self::validate_source_diagnostics(source, name)
+            .into_iter()
+            .next()
+        {
+            Some(diagnostic) => Err(diagnostic.display_message()),
+            None => Ok(()),
+        }
+    }
+
+    pub fn validate_source_diagnostics(source: &str, name: &str) -> Vec<LuauSourceDiagnostic> {
+        let bytecode = match luau_compiler().compile(source) {
+            Ok(bytecode) => bytecode,
+            Err(error) => return vec![luau_source_diagnostic(name, error)],
+        };
         let lua = Lua::new();
-        lua.load(&bytecode)
-            .set_name(name)
-            .into_function()
-            .map(|_| ())
-            .map_err(|error| format!("{name}: {error}"))
+        match lua.load(&bytecode).set_name(name).into_function() {
+            Ok(_) => Vec::new(),
+            Err(error) => vec![luau_source_diagnostic(name, error)],
+        }
     }
 
     fn run_event_for_all(
@@ -1007,6 +1241,9 @@ impl LuauScriptRuntime {
         ids: &[u64],
         event: LuauScriptEvent,
     ) -> LuauRunReport {
+        if self.debug_paused.is_some() {
+            return LuauRunReport::default();
+        }
         let ids = ids.iter().copied().collect::<BTreeSet<_>>();
         let mut calls = self
             .collect_script_calls(entities)
@@ -1021,7 +1258,7 @@ impl LuauScriptRuntime {
         let mut report = LuauRunReport::default();
         self.refresh_world_snapshot(entities);
         let mut update_budget_used = 0usize;
-        for call in calls {
+        'script_calls: for call in calls {
             for script in &call.scripts {
                 let Some(cached_script) = self.load_script(&script.path) else {
                     continue;
@@ -1040,6 +1277,9 @@ impl LuauScriptRuntime {
                     continue;
                 }
                 self.call_script_event(entities, &call, script, cached_script, &event, &mut report);
+                if self.debug_paused.is_some() {
+                    break 'script_calls;
+                }
                 if !matches!(event, LuauScriptEvent::Update(_)) {
                     self.wake_update_script(call.entity_id, &script.path);
                 }
@@ -1089,8 +1329,74 @@ impl LuauScriptRuntime {
             }
             let mut called = 0;
             for function_name in event.function_names() {
+                if !script.handlers.contains(*function_name) {
+                    continue;
+                }
+                if !self.handler_exists(&environment, &instance, method_style, function_name)? {
+                    continue;
+                }
+                let callback_key = DebugCallbackKey {
+                    entity_id: call.entity_id,
+                    path: normalize_path(path),
+                    function: (*function_name).to_string(),
+                };
+                let skip_breakpoint = self
+                    .debug_skip_once
+                    .as_ref()
+                    .is_some_and(|skip| skip == &callback_key);
+                if skip_breakpoint {
+                    self.debug_skip_once = None;
+                }
+                let source_line = script_handler_line(path, function_name);
+                if !skip_breakpoint
+                    && (self.debug_pause_requested
+                        || self.debug_breakpoints.iter().any(|breakpoint| {
+                            breakpoint_matches(breakpoint, path, function_name, source_line)
+                        }))
+                {
+                    self.debug_pause_requested = false;
+                    let relative_path = path
+                        .strip_prefix(&self.project_path)
+                        .unwrap_or(path)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    let entity = entities
+                        .iter()
+                        .find(|entity| entity.id == call.entity_id)
+                        .and_then(|entity| serde_json::to_value(entity).ok())
+                        .unwrap_or(Value::Null);
+                    self.debug_paused = Some(ScriptPausedFrame {
+                        entity_id: call.entity_id,
+                        entity_name: call.entity_name.clone(),
+                        path: relative_path,
+                        function: (*function_name).to_string(),
+                        line: source_line,
+                        event: event_debug_name(event).to_string(),
+                        context: json!({
+                            "self": exported_variables_from_instance(&instance),
+                            "entity": entity,
+                            "event": event_debug_context(event),
+                            "Time": {
+                                "delta_time": self.host_time().delta_time,
+                                "fixed_delta_time": self.host_time().fixed_delta_time,
+                                "time": self.host_time().total_time,
+                                "frame": self.host_time().frame,
+                            }
+                        }),
+                    });
+                    report.debug_messages.push(format!(
+                        "[debugger] paused at {}:{} ({function_name})",
+                        path.display(),
+                        source_line.unwrap_or_default()
+                    ));
+                    break;
+                }
                 if self.call_handler(&environment, &instance, method_style, function_name, event)? {
                     called += 1;
+                    if self.debug_step_after_callback {
+                        self.debug_step_after_callback = false;
+                        self.debug_pause_requested = true;
+                    }
                 }
             }
             if called > 0
@@ -1191,6 +1497,27 @@ impl LuauScriptRuntime {
         Ok(false)
     }
 
+    fn handler_exists(
+        &self,
+        environment: &Table,
+        instance: &Table,
+        method_style: bool,
+        function_name: &str,
+    ) -> mlua::Result<bool> {
+        if method_style
+            && matches!(
+                instance.get::<LuaValue>(function_name)?,
+                LuaValue::Function(_)
+            )
+        {
+            return Ok(true);
+        }
+        Ok(matches!(
+            environment.get::<LuaValue>(function_name)?,
+            LuaValue::Function(_)
+        ))
+    }
+
     fn refresh_world_snapshot(&mut self, entities: &[GameObject]) {
         if let Ok(mut host) = self.host.lock() {
             host.replace_world_entities(entities);
@@ -1274,7 +1601,7 @@ impl LuauScriptRuntime {
         }
 
         let now = self.host_time().total_time;
-        let key = (call.entity_id, normalize_path(path.to_path_buf()));
+        let key = (call.entity_id, normalize_path(path));
         let state = self.update_states.entry(key).or_default();
         if now + 0.000_001 < state.next_update_time {
             self.last_scheduler_stats.skipped_interval =
@@ -1292,7 +1619,7 @@ impl LuauScriptRuntime {
     }
 
     fn wake_update_script(&mut self, entity_id: u64, path: &Path) {
-        let key = (entity_id, normalize_path(path.to_path_buf()));
+        let key = (entity_id, normalize_path(path));
         self.update_states.insert(
             key,
             ScriptUpdateState {
@@ -1356,6 +1683,8 @@ impl LuauScriptRuntime {
             .map(|entity| entity.id)
             .collect::<BTreeSet<_>>();
         self.ready_scripts
+            .retain(|(entity_id, _)| live.contains(entity_id));
+        self.created_scripts
             .retain(|(entity_id, _)| live.contains(entity_id));
         self.destroying_entities.retain(|id| live.contains(id));
         self.contexts
@@ -1538,6 +1867,23 @@ impl LuauScriptRuntime {
                 report.spawned.push(id);
                 report.commands_applied += 1;
             }
+            ScriptCommand::SpawnWithId {
+                entity_id,
+                name,
+                x,
+                y,
+                data,
+            } => {
+                let mut entity = GameObject::new(x, y, Some(name));
+                entity.id = entity_id;
+                if let Some(data) = data {
+                    configure_spawned_entity(&mut entity, data);
+                }
+                entity.sync_to_components();
+                entities.push(entity);
+                report.spawned.push(entity_id);
+                report.commands_applied += 1;
+            }
             ScriptCommand::Destroy { target } => {
                 for id in resolve_targets(entities, &target) {
                     if !self.destroying_entities.contains(&id) {
@@ -1629,6 +1975,15 @@ impl LuauScriptRuntime {
             } => for_each_target(entities, &target, report, |entity| {
                 GameAPI::add_component(entity, &component, Some(data.clone())).is_some()
             }),
+            ScriptCommand::RemoveComponent { target, component } => {
+                for_each_target(entities, &target, report, |entity| {
+                    let existed = entity.get_component(&component).is_some();
+                    if existed {
+                        GameAPI::remove_component(entity, &component);
+                    }
+                    existed
+                })
+            }
             ScriptCommand::SetComponentValue {
                 target,
                 component,
@@ -2904,6 +3259,75 @@ fn register_safe_luau_api(
             }
         })?,
     )?;
+    vector2.set(
+        "add",
+        lua.create_function(|lua, (a, b): (LuaValue, LuaValue)| {
+            let a = luau_vec2(a)?.unwrap_or_default();
+            let b = luau_vec2(b)?.unwrap_or_default();
+            vector2_table(lua, a.0 + b.0, a.1 + b.1)
+        })?,
+    )?;
+    vector2.set(
+        "sub",
+        lua.create_function(|lua, (a, b): (LuaValue, LuaValue)| {
+            let a = luau_vec2(a)?.unwrap_or_default();
+            let b = luau_vec2(b)?.unwrap_or_default();
+            vector2_table(lua, a.0 - b.0, a.1 - b.1)
+        })?,
+    )?;
+    vector2.set(
+        "scale",
+        lua.create_function(|lua, (value, factor): (LuaValue, f64)| {
+            let value = luau_vec2(value)?.unwrap_or_default();
+            vector2_table(lua, value.0 * factor, value.1 * factor)
+        })?,
+    )?;
+    vector2.set(
+        "dot",
+        lua.create_function(|_, (a, b): (LuaValue, LuaValue)| {
+            let a = luau_vec2(a)?.unwrap_or_default();
+            let b = luau_vec2(b)?.unwrap_or_default();
+            Ok(a.0 * b.0 + a.1 * b.1)
+        })?,
+    )?;
+    vector2.set(
+        "distance",
+        lua.create_function(|_, (a, b): (LuaValue, LuaValue)| {
+            let a = luau_vec2(a)?.unwrap_or_default();
+            let b = luau_vec2(b)?.unwrap_or_default();
+            Ok((b.0 - a.0).hypot(b.1 - a.1))
+        })?,
+    )?;
+    vector2.set(
+        "lerp",
+        lua.create_function(|lua, (a, b, alpha): (LuaValue, LuaValue, f64)| {
+            let a = luau_vec2(a)?.unwrap_or_default();
+            let b = luau_vec2(b)?.unwrap_or_default();
+            vector2_table(lua, a.0 + (b.0 - a.0) * alpha, a.1 + (b.1 - a.1) * alpha)
+        })?,
+    )?;
+    vector2.set(
+        "move_towards",
+        lua.create_function(
+            |lua, (current, target, max_delta): (LuaValue, LuaValue, f64)| {
+                let current = luau_vec2(current)?.unwrap_or_default();
+                let target = luau_vec2(target)?.unwrap_or_default();
+                let delta = (target.0 - current.0, target.1 - current.1);
+                let distance = delta.0.hypot(delta.1);
+                let max_delta = max_delta.max(0.0);
+                if distance <= max_delta || distance <= f64::EPSILON {
+                    vector2_table(lua, target.0, target.1)
+                } else {
+                    let scale = max_delta / distance;
+                    vector2_table(
+                        lua,
+                        current.0 + delta.0 * scale,
+                        current.1 + delta.1 * scale,
+                    )
+                }
+            },
+        )?,
+    )?;
     globals.set("Vector2", vector2.clone())?;
     api.set("Vector2", vector2)?;
 
@@ -3121,6 +3545,19 @@ fn register_safe_luau_api(
     )?;
     let shared = host.clone();
     components.set(
+        "remove",
+        lua.create_function(move |_, (target, component): (LuaValue, String)| {
+            if let Some(target) = target_from_luau_or_current(&shared, target)? {
+                push_command(
+                    &shared,
+                    ScriptCommand::RemoveComponent { target, component },
+                );
+            }
+            Ok(())
+        })?,
+    )?;
+    let shared = host.clone();
+    components.set(
         "set",
         lua.create_function(
             move |_, (target, component, key, value): (LuaValue, String, String, LuaValue)| {
@@ -3235,10 +3672,9 @@ fn register_safe_luau_api(
 
     let camera = lua.create_table()?;
     let shared = host.clone();
-    camera.set(
-        "main",
-        lua.create_function(move |lua, (): ()| camera_handle(lua, shared.clone()))?,
-    )?;
+    let main_camera = lua.create_function(move |lua, (): ()| camera_handle(lua, shared.clone()))?;
+    camera.set("main", main_camera.clone())?;
+    camera.set("current", main_camera)?;
     globals.set("Camera", camera.clone())?;
     api.set("Camera", camera)?;
 
@@ -3401,8 +3837,18 @@ fn register_safe_luau_api(
     spawner.set(
         "spawn",
         lua.create_function(move |_, (name, x, y): (String, f64, f64)| {
-            push_command(&shared, ScriptCommand::Spawn { name, x, y });
-            Ok(())
+            let entity_id = generate_entity_id();
+            push_command(
+                &shared,
+                ScriptCommand::SpawnWithId {
+                    entity_id,
+                    name,
+                    x,
+                    y,
+                    data: None,
+                },
+            );
+            Ok(entity_id)
         })?,
     )?;
     globals.set("Spawner", spawner.clone())?;
@@ -3425,20 +3871,18 @@ fn register_safe_luau_api(
         "spawn",
         lua.create_function(
             move |_, (name, x, y, data): (String, f64, f64, Option<LuaValue>)| {
-                if let Some(data) = data {
-                    push_command(
-                        &shared,
-                        ScriptCommand::SpawnConfigured {
-                            name,
-                            x,
-                            y,
-                            data: luau_value_to_json(data),
-                        },
-                    );
-                } else {
-                    push_command(&shared, ScriptCommand::Spawn { name, x, y });
-                }
-                Ok(())
+                let entity_id = generate_entity_id();
+                push_command(
+                    &shared,
+                    ScriptCommand::SpawnWithId {
+                        entity_id,
+                        name,
+                        x,
+                        y,
+                        data: data.map(luau_value_to_json),
+                    },
+                );
+                Ok(entity_id)
             },
         )?,
     )?;
@@ -3457,6 +3901,37 @@ fn register_safe_luau_api(
                 Some(entity) => entity_to_luau(lua, &entity).map(LuaValue::Table),
                 None => Ok(LuaValue::Nil),
             }
+        })?,
+    )?;
+    let shared = host.clone();
+    entity.set(
+        "exists",
+        lua.create_function(move |_, target: LuaValue| {
+            let Some(target) = target_to_script_target(&shared, Some(target))? else {
+                return Ok(false);
+            };
+            Ok(shared
+                .lock()
+                .ok()
+                .is_some_and(|host| find_snapshot_entity(&host, &target).is_some()))
+        })?,
+    )?;
+    let shared = host.clone();
+    entity.set(
+        "count_with_tag",
+        lua.create_function(move |_, tag: String| {
+            Ok(shared
+                .lock()
+                .map(|host| {
+                    host.world_entity_tags
+                        .get(&tag)
+                        .into_iter()
+                        .flat_map(|indices| indices.iter())
+                        .filter_map(|index| host.world_entities.get(*index))
+                        .filter(|entity| entity.enabled)
+                        .count()
+                })
+                .unwrap_or_default())
         })?,
     )?;
     let shared = host.clone();
@@ -3506,6 +3981,62 @@ fn register_safe_luau_api(
     )?;
     let shared = host.clone();
     entity.set(
+        "nearest",
+        lua.create_function(
+            move |lua, (origin, radius, options): (LuaValue, f64, Option<Table>)| {
+                let origin_target = target_from_luau_or_current(&shared, origin.clone())?;
+                let origin_point = luau_point_or_entity_position(&shared, origin)?
+                    .or_else(|| {
+                        shared.lock().ok().and_then(|host| {
+                            origin_target
+                                .as_ref()
+                                .and_then(|target| find_snapshot_entity(&host, target))
+                                .map(|entity| (entity.x, entity.y))
+                        })
+                    })
+                    .unwrap_or_default();
+                let exclude_origin = luau_options_bool(options.as_ref(), "exclude_origin", true);
+                let origin_id = if exclude_origin {
+                    shared.lock().ok().and_then(|host| {
+                        origin_target
+                            .as_ref()
+                            .and_then(|target| find_snapshot_entity(&host, target))
+                            .map(|entity| entity.id)
+                    })
+                } else {
+                    None
+                };
+                let include_disabled =
+                    luau_options_bool(options.as_ref(), "include_disabled", false);
+                let tags = luau_tags_from_options(options.as_ref())?;
+                let layers = luau_layers_from_options(options.as_ref())?;
+                let nearest = shared
+                    .lock()
+                    .map(|mut host| {
+                        nearby_snapshot_entities(
+                            &mut host,
+                            origin_point,
+                            radius.max(0.0),
+                            include_disabled,
+                            &tags,
+                            &layers,
+                        )
+                        .into_iter()
+                        .filter(|(_, entity)| Some(entity.id) != origin_id)
+                        .min_by(|a, b| a.0.total_cmp(&b.0))
+                    })
+                    .unwrap_or_default();
+                match nearest {
+                    Some((distance, entity)) => {
+                        entity_to_luau_with_distance(lua, &entity, distance).map(LuaValue::Table)
+                    }
+                    None => Ok(LuaValue::Nil),
+                }
+            },
+        )?,
+    )?;
+    let shared = host.clone();
+    entity.set(
         "all_with_tag",
         lua.create_function(move |lua, tag: String| {
             let entities = shared
@@ -3522,10 +4053,8 @@ fn register_safe_luau_api(
                 })
                 .unwrap_or_default();
             let table = lua.create_table()?;
-            let mut index = 1;
-            for entity in &entities {
+            for (index, entity) in (1..).zip(entities.iter()) {
                 table.set(index, entity_to_luau(lua, entity)?)?;
-                index += 1;
             }
             Ok(table)
         })?,
@@ -4916,6 +5445,106 @@ fn format_luau_error(path: &Path, event: &LuauScriptEvent, error: mlua::Error) -
     }
 }
 
+pub fn parse_luau_source_location(message: &str) -> (Option<usize>, Option<usize>) {
+    let bytes = message.as_bytes();
+    let mut starts = vec![0];
+    starts.extend(
+        bytes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, byte)| (*byte == b':').then_some(index + 1)),
+    );
+    for start in starts {
+        let line_end = bytes[start..]
+            .iter()
+            .position(|byte| !byte.is_ascii_digit())
+            .map(|offset| start + offset)
+            .unwrap_or(bytes.len());
+        if line_end == start || bytes.get(line_end) != Some(&b':') {
+            continue;
+        }
+        let Ok(line) = message[start..line_end].parse::<usize>() else {
+            continue;
+        };
+        if line == 0 {
+            continue;
+        }
+        let column_start = line_end + 1;
+        let column_end = bytes[column_start..]
+            .iter()
+            .position(|byte| !byte.is_ascii_digit())
+            .map(|offset| column_start + offset)
+            .unwrap_or(bytes.len());
+        let column = if column_end > column_start && bytes.get(column_end) == Some(&b':') {
+            message[column_start..column_end]
+                .parse::<usize>()
+                .ok()
+                .filter(|column| *column > 0)
+        } else {
+            None
+        };
+        return (Some(line), column);
+    }
+
+    let line = number_after_marker(message, "line ");
+    let column = number_after_marker(message, "column ");
+    (line, column)
+}
+
+fn number_after_marker(message: &str, marker: &str) -> Option<usize> {
+    let start = message.find(marker)? + marker.len();
+    let digits = message[start..]
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect::<String>();
+    digits.parse().ok()
+}
+
+fn luau_source_diagnostic(name: &str, error: mlua::Error) -> LuauSourceDiagnostic {
+    let (raw_message, incomplete_input) = match error {
+        mlua::Error::SyntaxError {
+            message,
+            incomplete_input,
+        } => (message, incomplete_input),
+        error => (error.to_string(), false),
+    };
+    let message = raw_message
+        .strip_prefix("syntax error: ")
+        .unwrap_or(&raw_message)
+        .trim();
+    let (line, column) = parse_luau_source_location(message);
+    let message = strip_leading_luau_location(message).to_string();
+    LuauSourceDiagnostic {
+        source: name.to_string(),
+        line,
+        column,
+        message,
+        incomplete_input,
+    }
+}
+
+fn strip_leading_luau_location(message: &str) -> &str {
+    let message = message.strip_prefix(':').unwrap_or(message);
+    let bytes = message.as_bytes();
+    let mut cursor = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_digit())
+        .unwrap_or(bytes.len());
+    if cursor == 0 || bytes.get(cursor) != Some(&b':') {
+        return message;
+    }
+    cursor += 1;
+    let column_end = bytes[cursor..]
+        .iter()
+        .position(|byte| !byte.is_ascii_digit())
+        .map(|offset| cursor + offset)
+        .unwrap_or(bytes.len());
+    if column_end > cursor && bytes.get(column_end) == Some(&b':') {
+        cursor = column_end + 1;
+    }
+    message[cursor..].trim_start()
+}
+
 fn luau_compiler() -> Compiler {
     Compiler::new().set_debug_level(2).set_optimization_level(1)
 }
@@ -5022,6 +5651,15 @@ fn is_luau_path(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("luau") || ext.eq_ignore_ascii_case("lua"))
 }
 
+fn is_luau_debug_identifier(value: &str) -> bool {
+    let mut characters = value.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
 fn is_reload_event(kind: &EventKind) -> bool {
     matches!(
         kind,
@@ -5047,7 +5685,7 @@ fn trace_script_lines(path: &Path) -> Vec<ScriptTraceEntry> {
             let function = line
                 .strip_prefix("function ")
                 .or_else(|| line.strip_prefix("local function "))
-                .and_then(|function| function.split(['(', ' ', ':']).next())
+                .and_then(|function| function.split(['(', ' ']).next())
                 .or_else(|| {
                     line.split_once("= function")
                         .map(|(function, _)| function.trim())
@@ -5060,6 +5698,79 @@ fn trace_script_lines(path: &Path) -> Vec<ScriptTraceEntry> {
             })
         })
         .collect()
+}
+
+fn script_handler_line(path: &Path, function_name: &str) -> Option<usize> {
+    trace_script_lines(path)
+        .into_iter()
+        .find(|entry| {
+            entry.function == function_name
+                || entry.function.ends_with(&format!(":{function_name}"))
+                || entry.function.ends_with(&format!(".{function_name}"))
+        })
+        .map(|entry| entry.line)
+}
+
+fn breakpoint_matches(
+    breakpoint: &ScriptBreakpoint,
+    path: &Path,
+    function_name: &str,
+    source_line: Option<usize>,
+) -> bool {
+    if !breakpoint.enabled {
+        return false;
+    }
+    let breakpoint_path = breakpoint.path.replace('\\', "/");
+    let script_path = path.to_string_lossy().replace('\\', "/");
+    if script_path != breakpoint_path && !script_path.ends_with(&breakpoint_path) {
+        return false;
+    }
+    if let Some(expected_function) = breakpoint.function.as_deref()
+        && expected_function != function_name
+        && !expected_function.ends_with(&format!(":{function_name}"))
+        && !expected_function.ends_with(&format!(".{function_name}"))
+    {
+        return false;
+    }
+    if let Some(expected_line) = breakpoint.line
+        && source_line != Some(expected_line)
+    {
+        return false;
+    }
+    true
+}
+
+fn event_debug_name(event: &LuauScriptEvent) -> &'static str {
+    match event {
+        LuauScriptEvent::Create => "create",
+        LuauScriptEvent::Ready => "ready",
+        LuauScriptEvent::Update(_) => "update",
+        LuauScriptEvent::FixedUpdate(_) => "fixed_update",
+        LuauScriptEvent::KeyDown(_) => "key_down",
+        LuauScriptEvent::CollisionEnter(_) => "collision_enter",
+        LuauScriptEvent::CollisionExit(_) => "collision_exit",
+        LuauScriptEvent::Destroy => "destroy",
+        LuauScriptEvent::Custom { .. } => "custom",
+    }
+}
+
+fn event_debug_context(event: &LuauScriptEvent) -> Value {
+    match event {
+        LuauScriptEvent::Update(dt) | LuauScriptEvent::FixedUpdate(dt) => {
+            json!({"name": event_debug_name(event), "dt": dt})
+        }
+        LuauScriptEvent::KeyDown(key) => json!({"name": "key_down", "key": key}),
+        LuauScriptEvent::CollisionEnter(other) => {
+            json!({"name": "collision_enter", "other": other})
+        }
+        LuauScriptEvent::CollisionExit(other) => {
+            json!({"name": "collision_exit", "other": other})
+        }
+        LuauScriptEvent::Custom { name, payload } => {
+            json!({"name": name, "payload": payload})
+        }
+        _ => json!({"name": event_debug_name(event)}),
+    }
 }
 
 #[cfg(test)]
@@ -5237,5 +5948,22 @@ mod tests {
         assert_eq!(hits[0].1.name, "PickupCash");
         assert_eq!(host.query_stats.nearby_indexed, 0);
         assert_eq!(host.query_stats.nearby_linear_scans, 1);
+    }
+
+    #[test]
+    fn source_validation_returns_editor_ready_locations() {
+        let diagnostics = super::LuauScriptRuntime::validate_source_diagnostics(
+            "local ok = true\nfunction on_update(\nend",
+            "Broken.luau",
+        );
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].source, "Broken.luau");
+        assert!(diagnostics[0].line.is_some());
+        assert!(!diagnostics[0].message.is_empty());
+        assert_eq!(
+            super::parse_luau_source_location("scripts/Player.luau:17:4: bad value"),
+            (Some(17), Some(4))
+        );
     }
 }

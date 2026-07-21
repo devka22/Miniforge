@@ -39,7 +39,17 @@ pub struct SpriteSheetMetadata {
 #[derive(Debug, Default)]
 pub struct SpriteSheetImporter;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SpriteGridGuess {
+    pub cell_width: u32,
+    pub cell_height: u32,
+    pub columns: u32,
+    pub rows: u32,
+}
+
 impl SpriteSheetImporter {
+    const MAX_AUTO_FRAMES: u32 = 4096;
+
     pub fn supported_extensions() -> Vec<&'static str> {
         vec!["png", "jpg", "jpeg", "webp"]
     }
@@ -99,6 +109,66 @@ impl SpriteSheetImporter {
             padding,
             slices,
             import_warnings: image_info.warnings,
+        })
+    }
+
+    /// Infers a conservative regular grid for common horizontal, vertical,
+    /// and square-cell sprite sheets. Images that would produce an excessive
+    /// number of frames fall back to a single frame so importing untrusted
+    /// high-resolution textures cannot allocate an enormous metadata graph.
+    pub fn infer_grid(image_path: &Path) -> io::Result<SpriteGridGuess> {
+        let image_info = image_info(image_path)?;
+        let width = image_info.width;
+        let height = image_info.height;
+        if width == 0 || height == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "la imagen no tiene dimensiones validas",
+            ));
+        }
+
+        let horizontal_frames = width / height.max(1);
+        if width % height == 0 && (2..=64).contains(&horizontal_frames) {
+            return Ok(SpriteGridGuess {
+                cell_width: height,
+                cell_height: height,
+                columns: horizontal_frames,
+                rows: 1,
+            });
+        }
+
+        let vertical_frames = height / width.max(1);
+        if height % width == 0 && (2..=64).contains(&vertical_frames) {
+            return Ok(SpriteGridGuess {
+                cell_width: width,
+                cell_height: width,
+                columns: 1,
+                rows: vertical_frames,
+            });
+        }
+
+        for cell in [64, 32, 16, 8] {
+            if width % cell != 0 || height % cell != 0 {
+                continue;
+            }
+            let columns = width / cell;
+            let rows = height / cell;
+            let frame_count = columns.saturating_mul(rows);
+            if (2..=Self::MAX_AUTO_FRAMES).contains(&frame_count) {
+                return Ok(SpriteGridGuess {
+                    cell_width: cell,
+                    cell_height: cell,
+                    columns,
+                    rows,
+                });
+            }
+        }
+
+        Ok(SpriteGridGuess {
+            cell_width: width,
+            cell_height: height,
+            columns: 1,
+            rows: 1,
         })
     }
 

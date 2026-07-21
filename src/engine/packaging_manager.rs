@@ -94,6 +94,12 @@ pub struct InstallerPlan {
 pub struct PackagingManager;
 
 impl PackagingManager {
+    /// Resolves the runtime executable using the same policy as distributable
+    /// packaging (`MINIFORGE_RUNTIME`, sibling binary, then Cargo targets).
+    pub fn runtime_binary() -> Option<PathBuf> {
+        find_runtime_binary()
+    }
+
     pub fn package_project(
         project_path: &Path,
         destination: &Path,

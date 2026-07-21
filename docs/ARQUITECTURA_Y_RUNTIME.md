@@ -1,30 +1,81 @@
-# MiniForge - Arquitectura y Runtime
+# MiniForge - Arquitectura y runtime
 
-Este documento consolida la arquitectura actual del motor despues de revisar `Cargo.toml`, `src/lib.rs`, `src/core/game.rs`, `src/runtime/engine_runtime.rs`, `src/engine/mod.rs`, `src/systems/mod.rs`, `src/entities/game_object.rs`, `src/engine/component.rs`, `src/engine/world.rs`, los serializadores y los modulos 2D principales.
+Este documento describe la arquitectura actual del motor, el límite editor/runtime, el orden de
+actualización y los sistemas de estabilidad. Para operar la interfaz consulta
+[Editor y flujo de uso](EDITOR_Y_FLUJO_DE_USO.md); para schemas y APIs consulta
+[Datos, scripting y APIs](DATOS_SCRIPTING_Y_APIS.md).
 
-Version documentada: `MiniForge 0.9.3.4 - 2D Workflow Foundations`.
+Versión documentada: engine `0.9.3.4` (`2D Workflow Foundations`), crate Cargo `0.9.3`.
 
 ## Vision General
 
 MiniForge es un motor 2D escrito en Rust con editor, runtime exportable, scripting Luau, visual graphs, pipeline de assets, sistema de componentes JSON, soporte inicial hibrido 2D/3D y herramientas de automatizacion. El crate se organiza para separar el editor del runtime mediante features de Cargo:
 
 - `runtime`: ruta de juego/exportacion sin servicios de editor.
-- `editor`: activa egui, docking, file dialogs, editor UI, tooling y launcher.
-- `editor_ffi`: expone el nucleo del editor a C/C++/Qt mediante ABI estable.
+- `editor_core`: activa servicios frontend-neutral de proyecto, escena, assets, scripting y tooling.
+- `editor_ffi`: expone `EditorCore` a C/C++/Qt mediante ABI estable; implica `editor_core`.
 
 Los binarios principales son:
 
-- `miniforge`: entrada principal del editor historico.
-- `miniforge_editor`: editor con feature `editor`.
+- `miniforge_qt_editor`: superficie visual unica, compilada desde `editor-cpp`; el gate de paridad total esta aprobado en `QT_EDITOR_MIGRATION.md`.
 - `miniforge_runtime`: jugador runtime para builds exportados.
 - `miniforge_headless`: ejecucion sin ventana para validacion o CI.
-- `miniforge_dev`: CLI de desarrollo, diagnostico, export, benchmarks y automatizacion.
+- `miniforge_dev`: CLI Rust de desarrollo, diagnostico, export, benchmarks y automatizacion.
+
+## Mapa De Arquitectura
+
+```text
+┌────────────────────────────────────────────────────────────────────┐
+│ Editor desktop                                                     │
+│ QMainWindow/QDockWidget + QML panels + widgets nativos C++         │
+└──────────────────────────────┬─────────────────────────────────────┘
+                               │ MfBridge / modelos Qt
+                               ▼
+┌────────────────────────────────────────────────────────────────────┐
+│ ABI C versionada                                                   │
+│ include/miniforge_editor_bridge.h ↔ src/editor_ffi.rs              │
+└──────────────────────────────┬─────────────────────────────────────┘
+                               ▼
+┌────────────────────────────────────────────────────────────────────┐
+│ EditorCore                                                         │
+│ proyectos, escenas, assets, sesiones de herramientas, validación   │
+└──────────────────────────────┬─────────────────────────────────────┘
+                               ▼
+┌────────────────────────────────────────────────────────────────────┐
+│ Servicios compartidos Rust                                        │
+│ RuntimeWorld, componentes, serialización, Luau, graphs, sistemas   │
+└───────────────────────┬──────────────────────────┬─────────────────┘
+                        │                          │
+                        ▼                          ▼
+          Game (autoría/Play Mode)    EngineRuntime (build exportado)
+          editor_core activo          runtime-only, sin UI de editor
+```
+
+La dependencia va hacia abajo. QML no accede a punteros Rust ni al filesystem del proyecto por
+su cuenta; llama a `MfBridge`. El bridge traduce tipos Qt a buffers/JSON del ABI. `editor_ffi`
+valida handles, tamaños y rutas y delega la operación a `EditorCore`. El runtime exportado nunca
+depende de QML, Qt, `EditorCore` ni de la aplicación desktop.
+
+### Responsabilidad De Cada Capa
+
+| Capa | Debe hacer | No debe hacer |
+|---|---|---|
+| QML | Presentación, interacción y estado visual efímero | Inventar schemas o escribir assets directamente |
+| C++ Qt | Ventana, docks, widgets, modelos, `QProcess`, conversión Qt/ABI | Implementar reglas de juego duplicadas |
+| ABI C | Contrato estable, status/error, buffers y DTO JSON | Ejecutar una mutación dos veces para medir buffers |
+| EditorCore | Autoría, validación, sesiones y operaciones de proyecto | Crear ventanas o importar toolkit visual |
+| Servicios compartidos | Mundo, formatos, assets, scripting y sistemas | Depender del shell del editor |
+| EngineRuntime | Cargar build, actualizar juego, reportar salud | Reutilizar `Game` como composition root de editor |
+
+Las consultas JSON siguen el patrón measure/retry con `BufferTooSmall`. Las mutaciones sensibles,
+como gestionar assets o restaurar una sesión, son status-only: se ejecutan una vez y su resultado
+se consulta después en un snapshot separado.
 
 ## Capas
 
 La capa publica del crate esta en `src/lib.rs` y reexporta:
 
-- `Game`, cuando `editor` esta activo.
+- `Game`, cuando `editor_core` esta activo.
 - `EngineRuntime`, para runtime/export.
 - `RuntimeWorld`, como propietario canonico de entidades.
 - Etiquetas de version desde `engine::version`.
@@ -41,9 +92,9 @@ La arquitectura se divide en estas areas:
 - `editor-cpp`, `editor-qml` e `include`: editor Qt/C++ sobre el bridge FFI.
 - `mcp/miniforge`, `tools` y `scripts`: automatizacion externa, MCP y utilidades.
 
-## Composicion Del Editor
+## Composicion Del Backend Del Editor
 
-`core::game::Game` es la raiz del editor. Contiene servicios de proyecto, escena y herramientas:
+`core::game::Game` es la composicion no visual usada por `EditorCore`. Contiene servicios de proyecto, escena y herramientas:
 
 - `project_path`, `project_paths`, `engine_config`, `runtime_config`, `build_settings`, `build_profiles`.
 - `runtime_world`, `grid`, `tilemap_layers`, `camera` y `scene_manager`.
@@ -54,7 +105,34 @@ La arquitectura se divide en estas areas:
 - `visual_script_runtime`, `luau_script_runtime`, `ui_runtime`, `audio_system`, `physics_system`, `particle_system`.
 - `advanced_prefabs`, `archetypes`, `native_libraries`, `upgrade_manifest`, `programming`.
 
-El editor puede abrir escenas, editar entidades/componentes, crear assets, ejecutar sistemas en modo editor o play, guardar de forma durable, exportar builds y ejecutar auditorias.
+Qt consume estas operaciones mediante `editor_ffi`. La UI, docks, menus, ventanas y ciclo desktop pertenecen exclusivamente a C++/QML; no existe un target visual Rust.
+
+El workbench Qt combina tres formas de frontend:
+
+- widgets C++ para viewport, canvas de sprite y syntax highlighting;
+- paneles QML para herramientas de datos y workflows;
+- modelos C++ que adaptan colecciones paginadas, selección y command palette.
+
+Las sesiones complejas no viven solo en QML. Animation, Tilemap, UI Designer, Prefab, Luau y
+Visual Graph tienen estado/validación en el backend o contratos de persistencia explícitos. Esto
+permite reabrir documentos, hacer undo coherente y validar sin una ventana visible.
+
+Los juegos lanzados desde Project Operations no comparten proceso con el editor: `EditorCore` prepara export/package y publica un `ExternalLaunchPlanDto`; `MfBridge` administra `miniforge_runtime --build <artifact>` con `QProcess`. El ABI separa mutacion status-only (`mf_editor_project_operation`) de consulta JSON (`mf_editor_project_operations_json`) para impedir ejecuciones dobles durante el probe de buffers.
+
+### Flujo De Una Operación De Editor
+
+Ejemplo: mover un asset desde Content Browser.
+
+1. QML identifica selección y carpeta destino relativa.
+2. `MfBridge` convierte strings a UTF-8 y llama una vez a `mf_editor_manage_asset`.
+3. `editor_ffi` valida el handle y delega en `EditorCore`.
+4. El backend normaliza/confina rutas, comprueba colisiones y realiza la operación segura.
+5. Asset Database reconcilia path, hash, GUID, metadata y dependencias.
+6. Qt refresca modelos; el panel no asume éxito hasta recibir `MfStatus::Ok`.
+
+El mismo patrón se aplica a escenas, prefabs, project operations y documentos, cambiando el DTO
+y la política de persistencia. Las escrituras durables pasan por escritura atómica/backup cuando
+el formato lo requiere.
 
 ## Composicion Del Runtime
 
@@ -65,7 +143,7 @@ Servicios incluidos:
 - Proyecto: `project_path`, `project_paths`, `engine_config`, `runtime_config`.
 - Mundo: `RuntimeWorld`, `Grid`, `TilemapLayers`, `Camera`, `SceneManager`.
 - Assets: `ResourceManager`, `AssetDatabase`.
-- Seguridad: `SafeModeSettings`.
+- Seguridad: `SafeModeSettings` y `RuntimeStabilityGuard`.
 - Tiempo: `GameClock`.
 - Diagnostico: `DeveloperConsole`, `Profiler`, `Diagnostics`.
 - Sistemas: animacion, sprites, audio, visual graphs, Luau, gameplay, RTS, runtime 2D, fisica, particulas y narrativa.
@@ -180,10 +258,10 @@ Mundo masivo:
 
 Tanto `Game::run_headless_once` como `EngineRuntime::run_headless_once` siguen el mismo orden conceptual:
 
-1. Avanzar consola, profiler y reloj.
+1. Normalizar el delta, sanear el mundo y avanzar consola, profiler y reloj.
 2. `SpriteAnimationSystem`.
 3. `AnimationSystem`.
-4. `ParticleSystem`.
+4. `ParticleSystem`; es el unico trabajo cosmetico que puede reducir cadencia bajo presion sostenida.
 5. `AudioSystem`.
 6. `VisualScriptRuntime`, si Safe Mode permite graphs.
 7. `LuauScriptRuntime`, si Safe Mode permite scripts.
@@ -195,10 +273,71 @@ Tanto `Game::run_headless_once` como `EngineRuntime::run_headless_once` siguen e
 13. Colisiones tilemap/runtime 2D.
 14. Camera shake y camera follow.
 15. Dispatch de eventos de colision hacia Luau.
-16. `RuntimeWorld.mark_changed` y `RuntimeWorld.rebuild_index`.
-17. Diagnosticos, counters y metricas de profiler.
+16. Sanear el resultado de los sistemas, poner en cuarentena entidades muy corruptas y reconstruir el indice espacial.
+17. Evaluar presion del frame y publicar diagnosticos, counters y metricas de profiler.
 
-La version runtime registra tiempos por sistema con `Profiler` y metricas como entidades, scripts Luau, fixed ticks, frame budget, fixed step saturation, celdas espaciales, uso del scheduler Luau y consultas `Entity.nearby` indexadas/lineales.
+La version runtime registra tiempos por sistema con `Profiler` y metricas como entidades, scripts Luau, fixed ticks, frame budget, fixed step saturation, celdas espaciales, uso del scheduler Luau y consultas `Entity.nearby` indexadas/lineales. Tambien publica `StabilityLevel`, reparaciones, cuarentenas, presion de entidades, cadencia cosmetica y los deltas raw/seguros.
+
+### Stability Guard
+
+`RuntimeStabilityGuard` forma parte tanto de `Game` como de `EngineRuntime`, por lo que un juego exportado conserva las mismas garantias del editor:
+
+- sustituye deltas no finitos o negativos y limita picos antes de fisica, IA y scripts;
+- hace que pausa y `time_scale` afecten a todos los sistemas variables, no solo al reloj fixed-step;
+- repara `NaN`, infinito, dimensiones imposibles y rutas corruptas antes de contaminar render, fisica o indices;
+- pone en cuarentena una entidad con demasiadas reparaciones sin eliminar contenido ni cerrar el proceso;
+- entra en estados `stable`, `guarded` y `recovery` ante frames lentos consecutivos;
+- en presion sostenida reduce solo la cadencia de particulas, manteniendo input, gameplay, Luau y fisica cada frame;
+- informa eventos al canal `STABILITY` de la consola, a `Diagnostics`, al profiler y al panel Qt Runtime Health.
+
+Se configura en `settings/runtime_config.json` dentro de `stability_guard`. `max_entities` genera presion y recomendaciones, pero nunca borra entidades automaticamente.
+
+Valores relevantes de configuración:
+
+| Campo | Efecto |
+|---|---|
+| `enabled` | Activa la protección |
+| `max_delta_seconds` | Limita picos de delta antes de sistemas |
+| `repair_invalid_numbers` | Repara NaN/infinito y valores imposibles |
+| `quarantine_corrupt_entities` | Aísla entidades que superan el umbral de reparaciones |
+| `repairs_before_quarantine` | Umbral por entidad |
+| `guarded_after_slow_frames` | Frames lentos antes de `guarded` |
+| `recovery_after_slow_frames` | Frames lentos antes de `recovery` |
+| `stable_frames_to_recover` | Frames sanos necesarios para bajar de nivel |
+| `throttle_optional_systems` | Reduce la cadencia opcional bajo presión |
+| `max_world_coordinate` | Límite de saneamiento espacial |
+| `max_entities` | Umbral de presión; nunca borra contenido |
+
+El reporte por frame contiene delta raw/seguro, reparaciones, IDs en cuarentena, conteo/límite de
+entidades, frames lentos/estables y divisor de cadencia opcional. Runtime Health presenta ese
+snapshot; Console, Diagnostics y Profiler conservan información para investigar la causa.
+
+## Scheduler De Sistemas Y Presupuestos
+
+`engine::system_scheduler` proporciona una infraestructura reutilizable para sistemas nuevos o
+plugins. Un `ScheduledSystem` declara nombre y compatibilidad con EDITOR/PLAY. `SystemSchedule`
+añade:
+
+- fase `Fixed`, `Update` o `Late`;
+- prioridad y orden estable de registro;
+- enabled/disabled;
+- criticidad;
+- budget individual opcional;
+- dependencias `after`.
+
+El scheduler construye un orden determinista, detecta nombres duplicados, dependencias ausentes y
+ciclos, propaga skips cuando una dependencia no corrió y genera `SchedulerFrameReport` con tiempo,
+budget, sistemas ejecutados/omitidos y warnings. Sus políticas son:
+
+| Política | Comportamiento |
+|---|---|
+| `WarnOnly` | Ejecuta y reporta overruns; preserva determinismo |
+| `SkipOptional` | Al agotar el budget, difiere sistemas no críticos |
+
+Esta infraestructura no reemplaza todavía el orden explícito completo de `Game` y
+`EngineRuntime`; es la base para registrar familias adicionales sin ocultar dependencias ni
+presupuestos. Los sistemas críticos de gameplay/física no deben marcarse opcionales solo para
+mejorar una métrica.
 
 ## Sistemas
 
@@ -309,6 +448,9 @@ Servicios principales:
 ## Cambios Recientes Integrados
 
 - Version visible unificada en `ENGINE_VERSION = 0.9.3.4`.
+- El editor Rust/egui fue retirado y Qt 6/C++/QML es la única superficie desktop.
+- El workbench Qt incorpora workspaces persistentes, Scene/Game View, Content Browser con
+  operaciones reales y paneles especializados conectados al backend.
 - `RuntimeWorld` es el propietario canonico de entidades y tiene indice espacial/revisiones.
 - Escenas y prefabs tienen serializadores con validacion y rechazo de schemas futuros.
 - Prefabs subieron a schema 2 con scripts/settings requeridos y metadata.
@@ -317,5 +459,25 @@ Servicios principales:
 - `EngineRuntime` existe como composition root runtime-only.
 - `miniforge_2d` agrega catalogo amplio: UI Designer, Sequencer, Physics2D, AI, Packaging, RTS Tools, Massive World y render hibrido.
 - Luau tiene scheduler configurable, hot reload, memoria limitada, cola de comandos, politicas automaticas de mundo abierto y consultas `nearby` aceleradas por indice espacial.
-- Qt/QML puede operar sobre `EditorCore` via FFI C.
+- Luau Studio añade recovery de buffers, diagnostics estructurados, completions/API browser y
+  debugger callback-level con watches de solo lectura.
+- `SystemScheduler` añade fases, dependencias, criticidad y budgets como infraestructura
+  explícita para sistemas programables.
+- `RuntimeStabilityGuard` está conectado a Game/EngineRuntime y al panel Runtime Health.
+- Qt/QML opera sobre `EditorCore` vía FFI C y mutaciones status-only.
 - Export/runtime manifest ahora incluye readiness, backend plan y assets faltantes.
+
+## Límites Arquitectónicos Actuales
+
+- Macroquad es el backend estable del juego; WGPU/Metal y 3D siguen como foundations.
+- `SystemScheduler` no orquesta todavía todas las familias del loop principal.
+- El debugger Luau se detiene entre callbacks, no entre instrucciones.
+- UI runtime mantiene compatibilidad entre `UIElement`, canvas de escena y `UiCanvas2D`.
+- Plugins nativos se cargan en proceso; Safe Mode puede bloquearlos, pero no sustituye un sandbox
+  de sistema operativo.
+- Algunos subsistemas de massive world y render avanzado son contratos/data models antes que
+  pipelines finales acelerados por GPU.
+
+Para construir y validar estos límites consulta
+[Desarrollo, build y extensión](DESARROLLO_BUILD_Y_EXTENSION.md). Para una guía de uso consulta
+[Editor y flujo de uso](EDITOR_Y_FLUJO_DE_USO.md).

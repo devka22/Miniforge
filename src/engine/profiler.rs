@@ -38,7 +38,8 @@ impl Profiler {
     }
 
     pub fn record_system(&mut self, name: &str, milliseconds: f64) {
-        self.systems.insert(name.to_string(), milliseconds);
+        self.systems
+            .insert(name.to_string(), finite_non_negative(milliseconds));
     }
 
     pub fn set_counter(&mut self, name: &str, value: usize) {
@@ -46,7 +47,8 @@ impl Profiler {
     }
 
     pub fn set_metric(&mut self, name: &str, value: f64) {
-        self.metrics.insert(name.to_string(), value);
+        self.metrics
+            .insert(name.to_string(), finite_non_negative(value));
     }
 
     pub fn rows(&self) -> Vec<(String, String)> {
@@ -71,5 +73,27 @@ impl Profiler {
 
     pub fn systems_time_total_ms(&self) -> f64 {
         self.systems.values().copied().sum()
+    }
+}
+
+fn finite_non_negative(value: f64) -> f64 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Profiler;
+
+    #[test]
+    fn invalid_measurements_are_normalized() {
+        let mut profiler = Profiler::new();
+        profiler.record_system("Broken", f64::NAN);
+        profiler.set_metric("Invalid", f64::INFINITY);
+        assert_eq!(profiler.systems["Broken"], 0.0);
+        assert_eq!(profiler.metrics["Invalid"], 0.0);
     }
 }

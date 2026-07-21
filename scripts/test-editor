@@ -6,10 +6,11 @@ BUILD_DIR="${MINIFORGE_QT_BUILD_DIR:-"$ROOT/build/editor-qt"}"
 CMAKE_BIN="${MINIFORGE_QT_CMAKE:-cmake}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/miniforge-codex-target}"
 
-rustfmt --check "$ROOT/src/engine/editor_core.rs" "$ROOT/src/editor_ffi.rs"
+"$ROOT/scripts/check-no-rust-editor"
+rustfmt --edition 2024 --check "$ROOT/src/engine/editor_core.rs" "$ROOT/src/editor_ffi.rs"
 cargo check --locked --lib --features editor_ffi --message-format=short
-cargo test --locked editor_core
-cargo check --locked --no-default-features --features runtime --bin miniforge_runtime
+cargo test --locked --features editor_core
+cargo check --locked --no-default-features --features runtime --all-targets
 
 "$ROOT/scripts/configure-editor"
 "$CMAKE_BIN" --build "$BUILD_DIR" --target miniforge_editor_checks

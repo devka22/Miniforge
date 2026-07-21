@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::engine::forge_ai::actions::{AiAction, AiActionPreview};
 use crate::engine::forge_ai::diagnostics::{AiDiagnostic, ProjectDoctor};
-#[cfg(feature = "editor")]
+#[cfg(feature = "editor_core")]
 use crate::engine::forge_ai::optimizer::AiOptimizer;
 use crate::engine::forge_ai::permissions::AiPermissionPolicy;
 use crate::engine::forge_ai::planner::AiPlan;
@@ -328,7 +328,7 @@ fn resolve_entity<H: AiEditorHost>(
     ))
 }
 
-#[cfg(feature = "editor")]
+#[cfg(feature = "editor_core")]
 impl AiEditorHost for crate::engine::editor_core::EditorCore {
     fn find_entity_id(&self, name: &str) -> AiResult<Option<u64>> {
         let count = self.entity_count()?;

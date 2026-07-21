@@ -7,6 +7,9 @@
 
 class QAction;
 class QLabel;
+class QSlider;
+class QSpinBox;
+class QTimer;
 class SpriteCanvasView;
 
 class SpriteEditorWidget final : public QWidget {
@@ -20,6 +23,9 @@ private:
     void choosePrimaryColor();
     void chooseSecondaryColor();
     void saveCanvas();
+    void transformCanvas(const QString& action, const QString& payloadJson = QStringLiteral("{}"));
+    void refreshAnimationTimeline();
+    void setAnimationPlaying(bool playing);
 
     MfBridge* m_bridge = nullptr;
     SpriteCanvasView* m_canvas = nullptr;
@@ -28,4 +34,10 @@ private:
     QAction* m_redoAction = nullptr;
     QAction* m_primaryAction = nullptr;
     QAction* m_secondaryAction = nullptr;
+    QAction* m_playAction = nullptr;
+    QSpinBox* m_frameWidth = nullptr;
+    QSpinBox* m_frameHeight = nullptr;
+    QSpinBox* m_fps = nullptr;
+    QSlider* m_frameSlider = nullptr;
+    QTimer* m_animationTimer = nullptr;
 };

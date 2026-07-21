@@ -149,7 +149,6 @@ pub struct SystemScheduler {
     pub items: Vec<ScheduledItem>,
     pub budget_ms: f64,
     pub budget_policy: SchedulerBudgetPolicy,
-    next_registration_order: u64,
 }
 
 impl SystemScheduler {
@@ -163,8 +162,12 @@ impl SystemScheduler {
         system: Box<dyn ScheduledSystem>,
         schedule: SystemSchedule,
     ) {
-        let registration_order = self.next_registration_order;
-        self.next_registration_order = self.next_registration_order.saturating_add(1);
+        let registration_order = self
+            .items
+            .iter()
+            .map(|item| item.registration_order)
+            .max()
+            .map_or(0, |order| order.saturating_add(1));
         self.items.push(ScheduledItem {
             priority: schedule.priority,
             phase: schedule.phase,

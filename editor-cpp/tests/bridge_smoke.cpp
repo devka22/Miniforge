@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -55,6 +56,10 @@ int main(int argc, char** argv)
     const bool useExternalProject = argc == 2 && std::getenv("MINIFORGE_BRIDGE_SMOKE_EXTERNAL") != nullptr;
     const std::filesystem::path tempProject = useExternalProject ? std::filesystem::path {} : makeTempProject();
     const std::string projectPath = useExternalProject ? std::string(argv[1]) : tempProject.string();
+    if (!useExternalProject) {
+        std::filesystem::create_directories(tempProject / "assets/data");
+        std::ofstream(tempProject / "assets/data/ManagedSmoke.json") << "{\"value\":1}";
+    }
 
     MfError error {};
     MfEditorHandle* editor = mf_editor_create(&error);
@@ -165,6 +170,235 @@ int main(int argc, char** argv)
     }
     expect(sawEditedValue, "edited inspector value should be visible in the refreshed inspector batch");
 
+    required = 0;
+    expectStatus(
+        mf_editor_scene_state_json(editor, nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "query scene state size"
+    );
+    std::vector<char> sceneState(required);
+    expectStatus(
+        mf_editor_scene_state_json(editor, sceneState.data(), sceneState.size(), &required, &error),
+        MF_STATUS_OK,
+        error,
+        "read scene state"
+    );
+    expect(std::string(sceneState.data()).find("\"scene_name\"") != std::string::npos, "scene state should name the active scene");
+
+    required = 0;
+    expectStatus(
+        mf_editor_viewport_state_json(editor, 640, 360, nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "query professional viewport state"
+    );
+    std::vector<char> viewportState(required);
+    expectStatus(
+        mf_editor_viewport_state_json(editor, 640, 360, viewportState.data(), viewportState.size(), &required, &error),
+        MF_STATUS_OK,
+        error,
+        "read professional viewport state"
+    );
+    expect(std::string(viewportState.data()).find("\"pixels_per_unit\"") != std::string::npos, "viewport state should expose its world-to-pixel scale");
+    std::size_t transformed = 0;
+    expectStatus(
+        mf_editor_transform_selection(editor, "{\"mode\":\"delta\",\"dx\":0.5,\"rotation_delta\":5.0}", &transformed, &error),
+        MF_STATUS_OK,
+        error,
+        "transform selected entity through gizmo bridge"
+    );
+    expect(transformed == 1, "single selection gizmo transform should change one entity");
+    expectStatus(mf_editor_execute_command(editor, "edit.undo", &error), MF_STATUS_OK, error, "undo gizmo transform");
+    expectStatus(mf_editor_update_selection(editor, selectedId, "replace", &error), MF_STATUS_OK, error, "restore selection after gizmo undo");
+
+    required = 0;
+    expectStatus(
+        mf_editor_component_catalog_json(editor, nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "query component catalog size"
+    );
+    std::vector<char> componentCatalog(required);
+    expectStatus(
+        mf_editor_component_catalog_json(editor, componentCatalog.data(), componentCatalog.size(), &required, &error),
+        MF_STATUS_OK,
+        error,
+        "read component catalog"
+    );
+    expect(std::string(componentCatalog.data()).find("\"component_types\"") != std::string::npos, "component catalog should include component groups");
+
+    required = 0;
+    expectStatus(
+        mf_editor_profiler_snapshot_json(editor, nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "query profiler snapshot"
+    );
+    std::vector<char> profilerSnapshot(required);
+    expectStatus(
+        mf_editor_profiler_snapshot_json(editor, profilerSnapshot.data(), profilerSnapshot.size(), &required, &error),
+        MF_STATUS_OK,
+        error,
+        "read profiler snapshot"
+    );
+    expect(std::string(profilerSnapshot.data()).find("\"frame_budget_ms\"") != std::string::npos, "profiler should expose the runtime frame budget");
+    expectStatus(mf_editor_rebuild_asset_dependencies(editor, &error), MF_STATUS_OK, error, "rebuild asset dependencies");
+    required = 0;
+    expectStatus(
+        mf_editor_asset_dependency_graph_json(editor, nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "query asset dependency graph"
+    );
+    std::vector<char> dependencyGraph(required);
+    expectStatus(
+        mf_editor_asset_dependency_graph_json(editor, dependencyGraph.data(), dependencyGraph.size(), &required, &error),
+        MF_STATUS_OK,
+        error,
+        "read asset dependency graph"
+    );
+    expect(std::string(dependencyGraph.data()).find("\"nodes\"") != std::string::npos, "dependency graph should expose asset nodes");
+    required = 0;
+    expectStatus(
+        mf_editor_project_operations_json(editor, nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "query project operations"
+    );
+    std::vector<char> projectOperations(required);
+    expectStatus(
+        mf_editor_project_operations_json(editor, projectOperations.data(), projectOperations.size(), &required, &error),
+        MF_STATUS_OK,
+        error,
+        "read project operations"
+    );
+    expect(std::string(projectOperations.data()).find("\"autosave\"") != std::string::npos, "project operations should expose autosave state");
+    if (!useExternalProject) {
+        expectStatus(
+            mf_editor_project_operation(editor, "autosave_now", "{}", &error),
+            MF_STATUS_OK,
+            error,
+            "create autosave through project operations"
+        );
+        expectStatus(
+            mf_editor_project_operation(editor, "package_export", "{}", &error),
+            MF_STATUS_OK,
+            error,
+            "export project package through project operations"
+        );
+        expectStatus(
+            mf_editor_manage_asset(
+                editor,
+                "duplicate",
+                "{\"source\":\"assets/data/ManagedSmoke.json\",\"target_folder\":\"assets/data\"}",
+                &error),
+            MF_STATUS_OK,
+            error,
+            "duplicate asset through safe asset manager"
+        );
+    }
+
+    const auto readToolState = [&](const char* tool) {
+        required = 0;
+        expectStatus(
+            mf_editor_tool_state_json(editor, tool, nullptr, 0, &required, &error),
+            MF_STATUS_BUFFER_TOO_SMALL,
+            error,
+            std::string("query ") + tool + " tool state"
+        );
+        std::vector<char> buffer(required);
+        expectStatus(
+            mf_editor_tool_state_json(editor, tool, buffer.data(), buffer.size(), &required, &error),
+            MF_STATUS_OK,
+            error,
+            std::string("read ") + tool + " tool state"
+        );
+        return std::string(buffer.data());
+    };
+    const auto runToolAction = [&](const char* tool, const char* action, const char* payload) {
+        std::vector<char> buffer(4 * 1024 * 1024);
+        required = 0;
+        expectStatus(
+            mf_editor_tool_action_json(
+                editor, tool, action, payload, buffer.data(), buffer.size(), &required, &error),
+            MF_STATUS_OK,
+            error,
+            std::string(tool) + " action " + action
+        );
+        return std::string(buffer.data());
+    };
+    expect(readToolState("sequencer").find("\"sequence\"") != std::string::npos, "sequencer state should expose a sequence");
+    expect(readToolState("tilemap").find("\"tilemap\"") != std::string::npos, "tilemap state should expose its layered map");
+    expect(readToolState("ui_designer").find("\"preview\"") != std::string::npos, "UI Designer state should expose a preview");
+    expect(runToolAction(
+               "sequencer",
+               "add_track",
+               "{\"id\":\"SmokeTrack\",\"track_type\":\"transform\",\"target\":\"SmokeEntity\"}")
+               .find("SmokeTrack")
+            != std::string::npos,
+        "sequencer action should return the updated state");
+    runToolAction("sequencer", "undo", "{}");
+    expect(runToolAction("tilemap", "paint_cells", "{\"cells\":[{\"x\":1,\"y\":1}],\"value\":4}")
+               .find("\"dirty\":true")
+            != std::string::npos,
+        "tilemap paint should be undoable and mark the document dirty");
+    runToolAction("tilemap", "undo", "{}");
+    expect(runToolAction(
+               "ui_designer",
+               "add_widget",
+               "{\"widget_type\":\"Button\",\"id\":\"SmokeUiButton\",\"x\":80,\"y\":80}")
+               .find("SmokeUiButton")
+            != std::string::npos,
+        "UI Designer action should create widgets");
+    runToolAction("ui_designer", "undo", "{}");
+
+    expectStatus(
+        mf_editor_update_selection(editor, selectedId, "toggle", &error),
+        MF_STATUS_OK,
+        error,
+        "toggle selection"
+    );
+    expectStatus(mf_editor_selected_entity_count(editor, &selectedCount, &error), MF_STATUS_OK, error, "selection after toggle");
+    expect(selectedCount == 0, "toggle should deselect the active entity");
+    expectStatus(
+        mf_editor_update_selection(editor, selectedId, "add", &error),
+        MF_STATUS_OK,
+        error,
+        "add selection"
+    );
+
+    MfEntityId duplicateId = 0;
+    expectStatus(
+        mf_editor_entity_action(editor, selectedId, "duplicate", "{}", &duplicateId, &error),
+        MF_STATUS_OK,
+        error,
+        "duplicate entity action"
+    );
+    expect(duplicateId != 0 && duplicateId != selectedId, "duplicate action should return a new entity id");
+    std::size_t countAfterDuplicate = 0;
+    expectStatus(mf_editor_entity_count(editor, &countAfterDuplicate, &error), MF_STATUS_OK, error, "entity count after duplicate");
+    expect(countAfterDuplicate == count + 1, "duplicate action should add one entity");
+    expectStatus(mf_editor_update_selection(editor, selectedId, "replace", &error), MF_STATUS_OK, error, "select original for multi-edit");
+    expectStatus(mf_editor_update_selection(editor, duplicateId, "add", &error), MF_STATUS_OK, error, "add duplicate for multi-edit");
+    std::size_t multiEdited = 0;
+    expectStatus(
+        mf_editor_set_selected_inspector_value_json(editor, "Identity", "tag", "\"BridgeBatch\"", &multiEdited, &error),
+        MF_STATUS_OK,
+        error,
+        "edit common Inspector property"
+    );
+    expect(multiEdited == 2, "common Inspector edit should update both selected entities");
+    expectStatus(mf_editor_execute_command(editor, "edit.undo", &error), MF_STATUS_OK, error, "undo common Inspector edit");
+    MfEntityId ignoredEntityId = 0;
+    expectStatus(
+        mf_editor_entity_action(editor, duplicateId, "delete", "{}", &ignoredEntityId, &error),
+        MF_STATUS_OK,
+        error,
+        "delete duplicated entity"
+    );
+    expectStatus(mf_editor_update_selection(editor, selectedId, "replace", &error), MF_STATUS_OK, error, "restore selected entity");
+
     std::size_t commandCount = 0;
     expectStatus(mf_editor_command_count(editor, &commandCount, &error), MF_STATUS_OK, error, "command count");
     expect(commandCount >= 5, "command palette should expose core editor commands");
@@ -245,6 +479,39 @@ int main(int argc, char** argv)
     expect(spriteChanged == 1, "sprite undo should report a change");
     expectStatus(mf_editor_sprite_redo(editor, &spriteChanged, &error), MF_STATUS_OK, error, "redo sprite");
     expect(spriteChanged == 1, "sprite redo should report a change");
+    expectStatus(
+        mf_editor_sprite_transform(editor, "flip_horizontal", "{}", &spriteChanged, &error),
+        MF_STATUS_OK,
+        error,
+        "flip sprite horizontally"
+    );
+    expect(spriteChanged == 1, "sprite transform should create one history step");
+    required = 0;
+    expectStatus(
+        mf_editor_sprite_animation_clip_json(editor, 2, 2, 12.0F, nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "probe sprite animation timeline"
+    );
+    std::vector<char> spriteTimeline(required);
+    expectStatus(
+        mf_editor_sprite_animation_clip_json(
+            editor, 2, 2, 12.0F, spriteTimeline.data(), spriteTimeline.size(), &required, &error),
+        MF_STATUS_OK,
+        error,
+        "read sprite animation timeline"
+    );
+    expect(
+        fixedString(spriteTimeline.data(), spriteTimeline.size()).find("\"frame_count\":16")
+            != std::string::npos,
+        "sprite sheet timeline should expose all 2x2 frames"
+    );
+    expectStatus(
+        mf_editor_sprite_transform(editor, "unknown", "{}", &spriteChanged, &error),
+        MF_STATUS_INVALID_ARGUMENT,
+        error,
+        "reject unknown sprite transform"
+    );
     std::array<char, MF_PATH_CAPACITY> spritePath {};
     required = 0;
     expectStatus(
@@ -348,6 +615,178 @@ int main(int argc, char** argv)
         "Luau script list should include the saved document"
     );
 
+    const std::string breakpointsJson = "[{\"path\":\"" + luauPath
+        + "\",\"line\":null,\"function\":\"on_update\",\"enabled\":true}]";
+    expectStatus(
+        mf_editor_luau_set_breakpoints_json(editor, breakpointsJson.c_str(), &error),
+        MF_STATUS_OK,
+        error,
+        "set Luau breakpoints"
+    );
+    required = 0;
+    expectStatus(
+        mf_editor_luau_debug_state_json(editor, nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "probe Luau debugger state"
+    );
+    std::vector<char> debuggerState(required);
+    expectStatus(
+        mf_editor_luau_debug_state_json(
+            editor, debuggerState.data(), debuggerState.size(), &required, &error),
+        MF_STATUS_OK,
+        error,
+        "read Luau debugger state"
+    );
+    expect(
+        fixedString(debuggerState.data(), debuggerState.size()).find(luauPath) != std::string::npos,
+        "Luau debugger state should round-trip breakpoints"
+    );
+    expectStatus(
+        mf_editor_luau_debug_command(editor, "pause", &error),
+        MF_STATUS_OK,
+        error,
+        "request Luau debugger pause"
+    );
+    const std::string watchExpressions = "[\"self.speed\"]";
+    required = 0;
+    expectStatus(
+        mf_editor_luau_watches_json(
+            editor, watchExpressions.c_str(), nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "probe Luau watches"
+    );
+    std::vector<char> watchResults(required);
+    expectStatus(
+        mf_editor_luau_watches_json(
+            editor,
+            watchExpressions.c_str(),
+            watchResults.data(),
+            watchResults.size(),
+            &required,
+            &error),
+        MF_STATUS_OK,
+        error,
+        "read Luau watches"
+    );
+    expect(
+        fixedString(watchResults.data(), watchResults.size()).find("runtime is not paused") != std::string::npos,
+        "watch evaluation should report unavailable frame before the pause is reached"
+    );
+
+    const std::string graphPath = "scripts/visual_graphs/BridgeSmokeGraph.mfgraph";
+    const std::string graphSource = R"({"format":"miniforge.visual-graph","schema_version":1,"engine_version":"0.9.3.4","kind":"MiniForgeVisualGraph","runtime":"rust_visual_graph","name":"BridgeSmokeGraph","variables":{},"nodes":[{"id":"start","type":"EventStart","next":null}]})";
+    required = 0;
+    expectStatus(
+        mf_editor_visual_graph_validate_json(
+            editor, graphPath.c_str(), graphSource.c_str(), nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "probe Visual Graph validation"
+    );
+    std::vector<char> graphValidation(required);
+    expectStatus(
+        mf_editor_visual_graph_validate_json(
+            editor,
+            graphPath.c_str(),
+            graphSource.c_str(),
+            graphValidation.data(),
+            graphValidation.size(),
+            &required,
+            &error),
+        MF_STATUS_OK,
+        error,
+        "validate Visual Graph"
+    );
+    expect(
+        fixedString(graphValidation.data(), graphValidation.size()).find("\"valid\":true") != std::string::npos,
+        "Visual Graph validation should return a normalized valid payload"
+    );
+    expectStatus(
+        mf_editor_visual_graph_save(editor, graphPath.c_str(), graphSource.c_str(), &error),
+        MF_STATUS_OK,
+        error,
+        "save Visual Graph"
+    );
+    required = 0;
+    expectStatus(
+        mf_editor_visual_graph_catalog_json(editor, nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "probe Visual Graph catalog"
+    );
+    std::vector<char> graphCatalog(required);
+    expectStatus(
+        mf_editor_visual_graph_catalog_json(
+            editor, graphCatalog.data(), graphCatalog.size(), &required, &error),
+        MF_STATUS_OK,
+        error,
+        "read Visual Graph catalog"
+    );
+    const std::string catalogJson = fixedString(graphCatalog.data(), graphCatalog.size());
+    expect(catalogJson.find("output_pins") != std::string::npos,
+        "Visual Graph catalog should expose typed output pins");
+    expect(catalogJson.find("LogAndMove") != std::string::npos,
+        "Visual Graph catalog should expose backend templates");
+    expectStatus(
+        mf_editor_visual_graph_create_template(
+            editor,
+            "scripts/visual_graphs/BridgeTemplate.mfgraph",
+            "LogAndMove",
+            &error),
+        MF_STATUS_OK,
+        error,
+        "create Visual Graph from backend template"
+    );
+
+    expectStatus(
+        mf_editor_python_install_tools(editor, &error),
+        MF_STATUS_OK,
+        error,
+        "install trusted Python tools"
+    );
+    required = 0;
+    expectStatus(
+        mf_editor_python_tools_json(editor, nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "probe Python tools"
+    );
+    std::vector<char> pythonTools(required);
+    expectStatus(
+        mf_editor_python_tools_json(
+            editor, pythonTools.data(), pythonTools.size(), &required, &error),
+        MF_STATUS_OK,
+        error,
+        "read Python tools"
+    );
+    expect(fixedString(pythonTools.data(), pythonTools.size()).find("scene_report") != std::string::npos,
+        "installed Python suite should expose scene_report");
+    expectStatus(
+        mf_editor_python_run_tool(editor, "scene_report", "{}", &error),
+        MF_STATUS_OK,
+        error,
+        "run trusted Python scene report"
+    );
+    required = 0;
+    expectStatus(
+        mf_editor_python_last_result_json(editor, nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "probe Python result"
+    );
+    std::vector<char> pythonResult(required);
+    expectStatus(
+        mf_editor_python_last_result_json(
+            editor, pythonResult.data(), pythonResult.size(), &required, &error),
+        MF_STATUS_OK,
+        error,
+        "read Python result"
+    );
+    expect(fixedString(pythonResult.data(), pythonResult.size()).find("\"success\":true") != std::string::npos,
+        "trusted Python tool result should report success");
+
     expectStatus(
         mf_editor_export_runtime(editor, "debug", &error),
         MF_STATUS_OK,
@@ -378,6 +817,26 @@ int main(int argc, char** argv)
         fixedString(exportReport.data(), exportReport.size()).find("\"profile\":\"Debug\"") != std::string::npos,
         "runtime export report should describe the debug profile"
     );
+
+    required = 0;
+    expectStatus(
+        mf_editor_runtime_health_json(editor, nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "query runtime health size"
+    );
+    expect(required > 2, "runtime health JSON should include an object payload");
+    std::vector<char> runtimeHealth(required);
+    expectStatus(
+        mf_editor_runtime_health_json(editor, runtimeHealth.data(), runtimeHealth.size(), &required, &error),
+        MF_STATUS_OK,
+        error,
+        "read runtime health"
+    );
+    const std::string runtimeHealthJson(runtimeHealth.data());
+    expect(runtimeHealthJson.find("\"level\"") != std::string::npos, "runtime health should include a stability level");
+    expect(runtimeHealthJson.find("\"stability_score\"") != std::string::npos, "runtime health should include a stability score");
+    expect(runtimeHealthJson.find("\"entity_count\"") != std::string::npos, "runtime health should include entity pressure data");
 
     required = 0;
     expectStatus(

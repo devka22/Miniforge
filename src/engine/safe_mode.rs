@@ -78,7 +78,7 @@ impl SafeModeSettings {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "editor_core"))]
 mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};

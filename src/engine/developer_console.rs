@@ -126,6 +126,17 @@ impl DeveloperConsole {
         self.warning_count = 0;
     }
 
+    pub fn clear_errors(&mut self) {
+        self.structured_entries
+            .retain(|entry| entry.severity != ConsoleSeverity::Error);
+        self.entries = self
+            .structured_entries
+            .iter()
+            .map(|entry| (entry.channel.clone(), entry.message.clone()))
+            .collect();
+        self.recount();
+    }
+
     fn push_entry(&mut self, channel: String, message: String, severity: ConsoleSeverity) {
         if severity == ConsoleSeverity::Error {
             self.error_count += 1;

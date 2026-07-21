@@ -101,9 +101,15 @@ impl Diagnostics {
     }
 
     pub fn update_with_budget(&mut self, dt: f64, frame_budget_ms: f64) {
+        let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
+        let frame_budget_ms = if frame_budget_ms.is_finite() {
+            frame_budget_ms.max(0.1)
+        } else {
+            1000.0 / 60.0
+        };
         self.uptime += dt;
         self.frame_time_ms = dt * 1000.0;
-        self.frame_budget_ms = frame_budget_ms.max(0.1);
+        self.frame_budget_ms = frame_budget_ms;
         self.fps = if dt > 0.0 { 1.0 / dt } else { 0.0 };
         self.frames = self.frames.saturating_add(1);
         if self.frame_time_ms > self.frame_budget_ms {
@@ -165,9 +171,12 @@ impl Diagnostics {
         systems_time_ms: f64,
         slowest_system: Option<(String, f64)>,
     ) {
-        let target_frame_ms = advance.target_frame_delta * 1000.0;
+        let target_frame_ms = finite_non_negative(advance.target_frame_delta * 1000.0)
+            .max(self.frame_budget_ms)
+            .max(0.1);
+        let systems_time_ms = finite_non_negative(systems_time_ms);
         let (slowest_system, slowest_system_ms) = slowest_system
-            .map(|(name, ms)| (Some(name), ms))
+            .map(|(name, ms)| (Some(name), finite_non_negative(ms)))
             .unwrap_or((None, 0.0));
         let health = if advance.saturated_fixed_steps || advance.dropped_time > 0.0 {
             FrameHealth::Saturated
@@ -207,5 +216,30 @@ impl Diagnostics {
             self.average_frame_time_ms,
             self.warnings.len()
         )
+    }
+}
+
+fn finite_non_negative(value: f64) -> f64 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Diagnostics;
+
+    #[test]
+    fn invalid_samples_do_not_poison_rolling_diagnostics() {
+        let mut diagnostics = Diagnostics::default();
+        diagnostics.update_with_budget(f64::NAN, f64::INFINITY);
+        diagnostics.update_with_budget(1.0 / 60.0, 1000.0 / 60.0);
+        assert!(diagnostics.uptime.is_finite());
+        assert!(diagnostics.frame_time_ms.is_finite());
+        assert!(diagnostics.average_frame_time_ms.is_finite());
+        assert!(diagnostics.min_frame_time_ms.is_finite());
+        assert!(diagnostics.max_frame_time_ms.is_finite());
     }
 }
