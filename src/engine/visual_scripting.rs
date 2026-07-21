@@ -464,6 +464,48 @@ impl VisualScriptRuntime {
                         inventory.inventory_add_item(item, quantity, serde_json::json!({}));
                     }
                 }
+                "UseInventoryItem" => {
+                    let item = node.get("item").and_then(Value::as_str).unwrap_or("item");
+                    let used = GameAPI::use_item(entity, item);
+                    if node.get("true_next").is_some() || node.get("false_next").is_some() {
+                        next_override = branch_next(node, used);
+                    }
+                }
+                "SortInventory" => {
+                    let mode = node.get("mode").and_then(Value::as_str).unwrap_or("id");
+                    let _ = GameAPI::sort_inventory(entity, mode);
+                }
+                "SetSurvivalNeed" => {
+                    let need = node.get("need").and_then(Value::as_str).unwrap_or("hunger");
+                    let value = node.get("value").and_then(Value::as_f64).unwrap_or(100.0);
+                    let _ = GameAPI::set_survival_need(entity, need, value);
+                }
+                "ModifySurvivalNeed" => {
+                    let need = node.get("need").and_then(Value::as_str).unwrap_or("hunger");
+                    let delta = node.get("delta").and_then(Value::as_f64).unwrap_or(0.0);
+                    let _ = GameAPI::modify_survival_need(entity, need, delta);
+                }
+                "BranchSurvivalNeed" => {
+                    let need = node.get("need").and_then(Value::as_str).unwrap_or("hunger");
+                    let current = GameAPI::survival_need(entity, need).unwrap_or(0.0);
+                    let target = node.get("value").and_then(Value::as_f64).unwrap_or(0.0);
+                    let passed = compare_numbers(
+                        current,
+                        target,
+                        node.get("operator").and_then(Value::as_str).unwrap_or("<="),
+                    );
+                    next_override = branch_next(node, passed);
+                }
+                "CraftRecipe" => {
+                    let recipe = node
+                        .get("recipe")
+                        .and_then(Value::as_str)
+                        .unwrap_or("recipe");
+                    let crafted = GameAPI::craft(entity, recipe).crafted;
+                    if node.get("true_next").is_some() || node.get("false_next").is_some() {
+                        next_override = branch_next(node, crafted);
+                    }
+                }
                 "InventoryRemove" => {
                     let item = node.get("item").and_then(Value::as_str).unwrap_or("item");
                     let quantity = node.get("quantity").and_then(Value::as_i64).unwrap_or(1);

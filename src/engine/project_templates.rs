@@ -3,8 +3,10 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
+use crate::engine::archetype_library::ArchetypeLibrary;
 use crate::engine::asset_tools::AssetTools;
 use crate::engine::component::default_component;
+use crate::engine::prefab_manager::PrefabManager;
 use crate::entities::game_object::GameObject;
 
 pub struct ProjectTemplates;
@@ -108,16 +110,120 @@ impl ProjectTemplates {
 
     pub fn survival(project_path: impl AsRef<Path>) -> io::Result<Vec<std::path::PathBuf>> {
         let paths = AssetTools::get_project_paths(&project_path);
-        Ok(vec![
+        let scene = AssetTools::create_scene(&project_path, "Survival_Map")?;
+        AssetTools::write_json(&scene, &Self::survival_scene_data("Survival_Map"))?;
+        let recipes = AssetTools::create_json(&project_path, Some(&paths.data), "CraftingRecipes")?;
+        AssetTools::write_json(
+            &recipes,
+            &json!({
+                "format": "MiniForgeCraftingRecipes",
+                "recipes": [],
+                "schema": {
+                    "recipe": {"id": "string", "ingredients": "item stacks", "outputs": "item stacks"},
+                    "item_stack": {"id": "string", "quantity": "integer", "metadata": "object"}
+                }
+            }),
+        )?;
+        let library = ArchetypeLibrary::with_defaults();
+        let prefab_manager = PrefabManager::new(&project_path);
+        let mut prefabs = Vec::new();
+        for (key, filename) in [
+            ("survival_actor", "SurvivalActor.prefab"),
+            ("survival_loot_container", "LootContainer.prefab"),
+            ("survival_harvestable", "Harvestable.prefab"),
+            ("survival_crafting_station", "CraftingStation.prefab"),
+        ] {
+            let mut entity = library.instantiate(key, 0.0, 0.0, None).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("missing built-in archetype {key}"),
+                )
+            })?;
+            prefabs.push(prefab_manager.save_prefab(&mut entity, Some(filename))?);
+        }
+        let mut created = vec![
             AssetTools::create_visual_graph(&project_path, "SurvivalPlayer")?,
             AssetTools::create_json(&project_path, Some(&paths.data), "DayNightSystem")?,
-            AssetTools::create_json(&project_path, Some(&paths.data), "CraftingSystem")?,
-            AssetTools::create_prefab(&project_path, "ResourceNode")?,
-            AssetTools::create_prefab(&project_path, "Campfire")?,
-            AssetTools::create_json(&project_path, Some(&paths.data), "CraftingRecipes")?,
+            AssetTools::create_json(&project_path, Some(&paths.data), "SurvivalSettings")?,
+        ];
+        created.extend(prefabs);
+        created.extend([
+            recipes,
             AssetTools::create_json(&project_path, Some(&paths.data), "BiomeRules")?,
-            AssetTools::create_scene(&project_path, "Survival_Map")?,
-        ])
+            scene,
+        ]);
+        Ok(created)
+    }
+
+    fn survival_scene_data(scene_name: &str) -> Value {
+        let library = ArchetypeLibrary::with_defaults();
+        let specs = [
+            ("survival_actor", 4.0, 4.0),
+            ("survival_loot_container", 7.0, 4.0),
+            ("survival_harvestable", 10.0, 4.0),
+            ("survival_crafting_station", 13.0, 4.0),
+        ];
+        let mut entities = specs
+            .into_iter()
+            .filter_map(|(key, x, y)| library.instantiate(key, x, y, None))
+            .collect::<Vec<_>>();
+        entities.extend(Self::survival_hud_entities());
+        let serialized = entities
+            .iter_mut()
+            .map(GameObject::serialize)
+            .collect::<Vec<_>>();
+        let mut data = AssetTools::template_scene(scene_name);
+        data["entities"] = Value::Array(serialized);
+        data["settings"] = json!({
+            "genre": "Survival",
+            "starter_features": [
+                "health",
+                "survival_needs",
+                "weighted_inventory",
+                "searchable_loot",
+                "data_driven_crafting",
+                "harvestable_resources",
+                "automatic_survival_hud"
+            ],
+            "contains_game_content": false
+        });
+        data
+    }
+
+    fn survival_hud_entities() -> Vec<GameObject> {
+        [
+            ("SurvivalHealth", "Health", "health", 24.0),
+            ("SurvivalHunger", "Hunger", "hunger", 58.0),
+            ("SurvivalThirst", "Thirst", "thirst", 92.0),
+            ("SurvivalEnergy", "Energy", "energy", 126.0),
+            ("SurvivalStamina", "Stamina", "stamina", 160.0),
+        ]
+        .into_iter()
+        .map(|(name, label, source, y)| {
+            let mut entity = GameObject::new(0.0, 0.0, Some(name.to_string()));
+            entity.tag = "UI".to_string();
+            entity.layer = "UI".to_string();
+            entity.add_component(default_component("UIElement").expect("UIElement"));
+            entity
+                .add_component(default_component("SurvivalUIBinding").expect("SurvivalUIBinding"));
+            if let Some(ui) = entity.get_component_mut("UIElement") {
+                ui.set("element_type", json!("ProgressBar"));
+                ui.set("text", json!(label));
+                ui.set_f64("x", 24.0);
+                ui.set_f64("y", y);
+                ui.set_f64("width", 240.0);
+                ui.set_f64("height", 26.0);
+                ui.set_f64("progress", 100.0);
+                ui.set_f64("max_progress", 100.0);
+                ui.set("sorting_order", json!(100));
+            }
+            if let Some(binding) = entity.get_component_mut("SurvivalUIBinding") {
+                binding.set("source", json!(source));
+                binding.set("label", json!(label));
+            }
+            entity
+        })
+        .collect()
     }
 
     pub fn complete_playable_demo(

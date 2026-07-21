@@ -1,0 +1,111 @@
+# Componentes de supervivencia
+
+MiniForge incluye sistemas de supervivencia configurables en el inspector. Estos componentes son
+parte del motor: no contienen mapas, objetos, arte, balance ni reglas de un juego concreto.
+
+## Flujo sin código
+
+1. Crea un proyecto con la plantilla `Survival`.
+2. Usa el arquetipo `survival_actor` para el personaje.
+3. Coloca `survival_loot_container`, `survival_harvestable` y
+   `survival_crafting_station` donde corresponda.
+4. Configura objetos, pesos, efectos, tablas de loot y recetas editando las propiedades JSON de
+   los componentes.
+5. Conecta acciones desde Visual Script usando `UseInventoryItem`, `CraftRecipe`,
+   `SetSurvivalNeed`, `ModifySurvivalNeed` y `BranchSurvivalNeed`.
+
+El `GameplaySystem` actualiza automáticamente `SurvivalNeeds` durante el modo PLAY. `Health` e
+`Inventory` siguen siendo componentes independientes y pueden utilizarse en cualquier género.
+
+## Componentes
+
+- `Health`: vida máxima, vida actual, armadura y estado vivo.
+- `Inventory`: ranuras, pilas, peso máximo opcional y orden por ID, categoría o peso.
+- `SurvivalNeeds`: hambre, sed, energía, fatiga, resistencia, humedad, dolor, infección y
+  sangrado, con tasas configurables.
+- `SurvivalUIBinding`: enlaza una barra o etiqueta de `UIElement` con vida, una necesidad, peso o
+  ranuras del inventario; se actualiza automáticamente durante PLAY.
+- `LootContainer`: contenido persistente, tabla inicial, tabla oculta y estados de registro y
+  rebusca.
+- `CraftingBook`: recetas conocidas por un actor.
+- `CraftingStation`: recetas disponibles en una estación y etiquetas de estación.
+- `Harvestable`: recurso, cantidad, rendimiento, herramienta requerida y regeneración opcional.
+
+## Objetos consumibles
+
+Los efectos viven en los metadatos del objeto; no hace falta crear una clase nueva:
+
+```json
+{
+  "id": "consumable_a",
+  "quantity": 2,
+  "metadata": {
+    "category": "consumable",
+    "weight": 0.5,
+    "effects": {
+      "thirst": 30.0,
+      "health": 5.0,
+      "infection": -2.0
+    }
+  }
+}
+```
+
+`UseInventoryItem` o `GameAPI::use_item` consume una unidad y aplica automáticamente los efectos.
+
+## Recetas declarativas
+
+```json
+{
+  "id": "recipe_a",
+  "ingredients": [
+    {"id": "material_a", "quantity": 2}
+  ],
+  "outputs": [
+    {
+      "id": "crafted_a",
+      "quantity": 1,
+      "metadata": {"category": "tool", "weight": 0.8}
+    }
+  ]
+}
+```
+
+La fabricación es atómica: si faltan ingredientes, ranuras o capacidad de peso, el inventario no
+se modifica parcialmente.
+
+## Tablas de loot
+
+`loot_entries` y `hidden_entries` usan entradas ponderadas:
+
+```json
+[
+  {
+    "id": "material_a",
+    "weight": 2.0,
+    "min": 1,
+    "max": 3,
+    "metadata": {"category": "material", "weight": 0.2}
+  }
+]
+```
+
+El contenido se genera una sola vez de forma determinista y los estados `searched`, `rummaged` e
+`items` se serializan con la entidad.
+
+## API de alto nivel
+
+Para integraciones avanzadas, `SurvivalSystems` y `GameAPI` exponen operaciones directas:
+
+- `survival_state`, `survival_need`, `set_survival_need` y `modify_survival_need`.
+- `use_item`, `sort_inventory` e `inventory_weight`.
+- `search_loot_container`, `rummage_loot_container`, `take_container_item` y
+  `take_all_container_items`.
+- `can_craft`, `craft` y `craft_at`.
+- `harvest` y `survival_interact`.
+
+`survival_state` produce un modelo listo para enlazar a HUD: vida, necesidades, objetos, ranuras y
+peso. El diseñador de UI sugiere rutas como `player.needs.hunger`, `player.needs.thirst` y
+`player.inventory.weight`. La plantilla Survival incluye cinco `UIElement` reales enlazados con
+`SurvivalUIBinding`: vida, hambre, sed, energía y resistencia. Se pueden mover o rediseñar sin
+programar su actualización.

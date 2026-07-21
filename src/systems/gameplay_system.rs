@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Value, json};
 
 use crate::engine::component::default_component;
+use crate::engine::survival_systems::SurvivalSystems;
 use crate::entities::game_object::GameObject;
 use crate::map::grid::Grid;
 use crate::systems::command_system::CommandSystem;
@@ -47,6 +48,9 @@ impl GameplaySystem {
                 ("damage_events".to_string(), 0),
                 ("respawned".to_string(), 0),
                 ("loot_drops".to_string(), 0),
+                ("survival_actors".to_string(), 0),
+                ("survival_ui_bindings".to_string(), 0),
+                ("harvest_respawns".to_string(), 0),
                 ("nav_repaths".to_string(), 0),
                 ("nav_blocked".to_string(), 0),
             ]);
@@ -64,6 +68,8 @@ impl GameplaySystem {
         let mut spawn_requests = Vec::new();
         let mut nav_repaths = 0usize;
         let mut nav_blocked = 0usize;
+        let mut survival_actors = 0usize;
+        let mut harvest_respawns = 0usize;
 
         for index in 0..entities.len() {
             if !entities[index].enabled {
@@ -72,6 +78,9 @@ impl GameplaySystem {
 
             self.update_cooldown_timer_lifetime(&mut entities[index], dt, &mut pending_destroy);
             self.update_status_effects(&mut entities[index], dt);
+            let survival = SurvivalSystems::tick_entity(&mut entities[index], dt);
+            survival_actors += usize::from(survival.updated);
+            harvest_respawns += usize::from(survival.resource_respawned);
             self.update_stat_regen(&mut entities[index], dt);
             self.update_state_machine(&mut entities[index], dt);
             self.update_tween(&mut entities[index], dt);
@@ -128,6 +137,7 @@ impl GameplaySystem {
         entities.retain(|entity| !pending_destroy.contains(&entity.id));
         let destroyed = before.saturating_sub(entities.len());
         damage_events += destroyed;
+        let survival_ui_bindings = self.update_survival_ui_bindings(entities);
 
         self.stats = BTreeMap::from([
             (
@@ -154,9 +164,60 @@ impl GameplaySystem {
             ("damage_events".to_string(), damage_events),
             ("respawned".to_string(), respawned),
             ("loot_drops".to_string(), loot_drops),
+            ("survival_actors".to_string(), survival_actors),
+            ("survival_ui_bindings".to_string(), survival_ui_bindings),
+            ("harvest_respawns".to_string(), harvest_respawns),
             ("nav_repaths".to_string(), nav_repaths),
             ("nav_blocked".to_string(), nav_blocked),
         ]);
+    }
+
+    fn update_survival_ui_bindings(&self, entities: &mut [GameObject]) -> usize {
+        let snapshot = entities.to_vec();
+        let mut updated = 0;
+        for entity in entities {
+            let Some(binding) = entity.get_component("SurvivalUIBinding").cloned() else {
+                continue;
+            };
+            if !binding.enabled {
+                continue;
+            }
+            let target_tag = binding.get_string("target_tag", "Player");
+            let Some(target) = snapshot
+                .iter()
+                .find(|candidate| candidate.tag == target_tag)
+            else {
+                continue;
+            };
+            let source = binding.get_string("source", "health");
+            let Some((value, max)) = survival_binding_value(target, &source) else {
+                continue;
+            };
+            let Some(ui) = entity.get_component_mut("UIElement") else {
+                continue;
+            };
+            let output = binding.get_string("output", "progress");
+            if output == "progress" {
+                ui.set_f64("progress", value.clamp(0.0, max));
+                ui.set_f64("max_progress", max.max(0.0001));
+            }
+            if output == "text" || binding.get_bool("show_value", true) {
+                let precision = binding.get_i64("precision", 0).clamp(0, 6) as usize;
+                let label = binding.get_string("label", "");
+                let suffix = binding.get_string("suffix", "");
+                let rendered = format!("{value:.precision$}{suffix}");
+                ui.set(
+                    "text",
+                    json!(if label.is_empty() {
+                        rendered
+                    } else {
+                        format!("{label} {rendered}")
+                    }),
+                );
+            }
+            updated += 1;
+        }
+        updated
     }
 
     fn update_cooldown_timer_lifetime(
@@ -606,6 +667,46 @@ impl GameplaySystem {
     }
 }
 
+fn survival_binding_value(entity: &GameObject, source: &str) -> Option<(f64, f64)> {
+    let source = source
+        .trim()
+        .strip_prefix("player.")
+        .unwrap_or(source.trim());
+    match source {
+        "health" | "health.value" => {
+            let health = entity.get_component("Health")?;
+            Some((
+                health.get_f64("health", 0.0),
+                health.get_f64("max_health", 100.0).max(0.0001),
+            ))
+        }
+        "health.percent" | "health_percent" => {
+            let health = entity.get_component("Health")?;
+            let max = health.get_f64("max_health", 100.0).max(0.0001);
+            Some((health.get_f64("health", 0.0) / max, 1.0))
+        }
+        "inventory.weight" | "inventory_weight" => {
+            let inventory = entity.get_component("Inventory")?;
+            let value = inventory.inventory_weight();
+            let configured_max = inventory.get_f64("max_weight", 0.0);
+            Some((value, configured_max.max(value).max(0.0001)))
+        }
+        "inventory.slots_used" | "inventory_slots_used" => {
+            let inventory = entity.get_component("Inventory")?;
+            let value = inventory
+                .get("items")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0) as f64;
+            Some((value, inventory.get_i64("capacity", 0).max(1) as f64))
+        }
+        source => {
+            let need = source.strip_prefix("needs.").unwrap_or(source);
+            SurvivalSystems::need(entity, need).map(|value| (value, 100.0))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NavUpdateOutcome {
     repathed: bool,
@@ -928,5 +1029,52 @@ mod tests {
 
         assert_eq!((entities[0].x, entities[0].y), position);
         assert_eq!(system.stats.get("nav_repaths"), Some(&0));
+    }
+
+    #[test]
+    fn gameplay_system_updates_survival_components_without_scripts() {
+        let mut actor = GameObject::new_unit(0.0, 0.0, Some("Actor".to_string()));
+        actor.add_component(default_component("Health").unwrap());
+        let mut needs = default_component("SurvivalNeeds").unwrap();
+        needs.set_f64("hunger_decay_per_second", 10.0);
+        actor.add_component(needs);
+        let mut entities = vec![actor];
+        let mut system = GameplaySystem::default();
+
+        system.update_entities(&mut entities, 0.05, "PLAY");
+
+        assert!(
+            entities[0]
+                .get_component("SurvivalNeeds")
+                .unwrap()
+                .get_f64("hunger", 100.0)
+                < 100.0
+        );
+        assert_eq!(system.stats.get("survival_actors"), Some(&1));
+    }
+
+    #[test]
+    fn survival_ui_binding_updates_progress_without_scripts() {
+        let mut actor = GameObject::new_unit(0.0, 0.0, Some("Actor".to_string()));
+        actor.tag = "Player".to_string();
+        actor.add_component(default_component("Health").unwrap());
+        actor
+            .get_component_mut("Health")
+            .unwrap()
+            .set_f64("health", 42.0);
+
+        let mut hud = GameObject::new(0.0, 0.0, Some("SurvivalHealth".to_string()));
+        hud.add_component(default_component("UIElement").unwrap());
+        hud.add_component(default_component("SurvivalUIBinding").unwrap());
+        let mut entities = vec![actor, hud];
+        let mut system = GameplaySystem::default();
+
+        system.update_entities(&mut entities, 0.0, "PLAY");
+
+        let ui = entities[1].get_component("UIElement").unwrap();
+        assert_eq!(ui.get_f64("progress", 0.0), 42.0);
+        assert_eq!(ui.get_f64("max_progress", 0.0), 100.0);
+        assert_eq!(ui.get_string("text", ""), "Health 42");
+        assert_eq!(system.stats.get("survival_ui_bindings"), Some(&1));
     }
 }

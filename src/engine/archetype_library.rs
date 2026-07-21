@@ -304,5 +304,58 @@ fn default_archetypes() -> Vec<EntityArchetype> {
             "Resources",
             vec![json!("ResourceNode"), json!("ObjectiveMarker")],
         ),
+        archetype(
+            "survival_actor",
+            "SurvivalActor",
+            "Unit",
+            "Player",
+            "Units",
+            vec![
+                json!("Health"),
+                json!("SurvivalNeeds"),
+                json!({"component_type": "Inventory", "capacity": 18, "max_weight": 24.0}),
+                json!("Equipment"),
+                json!("CraftingBook"),
+                json!("StatusEffects"),
+                json!("Interaction"),
+                json!("Saveable"),
+            ],
+        ),
+        archetype(
+            "survival_loot_container",
+            "LootContainer",
+            "GameObject",
+            "Interactable",
+            "World",
+            vec![
+                json!("LootContainer"),
+                json!({"component_type": "Interaction", "prompt": "Open", "action_name": "loot"}),
+                json!("Saveable"),
+            ],
+        ),
+        archetype(
+            "survival_harvestable",
+            "Harvestable",
+            "GameObject",
+            "Resource",
+            "World",
+            vec![
+                json!("Harvestable"),
+                json!({"component_type": "Interaction", "prompt": "Gather", "action_name": "harvest"}),
+                json!("Saveable"),
+            ],
+        ),
+        archetype(
+            "survival_crafting_station",
+            "CraftingStation",
+            "GameObject",
+            "Interactable",
+            "World",
+            vec![
+                json!("CraftingStation"),
+                json!({"component_type": "Interaction", "prompt": "Craft", "action_name": "craft"}),
+                json!("Saveable"),
+            ],
+        ),
     ]
 }

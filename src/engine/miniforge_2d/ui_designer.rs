@@ -492,6 +492,13 @@ impl UiDesigner2D {
     pub fn binding_candidates(&self) -> Vec<String> {
         vec![
             "player.health_percent".to_string(),
+            "player.needs.hunger".to_string(),
+            "player.needs.thirst".to_string(),
+            "player.needs.energy".to_string(),
+            "player.needs.fatigue".to_string(),
+            "player.needs.stamina".to_string(),
+            "player.inventory.items".to_string(),
+            "player.inventory.weight".to_string(),
             "player.mana_percent".to_string(),
             "player.coins".to_string(),
             "quest.active_title".to_string(),
