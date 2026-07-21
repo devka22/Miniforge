@@ -10,6 +10,7 @@ autobins = false
 [features]
 default = ["editor_core"]
 runtime = []
+wgpu_runtime = ["runtime", "dep:winit"]
 editor_ffi = ["editor_core"]
 editor_core = [
     "runtime",
@@ -39,6 +40,11 @@ required-features = ["runtime"]
 name = "miniforge_dev"
 path = "src/bin/miniforge_dev.rs"
 required-features = ["editor_core"]
+
+[[bin]]
+name = "miniforge_wgpu_preview"
+path = "src/bin/miniforge_wgpu_preview.rs"
+required-features = ["wgpu_runtime"]
 
 [dependencies]
 guillotiere = "0.7"
@@ -71,6 +77,7 @@ usvg = "0.47.0"
 bytemuck = { version = "1.24", features = ["derive"] }
 pollster = "1.0"
 wgpu = "30.0.0"
+winit = { version = "0.30.13", optional = true }
 
 [package.metadata.miniforge]
 engine-version = "0.9.3.4"

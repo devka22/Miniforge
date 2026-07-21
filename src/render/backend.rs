@@ -65,6 +65,15 @@ pub struct SpriteDrawCommand {
     pub color: [f32; 4],
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct SpriteRegionDrawCommand {
+    pub sprite: SpriteDrawCommand,
+    /// Normalized atlas rectangle: `[u_min, v_min, u_max, v_max]`.
+    pub uv_rect: [f32; 4],
+    /// Optional pixel-space clip rectangle: `[x, y, width, height]`.
+    pub clip_rect: Option<[u32; 4]>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TilemapDrawCommand {
     pub tilemap_id: u64,
@@ -168,6 +177,9 @@ pub trait RenderBackend {
     fn end_frame(&mut self) -> MFResult<()>;
     fn resize(&mut self, width: u32, height: u32) -> MFResult<()>;
     fn draw_sprite(&mut self, cmd: SpriteDrawCommand) -> MFResult<()>;
+    fn draw_sprite_region(&mut self, cmd: SpriteRegionDrawCommand) -> MFResult<()> {
+        self.draw_sprite(cmd.sprite)
+    }
     fn draw_tilemap(&mut self, cmd: TilemapDrawCommand) -> MFResult<()>;
     fn draw_particles(&mut self, cmd: ParticleDrawCommand) -> MFResult<()>;
     fn draw_ui(&mut self, cmd: UiDrawCommand) -> MFResult<()>;

@@ -25,12 +25,14 @@ Primary references:
 
 `WgpuBackend` now creates a real physical adapter, device and queue, compiles a WGSL sprite
 pipeline, uploads RGBA8 textures, renders rotated/tinted sprite quads and supports deterministic GPU
-readback. The same off-screen target is usable by renderer tests, Qt previews and future window
-surfaces. Hardware coverage includes an ignored test that renders colored and textured geometry and
-checks the resulting pixels.
+readback. It supports both an off-screen target and owned window surfaces with sRGB selection,
+vsync, resize/reconfigure, occlusion handling and presentation. Atlas UV regions and pixel-space
+scissor clipping share the same sprite path. Hardware coverage includes an ignored test that renders
+colored and atlas-textured geometry and checks the resulting pixels. A generic
+`miniforge_wgpu_preview` binary exercises the window-surface path.
 
-The main game window still uses Macroquad while surface presentation, tilemap/UI/particle command
-geometry and device-loss recovery are completed. Projects should therefore leave
+The main project runtime still uses Macroquad while project scene extraction, tilemap/UI/particle
+command geometry and full device-loss recreation are completed. Projects should therefore leave
 `experimental_wgpu` disabled for exports that need the full production renderer. Project Settings
 keeps this migration state visible instead of hiding it in JSON.
 
@@ -38,9 +40,10 @@ keeps this migration state visible instead of hiding it in JSON.
 
 The preview becomes playable only after these gates pass on macOS, Windows and Linux:
 
-1. Window surface, presentation and device-loss lifecycle. Physical adapter/device/queue are done.
-2. Sprite atlas regions, camera transforms, clipping, blend modes and stable batching. Full-texture
-   uploads plus pixel-space sprite transforms are done.
+1. Window surface, presentation and device-loss lifecycle. Surface configuration, presentation,
+   resize and recoverable reconfiguration are done; complete device-loss recreation remains.
+2. Sprite atlas regions, camera transforms, clipping, blend modes and stable batching. Atlas
+   regions, clipping, full-texture uploads and pixel-space sprite transforms are done.
 3. Chunked tilemaps, UI draw lists, text, particles and render textures.
 4. WGSL materials, post-processing and hot reload with readable shader diagnostics.
 5. Compute paths for particles and tile visibility, each with a CPU fallback.
