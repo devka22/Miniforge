@@ -1750,245 +1750,242 @@ impl EditorCore {
             ));
         }
 
-        let result =
-            match action {
-                "rename" => {
-                    let name = required_payload_string(&payload, "name")?;
-                    if name.trim().is_empty() {
-                        return Err(EditorCoreError::new(
-                            EditorCoreErrorKind::InvalidArgument,
-                            "Entity name cannot be empty",
-                        ));
-                    }
-                    self.game_mut()?
-                        .edit_inspector_value(entity_id, "Transform", "name", json!(name))
-                        .map_err(|message| {
-                            EditorCoreError::new(EditorCoreErrorKind::CommandFailed, message)
-                        })?;
-                    None
+        let result = match action {
+            "rename" => {
+                let name = required_payload_string(&payload, "name")?;
+                if name.trim().is_empty() {
+                    return Err(EditorCoreError::new(
+                        EditorCoreErrorKind::InvalidArgument,
+                        "Entity name cannot be empty",
+                    ));
                 }
-                "duplicate" => Some(self.game_mut()?.duplicate_entity(entity_id).ok_or_else(
-                    || {
+                self.game_mut()?
+                    .edit_inspector_value(entity_id, "Transform", "name", json!(name))
+                    .map_err(|message| {
+                        EditorCoreError::new(EditorCoreErrorKind::CommandFailed, message)
+                    })?;
+                None
+            }
+            "duplicate" => Some(
+                self.game_mut()?
+                    .duplicate_entity(entity_id)
+                    .ok_or_else(|| {
                         EditorCoreError::new(
                             EditorCoreErrorKind::CommandFailed,
                             "Entity was not duplicated",
                         )
-                    },
-                )?),
-                "delete" => {
-                    if !self.game_mut()?.delete_entity(entity_id) {
-                        return Err(EditorCoreError::new(
-                            EditorCoreErrorKind::CommandFailed,
-                            "Entity was not deleted",
-                        ));
-                    }
-                    None
-                }
-                "reparent" => {
-                    let parent_id = required_payload_u64(&payload, "parent_id")?;
-                    if !self.game_mut()?.set_entity_parent(entity_id, parent_id) {
-                        return Err(EditorCoreError::new(
-                            EditorCoreErrorKind::CommandFailed,
-                            "Invalid hierarchy operation (missing node or cycle)",
-                        ));
-                    }
-                    None
-                }
-                "unparent" => {
-                    if !self.game_mut()?.clear_entity_parent(entity_id) {
-                        return Err(EditorCoreError::new(
-                            EditorCoreErrorKind::CommandFailed,
-                            "Entity parent was not cleared",
-                        ));
-                    }
-                    None
-                }
-                "set_visible" | "set_enabled" | "set_locked" => {
-                    let value = required_payload_bool(&payload, "value")?;
-                    let key = action.trim_start_matches("set_");
-                    self.game_mut()?
-                        .edit_inspector_value(entity_id, "Identity", key, json!(value))
-                        .map_err(|message| {
-                            EditorCoreError::new(EditorCoreErrorKind::CommandFailed, message)
-                        })?;
-                    None
-                }
-                "apply_asset" => {
-                    let relative_path = required_payload_string(&payload, "relative_path")?;
-                    let record = self
-                        .game()?
-                        .asset_database
-                        .assets
-                        .get(relative_path)
-                        .cloned()
-                        .ok_or_else(|| {
-                            EditorCoreError::new(
-                                EditorCoreErrorKind::NotFound,
-                                format!("Indexed asset not found: {relative_path}"),
-                            )
-                        })?;
-                    let asset = asset_from_record(&record);
-                    if !matches!(
-                        asset.asset_type.as_str(),
-                        "Sprite2D"
-                            | "SpriteSheet"
-                            | "AnimationBlueprint2D"
-                            | "FlipbookAnimation2D"
-                            | "Animation"
-                            | "BlueprintGraph2D"
-                            | "Script"
-                            | "LuauScript"
-                            | "Material"
-                            | "Material2D"
-                            | "Shader"
-                            | "Texture"
-                            | "Texture2D"
-                            | "Image"
-                            | "ImageTexture2D"
-                    ) {
-                        return Err(EditorCoreError::new(
-                            EditorCoreErrorKind::InvalidArgument,
-                            format!(
-                                "Asset type cannot be assigned to an entity: {}",
-                                record.asset_type
-                            ),
-                        ));
-                    }
-                    let game = self.game_mut()?;
-                    let before = game.capture_editor_snapshot();
-                    let entity = game.get_entity_by_id_mut(entity_id).ok_or_else(|| {
-                        EditorCoreError::new(EditorCoreErrorKind::NotFound, "Entity not found")
-                    })?;
-                    let report = EditorAssetConnector::apply_content_asset(entity, &asset);
-                    game.sync_world();
-                    game.mark_scene_dirty("Apply Asset");
-                    game.scene_save_manager.note_entity_dirty(entity_id);
-                    game.push_editor_command(
-                        "Apply Asset",
-                        EditorCommandKind::SceneOperation {
-                            name: format!("Apply {}", record.asset_type),
-                        },
-                        before,
-                    );
-                    game.console.log(
-                        format!(
-                            "Applied {} to entity #{} ({})",
-                            relative_path, entity_id, report.asset_type
-                        ),
-                        "EDITOR",
-                    );
-                    None
-                }
-                "collision_vertex_move" | "collision_vertex_add" | "collision_vertex_remove" => {
-                    let index = if action == "collision_vertex_add" {
-                        None
-                    } else {
-                        Some(required_payload_u64(&payload, "index")? as usize)
-                    };
-                    let local = if action == "collision_vertex_remove" {
-                        None
-                    } else {
-                        Some((
-                            required_payload_f64(&payload, "x")?,
-                            required_payload_f64(&payload, "y")?,
-                        ))
-                    };
-                    let game = self.game_mut()?;
-                    let before = game.capture_editor_snapshot();
-                    let entity = game.get_entity_by_id_mut(entity_id).ok_or_else(|| {
-                        EditorCoreError::new(EditorCoreErrorKind::NotFound, "Entity not found")
-                    })?;
-                    let changed = match action {
-                        "collision_vertex_move" => EditorSpatialTools2D::move_collision_vertex(
-                            entity,
-                            index.expect("validated index"),
-                            local.expect("validated local point"),
-                            None,
-                        ),
-                        "collision_vertex_add" => EditorSpatialTools2D::add_collision_vertex(
-                            entity,
-                            local.expect("validated local point"),
-                        ),
-                        "collision_vertex_remove" => EditorSpatialTools2D::remove_collision_vertex(
-                            entity,
-                            index.expect("validated index"),
-                        ),
-                        _ => unreachable!(),
-                    };
-                    if !changed {
-                        return Err(EditorCoreError::new(
-                            EditorCoreErrorKind::CommandFailed,
-                            format!("Collision vertex action could not be applied: {action}"),
-                        ));
-                    }
-                    game.sync_world();
-                    game.mark_scene_dirty("Edit Collision Polygon");
-                    game.scene_save_manager.note_entity_dirty(entity_id);
-                    game.push_editor_command(
-                        "Edit Collision Polygon",
-                        EditorCommandKind::SceneOperation {
-                            name: action.to_string(),
-                        },
-                        before,
-                    );
-                    None
-                }
-                "reset_transform" => {
-                    let game = self.game_mut()?;
-                    let before = game.capture_editor_snapshot();
-                    let entity = game.get_entity_by_id_mut(entity_id).ok_or_else(|| {
-                        EditorCoreError::new(EditorCoreErrorKind::NotFound, "Entity not found")
-                    })?;
-                    InspectorEditor::reset_transform(entity);
-                    game.sync_world();
-                    game.mark_scene_dirty("Reset Transform");
-                    game.push_editor_command(
-                        "Reset Transform",
-                        EditorCommandKind::SceneOperation {
-                            name: "Reset Transform".to_string(),
-                        },
-                        before,
-                    );
-                    None
-                }
-                "add_component" => {
-                    let component_type = required_payload_string(&payload, "component_type")?;
-                    if !self
-                        .game_mut()?
-                        .add_component_to_entity(entity_id, component_type)
-                    {
-                        return Err(EditorCoreError::new(
-                            EditorCoreErrorKind::InvalidArgument,
-                            format!("Unknown component type: {component_type}"),
-                        ));
-                    }
-                    None
-                }
-                "add_component_bundle" => {
-                    let bundle = required_payload_string(&payload, "bundle")?;
-                    let _ = add_component_bundle_to_entities(
-                        self.game_mut()?,
-                        &[entity_id],
-                        bundle,
-                    )?;
-                    None
-                }
-                "remove_component" => {
-                    let component_type = required_payload_string(&payload, "component_type")?;
-                    self.game_mut()?
-                        .remove_component_from_entity(entity_id, component_type)
-                        .map_err(|message| {
-                            EditorCoreError::new(EditorCoreErrorKind::CommandFailed, message)
-                        })?;
-                    None
-                }
-                _ => {
+                    })?,
+            ),
+            "delete" => {
+                if !self.game_mut()?.delete_entity(entity_id) {
                     return Err(EditorCoreError::new(
-                        EditorCoreErrorKind::InvalidArgument,
-                        format!("Unknown entity action: {action}"),
+                        EditorCoreErrorKind::CommandFailed,
+                        "Entity was not deleted",
                     ));
                 }
-            };
+                None
+            }
+            "reparent" => {
+                let parent_id = required_payload_u64(&payload, "parent_id")?;
+                if !self.game_mut()?.set_entity_parent(entity_id, parent_id) {
+                    return Err(EditorCoreError::new(
+                        EditorCoreErrorKind::CommandFailed,
+                        "Invalid hierarchy operation (missing node or cycle)",
+                    ));
+                }
+                None
+            }
+            "unparent" => {
+                if !self.game_mut()?.clear_entity_parent(entity_id) {
+                    return Err(EditorCoreError::new(
+                        EditorCoreErrorKind::CommandFailed,
+                        "Entity parent was not cleared",
+                    ));
+                }
+                None
+            }
+            "set_visible" | "set_enabled" | "set_locked" => {
+                let value = required_payload_bool(&payload, "value")?;
+                let key = action.trim_start_matches("set_");
+                self.game_mut()?
+                    .edit_inspector_value(entity_id, "Identity", key, json!(value))
+                    .map_err(|message| {
+                        EditorCoreError::new(EditorCoreErrorKind::CommandFailed, message)
+                    })?;
+                None
+            }
+            "apply_asset" => {
+                let relative_path = required_payload_string(&payload, "relative_path")?;
+                let record = self
+                    .game()?
+                    .asset_database
+                    .assets
+                    .get(relative_path)
+                    .cloned()
+                    .ok_or_else(|| {
+                        EditorCoreError::new(
+                            EditorCoreErrorKind::NotFound,
+                            format!("Indexed asset not found: {relative_path}"),
+                        )
+                    })?;
+                let asset = asset_from_record(&record);
+                if !matches!(
+                    asset.asset_type.as_str(),
+                    "Sprite2D"
+                        | "SpriteSheet"
+                        | "AnimationBlueprint2D"
+                        | "FlipbookAnimation2D"
+                        | "Animation"
+                        | "BlueprintGraph2D"
+                        | "Script"
+                        | "LuauScript"
+                        | "Material"
+                        | "Material2D"
+                        | "Shader"
+                        | "Texture"
+                        | "Texture2D"
+                        | "Image"
+                        | "ImageTexture2D"
+                ) {
+                    return Err(EditorCoreError::new(
+                        EditorCoreErrorKind::InvalidArgument,
+                        format!(
+                            "Asset type cannot be assigned to an entity: {}",
+                            record.asset_type
+                        ),
+                    ));
+                }
+                let game = self.game_mut()?;
+                let before = game.capture_editor_snapshot();
+                let entity = game.get_entity_by_id_mut(entity_id).ok_or_else(|| {
+                    EditorCoreError::new(EditorCoreErrorKind::NotFound, "Entity not found")
+                })?;
+                let report = EditorAssetConnector::apply_content_asset(entity, &asset);
+                game.sync_world();
+                game.mark_scene_dirty("Apply Asset");
+                game.scene_save_manager.note_entity_dirty(entity_id);
+                game.push_editor_command(
+                    "Apply Asset",
+                    EditorCommandKind::SceneOperation {
+                        name: format!("Apply {}", record.asset_type),
+                    },
+                    before,
+                );
+                game.console.log(
+                    format!(
+                        "Applied {} to entity #{} ({})",
+                        relative_path, entity_id, report.asset_type
+                    ),
+                    "EDITOR",
+                );
+                None
+            }
+            "collision_vertex_move" | "collision_vertex_add" | "collision_vertex_remove" => {
+                let index = if action == "collision_vertex_add" {
+                    None
+                } else {
+                    Some(required_payload_u64(&payload, "index")? as usize)
+                };
+                let local = if action == "collision_vertex_remove" {
+                    None
+                } else {
+                    Some((
+                        required_payload_f64(&payload, "x")?,
+                        required_payload_f64(&payload, "y")?,
+                    ))
+                };
+                let game = self.game_mut()?;
+                let before = game.capture_editor_snapshot();
+                let entity = game.get_entity_by_id_mut(entity_id).ok_or_else(|| {
+                    EditorCoreError::new(EditorCoreErrorKind::NotFound, "Entity not found")
+                })?;
+                let changed = match action {
+                    "collision_vertex_move" => EditorSpatialTools2D::move_collision_vertex(
+                        entity,
+                        index.expect("validated index"),
+                        local.expect("validated local point"),
+                        None,
+                    ),
+                    "collision_vertex_add" => EditorSpatialTools2D::add_collision_vertex(
+                        entity,
+                        local.expect("validated local point"),
+                    ),
+                    "collision_vertex_remove" => EditorSpatialTools2D::remove_collision_vertex(
+                        entity,
+                        index.expect("validated index"),
+                    ),
+                    _ => unreachable!(),
+                };
+                if !changed {
+                    return Err(EditorCoreError::new(
+                        EditorCoreErrorKind::CommandFailed,
+                        format!("Collision vertex action could not be applied: {action}"),
+                    ));
+                }
+                game.sync_world();
+                game.mark_scene_dirty("Edit Collision Polygon");
+                game.scene_save_manager.note_entity_dirty(entity_id);
+                game.push_editor_command(
+                    "Edit Collision Polygon",
+                    EditorCommandKind::SceneOperation {
+                        name: action.to_string(),
+                    },
+                    before,
+                );
+                None
+            }
+            "reset_transform" => {
+                let game = self.game_mut()?;
+                let before = game.capture_editor_snapshot();
+                let entity = game.get_entity_by_id_mut(entity_id).ok_or_else(|| {
+                    EditorCoreError::new(EditorCoreErrorKind::NotFound, "Entity not found")
+                })?;
+                InspectorEditor::reset_transform(entity);
+                game.sync_world();
+                game.mark_scene_dirty("Reset Transform");
+                game.push_editor_command(
+                    "Reset Transform",
+                    EditorCommandKind::SceneOperation {
+                        name: "Reset Transform".to_string(),
+                    },
+                    before,
+                );
+                None
+            }
+            "add_component" => {
+                let component_type = required_payload_string(&payload, "component_type")?;
+                if !self
+                    .game_mut()?
+                    .add_component_to_entity(entity_id, component_type)
+                {
+                    return Err(EditorCoreError::new(
+                        EditorCoreErrorKind::InvalidArgument,
+                        format!("Unknown component type: {component_type}"),
+                    ));
+                }
+                None
+            }
+            "add_component_bundle" => {
+                let bundle = required_payload_string(&payload, "bundle")?;
+                let _ = add_component_bundle_to_entities(self.game_mut()?, &[entity_id], bundle)?;
+                None
+            }
+            "remove_component" => {
+                let component_type = required_payload_string(&payload, "component_type")?;
+                self.game_mut()?
+                    .remove_component_from_entity(entity_id, component_type)
+                    .map_err(|message| {
+                        EditorCoreError::new(EditorCoreErrorKind::CommandFailed, message)
+                    })?;
+                None
+            }
+            _ => {
+                return Err(EditorCoreError::new(
+                    EditorCoreErrorKind::InvalidArgument,
+                    format!("Unknown entity action: {action}"),
+                ));
+            }
+        };
         self.refresh_scene_cache();
         Ok(result)
     }
