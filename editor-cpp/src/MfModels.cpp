@@ -42,6 +42,7 @@ QVector<MfCommandItem> shellCommands()
         shellCommand(QStringLiteral("workspace.ai"), QStringLiteral("Open Forge AI Workspace"), QStringLiteral("Workspace")),
         shellCommand(QStringLiteral("workspace.build"), QStringLiteral("Open Build Workspace"), QStringLiteral("Workspace")),
         shellCommand(QStringLiteral("workspace.debug"), QStringLiteral("Open Debug Workspace"), QStringLiteral("Workspace")),
+        shellCommand(QStringLiteral("workspace.sprites"), QStringLiteral("Open Sprite Studio Workspace"), QStringLiteral("Workspace")),
         shellCommand(QStringLiteral("panel.content"), QStringLiteral("Focus Content Browser"), QStringLiteral("Panels"), QStringLiteral("Ctrl+Space")),
         shellCommand(QStringLiteral("panel.console"), QStringLiteral("Focus Console"), QStringLiteral("Panels"), QStringLiteral("Ctrl+`")),
         shellCommand(QStringLiteral("panel.hierarchy"), QStringLiteral("Focus Hierarchy"), QStringLiteral("Panels"), QStringLiteral("Ctrl+Shift+H")),

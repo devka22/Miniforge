@@ -148,10 +148,21 @@ impl EditorToolSessions {
             )
             .unwrap_or_else(|| TilemapEditor2D::new(24, 16)),
         );
-        let ui_path = "assets/ui/hud.mfui";
-        let designer = load_json::<UiCanvas2D>(&project_path.join(ui_path))
+        let canonical_ui_path = project_path.join("assets/ui/hud.mfui");
+        let ui_file = canonical_ui_path
+            .is_file()
+            .then_some(canonical_ui_path)
+            .or_else(|| find_first_file_with_extension(&project_path.join("assets/ui"), "mfui"));
+        let ui_path = ui_file
+            .as_ref()
+            .and_then(|path| path.strip_prefix(&project_path).ok())
+            .map(|path| path.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|| "assets/ui/hud.mfui".to_string());
+        let designer = ui_file
+            .as_ref()
+            .and_then(|path| load_json::<UiCanvas2D>(path))
             .map(|canvas| UiDesigner2D {
-                document_path: ui_path.to_string(),
+                document_path: ui_path.clone(),
                 animation_timeline: canvas.animations.clone(),
                 canvas,
                 ..UiDesigner2D::default()
@@ -787,6 +798,7 @@ impl EditorToolSessions {
                     ),
                     "pause" => UiDesigner2D::pause_menu(),
                     "settings" => UiDesigner2D::settings_menu(),
+                    "survival_hud" => UiDesigner2D::survival_hud(),
                     _ => UiDesigner2D::default(),
                 };
                 self.ui_designer.document_path = self.ui_designer.document.document_path.clone();
@@ -1044,6 +1056,8 @@ impl EditorToolSessions {
             "hierarchy": hierarchy,
             "preview": self.ui_designer.document.preview_layout(),
             "selected_widget_data": selected_widget_data,
+            "binding_candidates": self.ui_designer.document.binding_candidates(),
+            "binding_property_candidates": self.ui_designer.document.binding_property_candidates(),
             "validation": self.ui_designer.document.validate(),
         })
     }
@@ -1273,6 +1287,29 @@ fn find_first_image(root: &Path) -> Option<PathBuf> {
                     "png" | "jpg" | "jpeg"
                 )
             })
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn find_first_file_with_extension(root: &Path, expected_extension: &str) -> Option<PathBuf> {
+    let mut entries = fs::read_dir(root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            if let Some(found) = find_first_file_with_extension(&path, expected_extension) {
+                return Some(found);
+            }
+        } else if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case(expected_extension))
         {
             return Some(path);
         }
@@ -1593,6 +1630,59 @@ mod tests {
         let saved: Value =
             serde_json::from_slice(&fs::read(root.join("assets/ui/hud.mfui")).unwrap()).unwrap();
         assert!(saved.get("widgets").is_some());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ui_designer_exposes_survival_hud_and_binding_catalog_to_frontend() {
+        let root = temp_project("survival_hud");
+        let mut sessions = EditorToolSessions::default();
+        sessions.open_project(&root).unwrap();
+        sessions
+            .action("ui_designer", "new", &json!({"template":"survival_hud"}))
+            .unwrap();
+
+        let state = sessions.state("ui_designer").unwrap();
+        assert_eq!(state["designer"]["canvas"]["name"], "SurvivalHUD");
+        assert_eq!(
+            state["designer"]["document_path"],
+            "assets/ui/survival_hud.mfui"
+        );
+        assert!(state["designer"]["canvas"]["widgets"].is_array());
+        assert!(
+            state["binding_candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|candidate| candidate == "player.needs.thirst")
+        );
+        assert!(
+            state["binding_property_candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|candidate| candidate == "value")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ui_designer_opens_first_project_ui_document_when_hud_alias_is_absent() {
+        let root = temp_project("discover_ui");
+        let ui_root = root.join("assets/ui");
+        fs::create_dir_all(&ui_root).unwrap();
+        let expected = UiDesigner2D::survival_hud();
+        fs::write(
+            ui_root.join("survival_hud.mfui"),
+            serde_json::to_vec_pretty(&expected.canvas).unwrap(),
+        )
+        .unwrap();
+
+        let mut sessions = EditorToolSessions::default();
+        sessions.open_project(&root).unwrap();
+        let state = sessions.state("ui_designer").unwrap();
+        assert_eq!(state["document_path"], "assets/ui/survival_hud.mfui");
+        assert_eq!(state["designer"]["canvas"]["name"], "SurvivalHUD");
         let _ = fs::remove_dir_all(root);
     }
 }

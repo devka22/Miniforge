@@ -5,11 +5,14 @@
 #include <functional>
 
 #include <QAction>
+#include <QActionGroup>
 #include <QColorDialog>
+#include <QComboBox>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeySequence>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPainter>
@@ -23,6 +26,20 @@
 
 class SpriteCanvasView final : public QWidget {
 public:
+    enum class Tool {
+        Pencil,
+        Eraser,
+        Fill,
+        Eyedropper,
+    };
+
+    enum class Mirror {
+        None,
+        Horizontal,
+        Vertical,
+        Quad,
+    };
+
     explicit SpriteCanvasView(MfBridge* bridge, QWidget* parent = nullptr)
         : QWidget(parent)
         , m_bridge(bridge)
@@ -46,6 +63,42 @@ public:
     QColor primaryColor() const { return m_primary; }
     QColor secondaryColor() const { return m_secondary; }
     int zoom() const { return m_zoom; }
+    int brushRadius() const { return m_brushRadius; }
+
+    QString toolName() const
+    {
+        switch (m_tool) {
+        case Tool::Pencil: return tr("Pencil");
+        case Tool::Eraser: return tr("Eraser");
+        case Tool::Fill: return tr("Fill");
+        case Tool::Eyedropper: return tr("Eyedropper");
+        }
+        return tr("Pencil");
+    }
+
+    void setTool(Tool tool)
+    {
+        m_tool = tool;
+        if (stateChanged) {
+            stateChanged();
+        }
+    }
+
+    void setBrushRadius(int radius)
+    {
+        m_brushRadius = std::clamp(radius, 0, 16);
+        if (stateChanged) {
+            stateChanged();
+        }
+    }
+
+    void setMirror(Mirror mirror)
+    {
+        m_mirror = mirror;
+        if (stateChanged) {
+            stateChanged();
+        }
+    }
 
     void setSheetGrid(int frameWidth, int frameHeight)
     {
@@ -208,7 +261,38 @@ protected:
             return;
         }
         const QPoint pixel = pixelAt(event->position());
-        if (pixel.x() < 0 || !m_bridge || !m_bridge->beginSpriteEdit()) {
+        if (pixel.x() < 0 || !m_bridge) {
+            return;
+        }
+        if (m_tool == Tool::Eyedropper) {
+            const QColor sampled = m_image.pixelColor(pixel);
+            if (event->button() == Qt::RightButton) {
+                setSecondaryColor(sampled);
+            } else {
+                setPrimaryColor(sampled);
+            }
+            return;
+        }
+        if (m_tool == Tool::Fill) {
+            const QColor color = event->button() == Qt::RightButton ? m_secondary : m_primary;
+            const QJsonObject payload {
+                { QStringLiteral("x"), pixel.x() },
+                { QStringLiteral("y"), pixel.y() },
+                { QStringLiteral("color"), QJsonObject {
+                    { QStringLiteral("r"), color.red() },
+                    { QStringLiteral("g"), color.green() },
+                    { QStringLiteral("b"), color.blue() },
+                    { QStringLiteral("a"), color.alpha() },
+                } },
+            };
+            if (m_bridge->transformSprite(
+                    QStringLiteral("bucket_fill"),
+                    QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact)))) {
+                refreshImage();
+            }
+            return;
+        }
+        if (!m_bridge->beginSpriteEdit()) {
             return;
         }
         m_painting = true;
@@ -294,7 +378,9 @@ private:
 
     void paintLine(QPoint from, const QPoint& to)
     {
-        const QColor color = m_paintButton == Qt::RightButton ? m_secondary : m_primary;
+        const QColor color = m_tool == Tool::Eraser
+            ? QColor(Qt::transparent)
+            : (m_paintButton == Qt::RightButton ? m_secondary : m_primary);
         int x0 = from.x();
         int y0 = from.y();
         const int x1 = to.x();
@@ -305,9 +391,7 @@ private:
         const int sy = y0 < y1 ? 1 : -1;
         int error = dx + dy;
         while (true) {
-            if (m_bridge->setSpritePixel(x0, y0, color)) {
-                m_image.setPixelColor(x0, y0, color);
-            }
+            paintStamp(x0, y0, color);
             if (x0 == x1 && y0 == y1) {
                 break;
             }
@@ -324,12 +408,43 @@ private:
         update();
     }
 
+    void paintStamp(int centerX, int centerY, const QColor& color)
+    {
+        const auto stampAt = [this, &color](int cx, int cy) {
+            for (int py = cy - m_brushRadius; py <= cy + m_brushRadius; ++py) {
+                for (int px = cx - m_brushRadius; px <= cx + m_brushRadius; ++px) {
+                    const int dx = px - cx;
+                    const int dy = py - cy;
+                    if (dx * dx + dy * dy > m_brushRadius * m_brushRadius
+                        || px < 0 || py < 0 || px >= m_image.width() || py >= m_image.height()) {
+                        continue;
+                    }
+                    if (m_bridge->setSpritePixel(px, py, color)) {
+                        m_image.setPixelColor(px, py, color);
+                    }
+                }
+            }
+        };
+
+        stampAt(centerX, centerY);
+        if (m_mirror == Mirror::Horizontal || m_mirror == Mirror::Quad) {
+            stampAt(m_image.width() - 1 - centerX, centerY);
+        }
+        if (m_mirror == Mirror::Vertical || m_mirror == Mirror::Quad) {
+            stampAt(centerX, m_image.height() - 1 - centerY);
+        }
+        if (m_mirror == Mirror::Quad) {
+            stampAt(m_image.width() - 1 - centerX, m_image.height() - 1 - centerY);
+        }
+    }
+
     MfBridge* m_bridge = nullptr;
     QImage m_image;
     MfSpriteInfo m_info {};
     QColor m_primary { 108, 197, 143, 255 };
     QColor m_secondary { 0, 0, 0, 0 };
     int m_zoom = 12;
+    int m_brushRadius = 0;
     bool m_gridVisible = true;
     bool m_painting = false;
     bool m_panning = false;
@@ -341,6 +456,8 @@ private:
     QPoint m_lastPixel;
     QPointF m_lastMouse;
     QPointF m_pan;
+    Tool m_tool = Tool::Pencil;
+    Mirror m_mirror = Mirror::None;
 };
 
 SpriteEditorWidget::SpriteEditorWidget(MfBridge* bridge, QWidget* parent)
@@ -364,11 +481,37 @@ SpriteEditorWidget::SpriteEditorWidget(MfBridge* bridge, QWidget* parent)
     grid->setCheckable(true);
     grid->setChecked(true);
     toolbar->addSeparator();
+    auto* toolGroup = new QActionGroup(toolbar);
+    toolGroup->setExclusive(true);
+    QAction* pencil = toolbar->addAction(tr("Pencil"));
+    QAction* eraser = toolbar->addAction(tr("Eraser"));
+    QAction* fill = toolbar->addAction(tr("Fill"));
+    QAction* eyedropper = toolbar->addAction(tr("Pick"));
+    for (QAction* action : { pencil, eraser, fill, eyedropper }) {
+        action->setCheckable(true);
+        toolGroup->addAction(action);
+    }
+    pencil->setChecked(true);
+    pencil->setShortcut(QKeySequence(QStringLiteral("B")));
+    eraser->setShortcut(QKeySequence(QStringLiteral("E")));
+    fill->setShortcut(QKeySequence(QStringLiteral("G")));
+    eyedropper->setShortcut(QKeySequence(QStringLiteral("I")));
+    auto* brushRadius = new QSpinBox(toolbar);
+    brushRadius->setRange(0, 16);
+    brushRadius->setPrefix(tr("Radius "));
+    brushRadius->setToolTip(tr("Circular brush radius; zero paints one pixel"));
+    toolbar->addWidget(brushRadius);
+    auto* mirror = new QComboBox(toolbar);
+    mirror->addItems({ tr("No mirror"), tr("Mirror X"), tr("Mirror Y"), tr("Mirror XY") });
+    mirror->setToolTip(tr("Paint symmetrically across the sprite"));
+    toolbar->addWidget(mirror);
+    toolbar->addSeparator();
     QAction* flipH = toolbar->addAction(tr("Flip H"));
     QAction* flipV = toolbar->addAction(tr("Flip V"));
     QAction* rotate = toolbar->addAction(tr("Rotate 90°"));
     QAction* crop = toolbar->addAction(tr("Crop"));
     QAction* outline = toolbar->addAction(tr("Outline"));
+    QAction* shadow = toolbar->addAction(tr("Shadow"));
     toolbar->addSeparator();
     m_primaryAction = toolbar->addAction(tr("Primary"));
     m_secondaryAction = toolbar->addAction(tr("Secondary"));
@@ -432,6 +575,22 @@ SpriteEditorWidget::SpriteEditorWidget(MfBridge* bridge, QWidget* parent)
     connect(clear, &QAction::triggered, this, [this] { clearCanvas(); });
     connect(fit, &QAction::triggered, m_canvas, [this] { m_canvas->fitToView(); });
     connect(grid, &QAction::toggled, m_canvas, &SpriteCanvasView::setGridVisible);
+    connect(pencil, &QAction::triggered, this, [this] {
+        m_canvas->setTool(SpriteCanvasView::Tool::Pencil);
+    });
+    connect(eraser, &QAction::triggered, this, [this] {
+        m_canvas->setTool(SpriteCanvasView::Tool::Eraser);
+    });
+    connect(fill, &QAction::triggered, this, [this] {
+        m_canvas->setTool(SpriteCanvasView::Tool::Fill);
+    });
+    connect(eyedropper, &QAction::triggered, this, [this] {
+        m_canvas->setTool(SpriteCanvasView::Tool::Eyedropper);
+    });
+    connect(brushRadius, &QSpinBox::valueChanged, m_canvas, &SpriteCanvasView::setBrushRadius);
+    connect(mirror, &QComboBox::currentIndexChanged, this, [this](int index) {
+        m_canvas->setMirror(static_cast<SpriteCanvasView::Mirror>(std::clamp(index, 0, 3)));
+    });
     connect(flipH, &QAction::triggered, this, [this] {
         transformCanvas(QStringLiteral("flip_horizontal"));
     });
@@ -462,6 +621,32 @@ SpriteEditorWidget::SpriteEditorWidget(MfBridge* bridge, QWidget* parent)
         transformCanvas(QStringLiteral("outline"),
             QStringLiteral("{\"thickness\":%1,\"color\":{\"r\":%2,\"g\":%3,\"b\":%4,\"a\":%5}}")
                 .arg(thickness)
+                .arg(color.red())
+                .arg(color.green())
+                .arg(color.blue())
+                .arg(color.alpha()));
+    });
+    connect(shadow, &QAction::triggered, this, [this] {
+        bool accepted = false;
+        const int offsetX = QInputDialog::getInt(
+            this, tr("Drop shadow"), tr("Horizontal offset"), 1, -64, 64, 1, &accepted);
+        if (!accepted) {
+            return;
+        }
+        const int offsetY = QInputDialog::getInt(
+            this, tr("Drop shadow"), tr("Vertical offset"), 1, -64, 64, 1, &accepted);
+        if (!accepted) {
+            return;
+        }
+        const QColor color = QColorDialog::getColor(
+            QColor(0, 0, 0, 160), this, tr("Shadow Color"), QColorDialog::ShowAlphaChannel);
+        if (!color.isValid()) {
+            return;
+        }
+        transformCanvas(QStringLiteral("drop_shadow"),
+            QStringLiteral("{\"offset_x\":%1,\"offset_y\":%2,\"color\":{\"r\":%3,\"g\":%4,\"b\":%5,\"a\":%6}}")
+                .arg(offsetX)
+                .arg(offsetY)
                 .arg(color.red())
                 .arg(color.green())
                 .arg(color.blue())
@@ -498,10 +683,12 @@ void SpriteEditorWidget::refreshState()
     m_redoAction->setEnabled(info.can_redo != 0);
     m_primaryAction->setToolTip(m_canvas->primaryColor().name(QColor::HexArgb));
     m_secondaryAction->setToolTip(m_canvas->secondaryColor().name(QColor::HexArgb));
-    m_status->setText(tr("%1 × %2 · %3 px zoom · frame %4/%5 · left: primary · right: secondary · middle: pan")
+    m_status->setText(tr("%1 × %2 · %3 px zoom · %4 r%5 · frame %6/%7 · left/right colors · middle: pan")
         .arg(info.width)
         .arg(info.height)
         .arg(m_canvas->zoom())
+        .arg(m_canvas->toolName())
+        .arg(m_canvas->brushRadius())
         .arg(m_frameSlider ? m_frameSlider->value() + 1 : 1)
         .arg(m_frameSlider ? m_frameSlider->maximum() + 1 : 1));
 }

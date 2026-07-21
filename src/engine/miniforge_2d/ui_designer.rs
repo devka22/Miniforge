@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::engine::miniforge_2d::ui_framework::{
     Anchor2D, UiAnimation2D, UiBinding2D, UiCallback2D, UiCanvas2D, UiRect2D, UiResolvedWidget2D,
     UiStyle2D, UiWidget2D, main_menu_canvas, minimal_ui_canvas, pause_menu_canvas,
-    settings_menu_canvas,
+    settings_menu_canvas, survival_hud_canvas,
 };
 use crate::engine::miniforge_2d::validation::ValidationReport2D;
 use crate::engine::ui_advanced::{
@@ -113,6 +113,18 @@ impl UiDesigner2D {
         let canvas = settings_menu_canvas();
         Self {
             document_path: "assets/ui/settings_menu.mfui".to_string(),
+            animation_timeline: canvas.animations.clone(),
+            canvas,
+            ..Default::default()
+        }
+    }
+
+    /// Creates a complete, runtime-bound survival HUD that can be customized
+    /// visually without writing the health/needs wiring by hand.
+    pub fn survival_hud() -> Self {
+        let canvas = survival_hud_canvas();
+        Self {
+            document_path: "assets/ui/survival_hud.mfui".to_string(),
             animation_timeline: canvas.animations.clone(),
             canvas,
             ..Default::default()
@@ -491,6 +503,7 @@ impl UiDesigner2D {
 
     pub fn binding_candidates(&self) -> Vec<String> {
         vec![
+            "player.health.percent".to_string(),
             "player.health_percent".to_string(),
             "player.needs.hunger".to_string(),
             "player.needs.thirst".to_string(),
@@ -503,6 +516,18 @@ impl UiDesigner2D {
             "player.coins".to_string(),
             "quest.active_title".to_string(),
             "rts.selected_count".to_string(),
+        ]
+    }
+
+    pub fn binding_property_candidates(&self) -> Vec<String> {
+        vec![
+            "value".to_string(),
+            "text".to_string(),
+            "visible".to_string(),
+            "enabled".to_string(),
+            "items".to_string(),
+            "weight".to_string(),
+            "color".to_string(),
         ]
     }
 

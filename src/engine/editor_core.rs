@@ -1964,6 +1964,15 @@ impl EditorCore {
                     }
                     None
                 }
+                "add_component_bundle" => {
+                    let bundle = required_payload_string(&payload, "bundle")?;
+                    let _ = add_component_bundle_to_entities(
+                        self.game_mut()?,
+                        &[entity_id],
+                        bundle,
+                    )?;
+                    None
+                }
                 "remove_component" => {
                     let component_type = required_payload_string(&payload, "component_type")?;
                     self.game_mut()?
@@ -2007,6 +2016,14 @@ impl EditorCore {
                 self.game_mut()?,
                 required_payload_string(&payload, "component_type")?,
             )?,
+            "add_component_bundle" => {
+                let selection = selected_entity_ids(self.game()?)?;
+                add_component_bundle_to_entities(
+                    self.game_mut()?,
+                    &selection,
+                    required_payload_string(&payload, "bundle")?,
+                )?
+            }
             "remove_component" => remove_component_from_selected(
                 self.game_mut()?,
                 required_payload_string(&payload, "component_type")?,
@@ -3982,7 +3999,7 @@ impl EditorCore {
     }
 
     /// Applies one non-destructive sprite utility as a single undoable edit.
-    /// This keeps native-editor actions (flip, rotate, crop and outline) on the
+    /// This keeps native-editor actions (paint utilities and transforms) on the
     /// same history stack as regular pixel strokes.
     pub fn sprite_transform(
         &mut self,
@@ -3996,17 +4013,69 @@ impl EditorCore {
         };
         if !matches!(
             action,
-            "flip_horizontal" | "flip_vertical" | "rotate_right" | "crop_to_content" | "outline"
+            "flip_horizontal"
+                | "flip_vertical"
+                | "rotate_right"
+                | "crop_to_content"
+                | "outline"
+                | "bucket_fill"
+                | "replace_color"
+                | "drop_shadow"
         ) {
             return Err(EditorCoreError::new(
                 EditorCoreErrorKind::InvalidArgument,
                 format!("Unknown sprite transform: {action}"),
             ));
         }
-        let outline_color = (action == "outline")
+        let effect_color = matches!(action, "outline" | "bucket_fill" | "drop_shadow")
             .then(|| sprite_color_from_payload(&payload))
             .transpose()?;
+        let replace_colors = (action == "replace_color")
+            .then(|| {
+                let from = payload.get("from").ok_or_else(|| {
+                    EditorCoreError::new(
+                        EditorCoreErrorKind::InvalidArgument,
+                        "replace_color requires a from color",
+                    )
+                })?;
+                let to = payload.get("to").ok_or_else(|| {
+                    EditorCoreError::new(
+                        EditorCoreErrorKind::InvalidArgument,
+                        "replace_color requires a to color",
+                    )
+                })?;
+                Ok::<_, EditorCoreError>((
+                    sprite_color_from_payload(from)?,
+                    sprite_color_from_payload(to)?,
+                ))
+            })
+            .transpose()?;
+        let bucket_coordinates = (action == "bucket_fill")
+            .then(|| {
+                let x = payload.get("x").and_then(Value::as_u64).ok_or_else(|| {
+                    EditorCoreError::new(
+                        EditorCoreErrorKind::InvalidArgument,
+                        "bucket_fill requires an x coordinate",
+                    )
+                })?;
+                let y = payload.get("y").and_then(Value::as_u64).ok_or_else(|| {
+                    EditorCoreError::new(
+                        EditorCoreErrorKind::InvalidArgument,
+                        "bucket_fill requires a y coordinate",
+                    )
+                })?;
+                Ok::<_, EditorCoreError>((x as u32, y as u32))
+            })
+            .transpose()?;
         let canvas = &mut self.game_mut()?.sprite_editor;
+        if let Some((x, y)) = bucket_coordinates
+            && (x >= canvas.width || y >= canvas.height)
+        {
+            return Err(EditorCoreError::new(
+                EditorCoreErrorKind::InvalidArgument,
+                format!("Sprite pixel out of bounds: {x},{y}"),
+            ));
+        }
         canvas.begin_edit();
         match action {
             "flip_horizontal" => canvas.flip_horizontal(),
@@ -4026,8 +4095,31 @@ impl EditorCore {
                     .and_then(Value::as_u64)
                     .unwrap_or(1)
                     .clamp(1, 16) as u32;
-                let color = outline_color.expect("outline payload was validated");
+                let color = effect_color.expect("outline payload was validated");
                 let _ = canvas.outline_alpha_thick(thickness, color);
+            }
+            "bucket_fill" => {
+                let (x, y) = bucket_coordinates.expect("bucket coordinates were validated");
+                let color = effect_color.expect("bucket payload was validated");
+                let _ = canvas.bucket_fill(x, y, color);
+            }
+            "replace_color" => {
+                let (from, to) = replace_colors.expect("replace payload was validated");
+                let _ = canvas.replace_color(from, to);
+            }
+            "drop_shadow" => {
+                let offset_x = payload
+                    .get("offset_x")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1)
+                    .clamp(-64, 64) as i32;
+                let offset_y = payload
+                    .get("offset_y")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1)
+                    .clamp(-64, 64) as i32;
+                let color = effect_color.expect("shadow payload was validated");
+                let _ = canvas.drop_shadow(offset_x, offset_y, color);
             }
             _ => unreachable!("sprite transform action was validated"),
         }
@@ -4653,7 +4745,7 @@ fn sprite_color_from_payload(payload: &Value) -> Result<SpriteColor, EditorCoreE
         u8::try_from(value).map_err(|_| {
             EditorCoreError::new(
                 EditorCoreErrorKind::InvalidArgument,
-                format!("Sprite outline channel {name} must be between 0 and 255"),
+                format!("Sprite color channel {name} must be between 0 and 255"),
             )
         })
     };
@@ -7139,6 +7231,99 @@ fn add_component_to_selected(
     Ok(targets.len())
 }
 
+fn component_bundle_types(bundle: &str) -> Option<(&'static str, &'static [&'static str])> {
+    match bundle.trim().to_ascii_lowercase().as_str() {
+        "survival_actor" | "survival" => Some((
+            "Survival Actor",
+            &[
+                "Health",
+                "SurvivalNeeds",
+                "Inventory",
+                "Equipment",
+                "CraftingBook",
+                "StatusEffects",
+                "Saveable",
+            ],
+        )),
+        "inventory" => Some(("Inventory", &["Inventory", "Equipment"])),
+        "combat_actor" | "combat" => Some((
+            "Combat Actor",
+            &["Health", "Stats", "DamageDealer", "StatusEffects"],
+        )),
+        "loot_container" | "lootable" => Some((
+            "Loot Container",
+            &["LootContainer", "Interaction", "Saveable"],
+        )),
+        "harvestable" => Some(("Harvestable", &["Harvestable", "Interaction", "Saveable"])),
+        "crafting_station" => Some((
+            "Crafting Station",
+            &["CraftingStation", "Interaction", "Saveable"],
+        )),
+        _ => None,
+    }
+}
+
+fn add_component_bundle_to_entities(
+    game: &mut Game,
+    entity_ids: &[u64],
+    bundle: &str,
+) -> Result<usize, EditorCoreError> {
+    let (label, component_types) = component_bundle_types(bundle).ok_or_else(|| {
+        EditorCoreError::new(
+            EditorCoreErrorKind::InvalidArgument,
+            format!("Unknown component bundle: {bundle}"),
+        )
+    })?;
+    let targets = entity_ids
+        .iter()
+        .copied()
+        .filter(|id| game.get_entity_by_id(*id).is_some())
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        return Err(EditorCoreError::new(
+            EditorCoreErrorKind::NotFound,
+            "No target entities exist for the component bundle",
+        ));
+    }
+
+    let before = game.capture_editor_snapshot();
+    let mut added = 0usize;
+    for entity_id in &targets {
+        let entity = game.get_entity_by_id_mut(*entity_id).ok_or_else(|| {
+            EditorCoreError::new(EditorCoreErrorKind::NotFound, "Selected entity is missing")
+        })?;
+        for component_type in component_types {
+            if entity.get_component(component_type).is_none() {
+                entity.add_component(
+                    default_component(component_type).expect("bundle component must be registered"),
+                );
+                added += 1;
+            }
+        }
+        entity.sync_from_components();
+    }
+    if added == 0 {
+        return Err(EditorCoreError::new(
+            EditorCoreErrorKind::CommandFailed,
+            format!("Selected entities already contain the {label} systems"),
+        ));
+    }
+
+    game.sync_world();
+    game.mark_scene_dirty("Add Component Bundle");
+    for entity_id in &targets {
+        game.scene_save_manager.note_entity_dirty(*entity_id);
+    }
+    game.push_editor_command(
+        format!("Add {label} Systems"),
+        EditorCommandKind::SceneOperation {
+            name: format!("Add {label} component bundle"),
+        },
+        before,
+    );
+    Ok(added)
+}
+
 fn remove_component_from_selected(
     game: &mut Game,
     component_type: &str,
@@ -8016,6 +8201,30 @@ mod tests {
         );
         assert!(core.sprite_transform("unknown", "{}").is_err());
 
+        core.sprite_new_canvas(4, 4).unwrap();
+        assert!(
+            core.sprite_transform(
+                "bucket_fill",
+                r#"{"x":0,"y":0,"color":{"r":20,"g":40,"b":60,"a":255}}"#,
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            core.sprite_snapshot().unwrap().rgba[0..4],
+            [20, 40, 60, 255]
+        );
+        assert!(
+            core.sprite_transform(
+                "replace_color",
+                r#"{"from":{"r":20,"g":40,"b":60,"a":255},"to":{"r":200,"g":180,"b":160,"a":255}}"#,
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            core.sprite_snapshot().unwrap().rgba[0..4],
+            [200, 180, 160, 255]
+        );
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -8824,6 +9033,20 @@ mod tests {
             );
         }
         assert!(core.execute_command("edit.redo").unwrap().changed);
+        core.update_selection(original_id, "replace").unwrap();
+        core.update_selection(duplicated_id, "add").unwrap();
+        assert!(
+            core.selected_entity_action("add_component_bundle", r#"{"bundle":"survival_actor"}"#,)
+                .unwrap()
+                > 0
+        );
+        for entity_id in [original_id, duplicated_id] {
+            let entity = core.game().unwrap().get_entity_by_id(entity_id).unwrap();
+            for component in ["Health", "SurvivalNeeds", "Inventory", "CraftingBook"] {
+                assert!(entity.get_component(component).is_some(), "{component}");
+            }
+        }
+        assert!(core.execute_command("edit.undo").unwrap().changed);
         core.update_selection(original_id, "replace").unwrap();
         core.update_selection(duplicated_id, "add").unwrap();
         assert_eq!(

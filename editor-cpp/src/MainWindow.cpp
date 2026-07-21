@@ -48,7 +48,7 @@
 
 namespace {
 
-constexpr int kWorkbenchStateVersion = 6;
+constexpr int kWorkbenchStateVersion = 7;
 
 const QStringList& editorWorkspaceNames()
 {
@@ -67,6 +67,7 @@ const QStringList& editorWorkspaceNames()
         QStringLiteral("Build"),
         QStringLiteral("Debug"),
         QStringLiteral("Minimal"),
+        QStringLiteral("Sprites"),
     };
     return workspaces;
 }
@@ -700,6 +701,7 @@ void MainWindow::createMenus()
     };
     addToolWorkspace(QStringLiteral("Tilemap && Terrain"), QStringLiteral("World"));
     addToolWorkspace(QStringLiteral("Animation Timeline"), QStringLiteral("Animation"));
+    addToolWorkspace(QStringLiteral("Sprite Studio"), QStringLiteral("Sprites"));
     addToolWorkspace(QStringLiteral("UI Designer"), QStringLiteral("UI"));
     addToolWorkspace(QStringLiteral("Prefab Studio"), QStringLiteral("Prefab"));
     addToolWorkspace(QStringLiteral("Blueprints / Visual Graph"), QStringLiteral("Scripting"));
@@ -1245,6 +1247,7 @@ void MainWindow::setWorkspace(const QString& workspace)
     const bool ai = workspace == QStringLiteral("AI");
     const bool build = workspace == QStringLiteral("Build");
     const bool debug = workspace == QStringLiteral("Debug");
+    const bool sprites = workspace == QStringLiteral("Sprites");
 
     if ((scene || scripting || animation || world || ui) && m_inspectorDock) {
         m_inspectorDock->raise();
@@ -1287,6 +1290,8 @@ void MainWindow::setWorkspace(const QString& workspace)
             m_healthDock->raise();
         }
         m_consoleDock->raise();
+    } else if (sprites && m_spriteDock) {
+        m_spriteDock->raise();
     }
     statusBar()->showMessage(QStringLiteral("Workspace: %1").arg(workspace), 1800);
 }
@@ -1307,6 +1312,7 @@ void MainWindow::applyWorkspacePreset(const QString& workspace)
     const bool build = workspace == QStringLiteral("Build");
     const bool debug = workspace == QStringLiteral("Debug");
     const bool minimal = workspace == QStringLiteral("Minimal");
+    const bool sprites = workspace == QStringLiteral("Sprites");
 
     const auto dockAt = [this](Qt::DockWidgetArea area, QDockWidget* dock) {
         if (!dock) {
@@ -1395,10 +1401,10 @@ void MainWindow::applyWorkspacePreset(const QString& workspace)
     resizeDocks({ m_contentDock, m_consoleDock }, { 250, 250 }, Qt::Vertical);
 
     if (m_hierarchyDock) {
-        m_hierarchyDock->setVisible(!minimal && !debug && !project && !assets && !profiler && !automation);
+        m_hierarchyDock->setVisible(!minimal && !debug && !project && !assets && !profiler && !automation && !sprites);
     }
     if (m_inspectorDock) {
-        m_inspectorDock->setVisible((!minimal || scene) && !project && !prefab && !assets && !profiler && !automation);
+        m_inspectorDock->setVisible((!minimal || scene) && !project && !prefab && !assets && !profiler && !automation && !sprites);
     }
     if (m_readinessDock) {
         m_readinessDock->setVisible(scene || build || debug || project);
@@ -1446,7 +1452,10 @@ void MainWindow::applyWorkspacePreset(const QString& workspace)
         m_consoleDock->setVisible(scripting || ai || build || debug || profiler || automation);
     }
     if (m_spriteDock) {
-        m_spriteDock->setVisible(animation);
+        m_spriteDock->setVisible(animation || sprites);
+        if (sprites) {
+            resizeDocks({ m_spriteDock }, { std::max(480, height() - 180) }, Qt::Vertical);
+        }
     }
     if (m_luauDock) {
         m_luauDock->setVisible(scripting);
@@ -1459,6 +1468,9 @@ void MainWindow::applyWorkspacePreset(const QString& workspace)
     }
     if (m_uiDesignerDock) {
         m_uiDesignerDock->setVisible(ui);
+        if (ui) {
+            resizeDocks({ m_uiDesignerDock }, { std::max(460, height() - 260) }, Qt::Vertical);
+        }
     }
     if (m_blueprintsDock) {
         m_blueprintsDock->setVisible(scripting);
@@ -1531,6 +1543,7 @@ void MainWindow::executeShellCommand(const QString& commandId)
         { QStringLiteral("workspace.ai"), QStringLiteral("AI") },
         { QStringLiteral("workspace.build"), QStringLiteral("Build") },
         { QStringLiteral("workspace.debug"), QStringLiteral("Debug") },
+        { QStringLiteral("workspace.sprites"), QStringLiteral("Sprites") },
     };
     const auto workspace = workspaceCommands.constFind(commandId);
     if (workspace != workspaceCommands.cend()) {
@@ -1556,7 +1569,7 @@ void MainWindow::executeShellCommand(const QString& commandId)
         setWorkspace(QStringLiteral("Scripting"));
         panel = m_luauDock;
     } else if (commandId == QStringLiteral("panel.sprite")) {
-        setWorkspace(QStringLiteral("Animation"));
+        setWorkspace(QStringLiteral("Sprites"));
         panel = m_spriteDock;
     } else if (commandId == QStringLiteral("panel.scenes")) {
         setWorkspace(QStringLiteral("2D"));

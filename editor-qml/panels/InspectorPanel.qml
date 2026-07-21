@@ -13,8 +13,9 @@ Rectangle {
     function runAction(action, payload) {
         if (inspectorModel.entityId === 0)
             return false
-        if (editorBridge.selectedEntityCount > 1
+            if (editorBridge.selectedEntityCount > 1
                 && (action === "add_component"
+                    || action === "add_component_bundle"
                     || action === "remove_component"
                     || action === "duplicate"
                     || action === "delete"))
@@ -180,10 +181,50 @@ Rectangle {
             MfPanelHeader {
                 width: parent.width
                 title: "Add Component"
-                detail: componentModel.count + " registered component types"
+                detail: "Ready-made systems or " + componentModel.count + " individual components"
                 badge: "Registry"
                 badgeColor: Theme.DarkTheme.info
             }
+
+            Text {
+                width: parent.width
+                text: "READY-MADE SYSTEMS"
+                color: Theme.DarkTheme.accent
+                font.pixelSize: 9
+                font.bold: true
+            }
+
+            Flow {
+                width: parent.width
+                height: 68
+                spacing: 5
+                Repeater {
+                    model: [
+                        {"label":"Survival Actor", "bundle":"survival_actor", "help":"Health, needs, weighted inventory, equipment, crafting and save data"},
+                        {"label":"Inventory", "bundle":"inventory", "help":"Inventory and equipment without custom code"},
+                        {"label":"Combat Actor", "bundle":"combat_actor", "help":"Health, stats, damage and status effects"},
+                        {"label":"Lootable", "bundle":"loot_container", "help":"Searchable loot, interaction and persistence"},
+                        {"label":"Harvestable", "bundle":"harvestable", "help":"Reusable resource gathering and persistence"},
+                        {"label":"Craft Station", "bundle":"crafting_station", "help":"Crafting station, interaction and persistence"}
+                    ]
+                    delegate: MfButton {
+                        required property var modelData
+                        width: Math.floor((parent.width - 10) / 3)
+                        height: 30
+                        text: modelData.label
+                        ToolTip.visible: hovered
+                        ToolTip.text: modelData.help
+                        onClicked: {
+                            if (root.runAction("add_component_bundle", {"bundle":modelData.bundle})) {
+                                componentPopup.close()
+                                root.quickStatus = modelData.label + " systems added"
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle { width: parent.width; height: 1; color: Theme.DarkTheme.borderSoft }
 
             MfSearchBar {
                 id: componentSearch
