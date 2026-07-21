@@ -194,12 +194,21 @@ Rectangle {
                 font.bold: true
             }
 
-            Flow {
+            GridView {
                 width: parent.width
-                height: 68
-                spacing: 5
-                Repeater {
-                    model: [
+                height: 132
+                clip: true
+                cellWidth: Math.floor(width / 3)
+                cellHeight: 33
+                model: [
+                        {"label":"Top-down Player", "bundle":"topdown_player", "help":"Movement, input, physics, camera, animation, health and save data"},
+                        {"label":"Platformer Player", "bundle":"platformer_player", "help":"Character body, input, collisions, camera, animation, health and checkpoints"},
+                        {"label":"Action RPG Hero", "bundle":"action_rpg_hero", "help":"Top-down movement, combat, abilities, inventory, equipment, quests and persistence"},
+                        {"label":"Enemy AI", "bundle":"enemy_ai", "help":"Behavior tree, navigation, combat, status effects and loot"},
+                        {"label":"Dialogue NPC", "bundle":"dialogue_npc", "help":"Interaction, dialogue, objective marker and persistence"},
+                        {"label":"Collectible", "bundle":"collectible", "help":"Trigger, interaction, loot, particles and persistence"},
+                        {"label":"Camera Rig", "bundle":"camera_rig", "help":"2D camera follow and screen shake"},
+                        {"label":"Audio Emitter", "bundle":"audio_emitter", "help":"Spatial 2D audio ready for a SoundCue or AudioEvent"},
                         {"label":"Survival Actor", "bundle":"survival_actor", "help":"Health, needs, weighted inventory, equipment, crafting and save data"},
                         {"label":"Inventory", "bundle":"inventory", "help":"Inventory and equipment without custom code"},
                         {"label":"Combat Actor", "bundle":"combat_actor", "help":"Health, stats, damage and status effects"},
@@ -207,10 +216,13 @@ Rectangle {
                         {"label":"Harvestable", "bundle":"harvestable", "help":"Reusable resource gathering and persistence"},
                         {"label":"Craft Station", "bundle":"crafting_station", "help":"Crafting station, interaction and persistence"}
                     ]
-                    delegate: MfButton {
-                        required property var modelData
-                        width: Math.floor((parent.width - 10) / 3)
-                        height: 30
+                delegate: Item {
+                    required property var modelData
+                    width: GridView.view.cellWidth
+                    height: GridView.view.cellHeight
+                    MfButton {
+                        anchors.fill: parent
+                        anchors.margins: 2
                         text: modelData.label
                         ToolTip.visible: hovered
                         ToolTip.text: modelData.help

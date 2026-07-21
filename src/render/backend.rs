@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::engine::error_handler::{MFResult, MiniForgeError};
+use crate::engine::error_handler::MFResult;
+
+pub use super::wgpu_backend::WgpuBackend;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum GraphicsApi {
@@ -181,15 +183,6 @@ pub struct MacroquadBackend {
     pub width: u32,
     pub height: u32,
     pub draw_calls: usize,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct WgpuBackend {
-    pub enabled: bool,
-    pub prefer_metal: bool,
-    pub initialized: bool,
-    pub last_error: Option<String>,
-    pub caps: Option<RenderDeviceCaps>,
 }
 
 impl Default for RenderBackendConfig {
@@ -376,81 +369,6 @@ impl RenderBackend for MacroquadBackend {
 
     fn draw_mesh_3d(&mut self, _cmd: MeshDrawCommand3D) -> MFResult<()> {
         self.draw_calls += 1;
-        Ok(())
-    }
-
-    fn draw_light_3d(&mut self, _cmd: LightDrawCommand3D) -> MFResult<()> {
-        Ok(())
-    }
-}
-
-impl RenderBackend for WgpuBackend {
-    fn name(&self) -> &'static str {
-        "wgpu_experimental"
-    }
-
-    fn init(&mut self) -> MFResult<()> {
-        if !self.enabled {
-            self.last_error = Some("wgpu backend experimental desactivado".to_string());
-            return Err(MiniForgeError::RenderError(
-                "wgpu backend experimental desactivado".to_string(),
-            ));
-        }
-        self.caps = Some(if self.prefer_metal && cfg!(target_os = "macos") {
-            RenderDeviceCaps::simulated_wgpu_metal()
-        } else {
-            RenderDeviceCaps {
-                api: if cfg!(target_os = "windows") {
-                    GraphicsApi::WgpuDx12
-                } else {
-                    GraphicsApi::WgpuVulkan
-                },
-                device_name: "wgpu-experimental".to_string(),
-                max_texture_size: 8192,
-                supports_compute: true,
-                supports_storage_buffers: true,
-                supports_timestamp_queries: false,
-                supports_multisampled_render_targets: true,
-                preferred_texture_format: "rgba8unorm_srgb".to_string(),
-            }
-        });
-        self.initialized = true;
-        Ok(())
-    }
-
-    fn begin_frame(&mut self) -> MFResult<()> {
-        Ok(())
-    }
-
-    fn end_frame(&mut self) -> MFResult<()> {
-        Ok(())
-    }
-
-    fn resize(&mut self, _width: u32, _height: u32) -> MFResult<()> {
-        Ok(())
-    }
-
-    fn draw_sprite(&mut self, _cmd: SpriteDrawCommand) -> MFResult<()> {
-        Ok(())
-    }
-
-    fn draw_tilemap(&mut self, _cmd: TilemapDrawCommand) -> MFResult<()> {
-        Ok(())
-    }
-
-    fn draw_particles(&mut self, _cmd: ParticleDrawCommand) -> MFResult<()> {
-        Ok(())
-    }
-
-    fn draw_ui(&mut self, _cmd: UiDrawCommand) -> MFResult<()> {
-        Ok(())
-    }
-
-    fn set_camera_3d(&mut self, _cmd: CameraCommand3D) -> MFResult<()> {
-        Ok(())
-    }
-
-    fn draw_mesh_3d(&mut self, _cmd: MeshDrawCommand3D) -> MFResult<()> {
         Ok(())
     }
 

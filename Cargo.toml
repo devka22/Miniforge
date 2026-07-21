@@ -68,6 +68,9 @@ nucleo-matcher = { version = "0.3.1", optional = true }
 crossbeam-channel = "0.5.15"
 resvg = "0.47.0"
 usvg = "0.47.0"
+bytemuck = { version = "1.24", features = ["derive"] }
+pollster = "1.0"
+wgpu = "30.0.0"
 
 [package.metadata.miniforge]
 engine-version = "0.9.3.4"

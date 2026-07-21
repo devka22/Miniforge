@@ -21,19 +21,26 @@ Primary references:
 - <https://docs.rs/bevy/latest/bevy/render/>
 - <https://docs.rs/bevy/latest/bevy/ui/>
 
-## Current safety rule
+## Current implementation
 
-`WgpuBackend` is currently a compatibility scaffold and does not yet render production frames.
-Projects must leave `experimental_wgpu` disabled to receive the Macroquad fallback. Project
-Settings exposes the migration target and its explicit preview switch so this limitation is visible
-instead of hidden in JSON.
+`WgpuBackend` now creates a real physical adapter, device and queue, compiles a WGSL sprite
+pipeline, uploads RGBA8 textures, renders rotated/tinted sprite quads and supports deterministic GPU
+readback. The same off-screen target is usable by renderer tests, Qt previews and future window
+surfaces. Hardware coverage includes an ignored test that renders colored and textured geometry and
+checks the resulting pixels.
+
+The main game window still uses Macroquad while surface presentation, tilemap/UI/particle command
+geometry and device-loss recovery are completed. Projects should therefore leave
+`experimental_wgpu` disabled for exports that need the full production renderer. Project Settings
+keeps this migration state visible instead of hiding it in JSON.
 
 ## Migration gates
 
 The preview becomes playable only after these gates pass on macOS, Windows and Linux:
 
-1. Real adapter, device, surface and swap-chain lifecycle.
-2. Sprite atlas uploads, camera transforms, clipping, blend modes and stable batching.
+1. Window surface, presentation and device-loss lifecycle. Physical adapter/device/queue are done.
+2. Sprite atlas regions, camera transforms, clipping, blend modes and stable batching. Full-texture
+   uploads plus pixel-space sprite transforms are done.
 3. Chunked tilemaps, UI draw lists, text, particles and render textures.
 4. WGSL materials, post-processing and hot reload with readable shader diagnostics.
 5. Compute paths for particles and tile visibility, each with a CPU fallback.

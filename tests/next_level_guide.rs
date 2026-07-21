@@ -285,13 +285,13 @@ fn render_backend_and_2d_render_data_are_ready_for_macroquad_and_wgpu() {
     let mut disabled_wgpu = WgpuBackend::default();
     assert!(disabled_wgpu.init().is_err());
 
-    let mut enabled_wgpu = WgpuBackend {
-        enabled: true,
-        prefer_metal: true,
-        ..Default::default()
-    };
-    enabled_wgpu.init().unwrap();
-    assert!(enabled_wgpu.caps.as_ref().unwrap().supports_compute);
+    let mut enabled_wgpu = WgpuBackend::new(true, true);
+    if enabled_wgpu.init().is_ok() {
+        assert!(enabled_wgpu.is_using_physical_device());
+        assert!(enabled_wgpu.caps.as_ref().unwrap().supports_compute);
+    } else {
+        assert!(enabled_wgpu.last_error.is_some());
+    }
 
     let mut batcher = SpriteBatcher::default();
     for id in 0..2050 {

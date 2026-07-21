@@ -29,6 +29,7 @@ Rectangle {
     property bool busy: false
     property string contextFolderPath: ""
     readonly property bool editorDirty: selectedEditable && textEditor.text !== savedText
+    readonly property bool globalSearchActive: contentSearch.text.trim().length >= 2
 
     function parseJson(value, fallback) {
         try {
@@ -40,6 +41,8 @@ Rectangle {
     }
 
     function displayDirectory() {
+        if (globalSearchActive)
+            return "All project content"
         return currentDirectory.length > 0 ? currentDirectory : editorBridge.projectName
     }
 
@@ -231,7 +234,21 @@ Rectangle {
             fileModel.clear()
             return
         }
-        unfilteredEntries = parseJson(editorBridge.contentEntriesJson(currentDirectory), [])
+        if (globalSearchActive) {
+            var combined = []
+            var folders = parseJson(editorBridge.contentFoldersJson(), [])
+            for (var folderIndex = 0; folderIndex < folders.length; ++folderIndex) {
+                var path = String(folders[folderIndex].path || "")
+                var entries = parseJson(editorBridge.contentEntriesJson(path), [])
+                for (var entryIndex = 0; entryIndex < entries.length; ++entryIndex) {
+                    if (entries[entryIndex].is_directory !== true)
+                        combined.push(entries[entryIndex])
+                }
+            }
+            unfilteredEntries = combined
+        } else {
+            unfilteredEntries = parseJson(editorBridge.contentEntriesJson(currentDirectory), [])
+        }
         var retained = []
         for (var index = 0; index < selectedPaths.length; ++index) {
             if (entryByPath(selectedPaths[index]) !== null)
@@ -679,6 +696,13 @@ Rectangle {
     Shortcut { sequence: "F2"; enabled: root.selectedPaths.length === 1 && root.selectionIsManageable(); onActivated: renameDialog.open() }
     Shortcut { sequences: [StandardKey.Delete]; enabled: root.selectionIsManageable(); onActivated: deleteDialog.open() }
 
+    Timer {
+        id: searchRefreshTimer
+        interval: 120
+        repeat: false
+        onTriggered: root.refreshEntries()
+    }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 8
@@ -700,8 +724,8 @@ Rectangle {
             MfSearchBar {
                 id: contentSearch
                 Layout.fillWidth: true
-                placeholderText: "Search name, type or path"
-                onTextChanged: root.applyFilter()
+                placeholderText: "Search all content by name, type or path"
+                onTextChanged: searchRefreshTimer.restart()
             }
             MfButton { text: "Import"; enabled: editorBridge.projectOpen && !root.busy; onClicked: importDialog.open() }
             MfButton { text: "Folder +"; enabled: editorBridge.projectOpen && !root.busy; onClicked: folderDialog.open() }

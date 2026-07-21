@@ -13,6 +13,7 @@ pub mod asset_preview;
 pub mod asset_reference_resolver;
 pub mod asset_tools;
 pub mod audio_mixer;
+pub mod audio_synthesis;
 #[cfg(feature = "editor_core")]
 pub mod automation_bridge;
 pub mod autosave_manager;

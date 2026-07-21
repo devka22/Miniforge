@@ -13,7 +13,7 @@ use crate::engine::asset_database::AssetRecord;
 use crate::engine::asset_importers::SpriteSheetImporter;
 use crate::engine::asset_tools::AssetTools;
 use crate::engine::command_palette::CommandPalette;
-use crate::engine::component::default_component;
+use crate::engine::component::{Component, default_component};
 use crate::engine::component_registry::ComponentSubMenu;
 use crate::engine::developer_console::ConsoleEntry;
 use crate::engine::editor_asset_connector::EditorAssetConnector;
@@ -7230,6 +7230,101 @@ fn add_component_to_selected(
 
 fn component_bundle_types(bundle: &str) -> Option<(&'static str, &'static [&'static str])> {
     match bundle.trim().to_ascii_lowercase().as_str() {
+        "topdown_player" | "topdown" => Some((
+            "Top-down Player",
+            &[
+                "Actor2D",
+                "Pawn2D",
+                "PlayerController2D",
+                "CharacterController2D",
+                "Rigidbody2D",
+                "Collider2D",
+                "InputActions2D",
+                "CameraFollow",
+                "Animator2D",
+                "Health",
+                "Saveable",
+            ],
+        )),
+        "platformer_player" | "platformer" => Some((
+            "Platformer Player",
+            &[
+                "Actor2D",
+                "Pawn2D",
+                "PlayerController2D",
+                "CharacterBody2D",
+                "Collider2D",
+                "InputActions2D",
+                "CameraFollow",
+                "Animator2D",
+                "Health",
+                "Checkpoint",
+            ],
+        )),
+        "action_rpg_hero" | "action_rpg" => Some((
+            "Action RPG Hero",
+            &[
+                "Actor2D",
+                "Pawn2D",
+                "PlayerController2D",
+                "CharacterController2D",
+                "Rigidbody2D",
+                "Collider2D",
+                "InputActions2D",
+                "CameraFollow",
+                "Health",
+                "Stats",
+                "DamageDealer",
+                "StatusEffects",
+                "Inventory",
+                "Equipment",
+                "Ability",
+                "QuestLog",
+                "Saveable",
+            ],
+        )),
+        "enemy_ai" | "enemy" => Some((
+            "Enemy AI",
+            &[
+                "Actor2D",
+                "AIController2D",
+                "BehaviorTree2D",
+                "Blackboard",
+                "NavAgent",
+                "Collider2D",
+                "Health",
+                "Stats",
+                "DamageDealer",
+                "CombatTarget",
+                "StatusEffects",
+                "LootTable",
+            ],
+        )),
+        "dialogue_npc" | "npc" => Some((
+            "Dialogue NPC",
+            &[
+                "Actor2D",
+                "Interaction",
+                "Dialogue",
+                "ObjectiveMarker",
+                "Saveable",
+            ],
+        )),
+        "collectible" | "pickup" => Some((
+            "Collectible",
+            &[
+                "Area2D",
+                "Trigger2D",
+                "Interaction",
+                "LootTable",
+                "ParticleEmitter",
+                "Saveable",
+            ],
+        )),
+        "camera_rig" | "camera" => {
+            Some(("Camera Rig", &["Camera2D", "CameraFollow", "CameraShake"]))
+        }
+        "audio_emitter" | "audio" => Some(("Audio Emitter", &["AudioSource2D"])),
         "survival_actor" | "survival" => Some((
             "Survival Actor",
             &[
@@ -7257,6 +7352,49 @@ fn component_bundle_types(bundle: &str) -> Option<(&'static str, &'static [&'sta
             &["CraftingStation", "Interaction", "Saveable"],
         )),
         _ => None,
+    }
+}
+
+fn configure_bundle_component(bundle: &str, component: &mut Component) {
+    let bundle = bundle.trim().to_ascii_lowercase();
+    match (bundle.as_str(), component.component_type.as_str()) {
+        ("topdown_player" | "topdown" | "action_rpg_hero" | "action_rpg", "Pawn2D") => {
+            component.set("movement_mode", json!("topdown"));
+        }
+        ("platformer_player" | "platformer", "Pawn2D") => {
+            component.set("movement_mode", json!("platformer"));
+        }
+        (
+            "topdown_player" | "topdown" | "action_rpg_hero" | "action_rpg",
+            "CharacterController2D",
+        ) => {
+            component.set("mode", json!("topdown"));
+            component.set("jump_force", json!(0.0));
+            component.set("max_jumps", json!(0));
+        }
+        ("topdown_player" | "topdown" | "action_rpg_hero" | "action_rpg", "Rigidbody2D") => {
+            component.set("use_gravity", json!(false));
+            component.set("gravity_scale", json!(0.0));
+            component.set("freeze_rotation", json!(true));
+        }
+        (
+            "topdown_player" | "topdown" | "platformer_player" | "platformer" | "action_rpg_hero"
+            | "action_rpg",
+            "PlayerController2D",
+        ) => {
+            component.set("cursor_visible", json!(false));
+        }
+        ("camera_rig" | "camera", "Camera2D") => {
+            component.set("active", json!(true));
+            component.set("pixel_perfect", json!(true));
+        }
+        ("audio_emitter" | "audio", "AudioSource2D") => {
+            component.set("spatial_blend", json!(1.0));
+        }
+        ("collectible" | "pickup", "Interaction") => {
+            component.set("prompt", json!("Pick up"));
+        }
+        _ => {}
     }
 }
 
@@ -7291,9 +7429,10 @@ fn add_component_bundle_to_entities(
         })?;
         for component_type in component_types {
             if entity.get_component(component_type).is_none() {
-                entity.add_component(
-                    default_component(component_type).expect("bundle component must be registered"),
-                );
+                let mut component =
+                    default_component(component_type).expect("bundle component must be registered");
+                configure_bundle_component(bundle, &mut component);
+                entity.add_component(component);
                 added += 1;
             }
         }
@@ -8920,6 +9059,56 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ready_made_system_bundles_only_use_registered_components_and_apply_genre_defaults() {
+        for bundle in [
+            "topdown_player",
+            "platformer_player",
+            "action_rpg_hero",
+            "enemy_ai",
+            "dialogue_npc",
+            "collectible",
+            "camera_rig",
+            "audio_emitter",
+            "survival_actor",
+            "inventory",
+            "combat_actor",
+            "loot_container",
+            "harvestable",
+            "crafting_station",
+        ] {
+            let (_, component_types) = component_bundle_types(bundle).expect("known bundle");
+            assert!(!component_types.is_empty(), "{bundle}");
+            for component_type in component_types {
+                assert!(
+                    default_component(component_type).is_some(),
+                    "{bundle} references unregistered {component_type}"
+                );
+            }
+        }
+
+        let mut topdown_body = default_component("Rigidbody2D").unwrap();
+        configure_bundle_component("topdown_player", &mut topdown_body);
+        assert!(!topdown_body.get_bool("use_gravity", true));
+        assert!(topdown_body.get_bool("freeze_rotation", false));
+
+        let mut platformer_pawn = default_component("Pawn2D").unwrap();
+        configure_bundle_component("platformer_player", &mut platformer_pawn);
+        assert_eq!(
+            platformer_pawn.get_string("movement_mode", ""),
+            "platformer"
+        );
+
+        let mut camera = default_component("Camera2D").unwrap();
+        configure_bundle_component("camera_rig", &mut camera);
+        assert!(camera.get_bool("active", false));
+        assert!(camera.get_bool("pixel_perfect", false));
+
+        let mut audio = default_component("AudioSource2D").unwrap();
+        configure_bundle_component("audio_emitter", &mut audio);
+        assert_eq!(audio.get_f64("spatial_blend", 0.0), 1.0);
     }
 
     #[test]
