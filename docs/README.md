@@ -13,6 +13,7 @@ runtime de los juegos, pero ya no existe un editor visual Rust/egui.
 |---|---|
 | Instalar y ejecutar el motor | [README principal](../README.md#inicio-rápido) |
 | Aprender el editor y crear un juego | [Editor y flujo de uso](EDITOR_Y_FLUJO_DE_USO.md) |
+| Crear supervivencia con componentes | [Componentes de supervivencia](SURVIVAL_COMPONENTS.md) |
 | Entender el runtime y sus sistemas | [Arquitectura y runtime](ARQUITECTURA_Y_RUNTIME.md) |
 | Programar con Luau o consumir APIs | [Datos, scripting y APIs](DATOS_SCRIPTING_Y_APIS.md) |
 | Compilar, probar, exportar o extender | [Desarrollo, build y extensión](DESARROLLO_BUILD_Y_EXTENSION.md) |
@@ -25,7 +26,7 @@ runtime de los juegos, pero ya no existe un editor visual Rust/egui.
 1. Sigue el [inicio rápido](../README.md#inicio-rápido).
 2. Aprende los [workspaces y paneles](EDITOR_Y_FLUJO_DE_USO.md#workbench-workspaces-y-layout).
 3. Recorre el [flujo base](EDITOR_Y_FLUJO_DE_USO.md#flujo-base).
-4. Prueba con un template TopDown, Platformer o RTS.
+4. Prueba con un template TopDown, Platformer, RTS o Survival.
 5. Revisa [Play Mode, Safe Mode y recuperación](EDITOR_Y_FLUJO_DE_USO.md#play-mode).
 6. Exporta con [Project Operations](EDITOR_Y_FLUJO_DE_USO.md#build-export-y-ejecución-externa).
 

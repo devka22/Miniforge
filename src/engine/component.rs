@@ -257,6 +257,16 @@ impl Component {
         }
 
         let mut quantity = quantity.max(0);
+        let unit_weight = metadata
+            .get("weight")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+            .max(0.0);
+        let max_weight = self.get_f64("max_weight", 0.0).max(0.0);
+        if max_weight > 0.0 && unit_weight > 0.0 {
+            let available = (max_weight - self.inventory_weight()).max(0.0);
+            quantity = quantity.min((available / unit_weight).floor() as i64);
+        }
         let mut added = 0;
         let capacity = self.get_i64("capacity", 24).max(0) as usize;
         let stack_limit = self.get_i64("stack_limit", 99).max(1);
@@ -368,6 +378,67 @@ impl Component {
 
     pub fn inventory_has_item(&self, item_id: &str, quantity: i64) -> bool {
         self.inventory_count_item(item_id) >= quantity
+    }
+
+    pub fn inventory_weight(&self) -> f64 {
+        if self.component_type != "Inventory" {
+            return 0.0;
+        }
+        self.data
+            .get("items")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| {
+                        let quantity = item
+                            .get("quantity")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0)
+                            .max(0) as f64;
+                        let weight = item
+                            .get("metadata")
+                            .and_then(|metadata| metadata.get("weight"))
+                            .and_then(Value::as_f64)
+                            .unwrap_or(0.0)
+                            .max(0.0);
+                        quantity * weight
+                    })
+                    .sum()
+            })
+            .unwrap_or(0.0)
+    }
+
+    pub fn inventory_sort_items(&mut self, mode: &str) {
+        if self.component_type != "Inventory" {
+            return;
+        }
+        let mut items = self
+            .data
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        items.sort_by(|left, right| {
+            let text = |item: &Value, key: &str| {
+                item.get("metadata")
+                    .and_then(|metadata| metadata.get(key))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_lowercase()
+            };
+            match mode {
+                "category" => text(left, "category")
+                    .cmp(&text(right, "category"))
+                    .then_with(|| item_id(left).cmp(item_id(right))),
+                "weight" => item_weight(left)
+                    .total_cmp(&item_weight(right))
+                    .then_with(|| item_id(left).cmp(item_id(right))),
+                _ => item_id(left).cmp(item_id(right)),
+            }
+        });
+        self.set("items", Value::Array(items));
+        self.set("sort_mode", json!(mode));
     }
 
     pub fn equipment_equip(&mut self, slot: &str, item_id: Option<&str>, bonuses: Value) -> bool {
@@ -857,6 +928,18 @@ impl Component {
         hits.insert(entity_id.to_string(), json!(now));
         self.set("last_hits", Value::Object(hits));
     }
+}
+
+fn item_id(item: &Value) -> &str {
+    item.get("id").and_then(Value::as_str).unwrap_or("")
+}
+
+fn item_weight(item: &Value) -> f64 {
+    item.get("metadata")
+        .and_then(|metadata| metadata.get("weight"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0)
+        .max(0.0)
 }
 
 /// Runtime bookkeeping uses underscore-prefixed keys. Those values must never
@@ -1450,6 +1533,35 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "armor": 0.0,
             "alive": true,
         }),
+        "SurvivalNeeds" => json!({
+            "hunger": 100.0,
+            "thirst": 100.0,
+            "energy": 100.0,
+            "fatigue": 0.0,
+            "stamina": 100.0,
+            "body_temperature": 36.8,
+            "wetness": 0.0,
+            "pain": 0.0,
+            "infection": 0.0,
+            "bleeding": 0.0,
+            "hunger_decay_per_second": 0.015,
+            "thirst_decay_per_second": 0.025,
+            "energy_decay_per_second": 0.01,
+            "fatigue_gain_per_second": 0.01,
+            "stamina_recovery_per_second": 7.0,
+            "critical_damage_per_second": 2.0,
+            "auto_update": true,
+            "paused": false,
+        }),
+        "SurvivalUIBinding" => json!({
+            "target_tag": "Player",
+            "source": "health",
+            "output": "progress",
+            "label": "Health",
+            "suffix": "",
+            "precision": 0,
+            "show_value": true,
+        }),
         "Team" => json!({
             "team_id": 0,
             "team_name": "Neutral",
@@ -1590,7 +1702,46 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "items": [],
             "currency": {},
             "stack_limit": 99,
+            "max_weight": 0.0,
+            "sort_mode": "id",
             "locked": false,
+        }),
+        "LootContainer" => json!({
+            "capacity": 18,
+            "stack_limit": 99,
+            "items": [],
+            "loot_entries": [],
+            "hidden_entries": [],
+            "rolls": 1,
+            "hidden_rolls": 1,
+            "searched": false,
+            "rummaged": false,
+            "locked": false,
+            "persistent": true,
+        }),
+        "CraftingBook" => json!({
+            "recipes": [],
+            "known_recipes": [],
+            "allow_all_recipes": true,
+        }),
+        "CraftingStation" => json!({
+            "station_tags": ["generic"],
+            "recipes": [],
+            "speed_multiplier": 1.0,
+            "powered": true,
+        }),
+        "Harvestable" => json!({
+            "item_id": "resource",
+            "amount": 10.0,
+            "max_amount": 10.0,
+            "yield_per_action": 1,
+            "required_tool": null,
+            "tool_multiplier": 1.0,
+            "item_metadata": {},
+            "depleted": false,
+            "destroy_when_depleted": false,
+            "respawn_seconds": 0.0,
+            "respawn_elapsed": 0.0,
         }),
         "Equipment" => json!({
             "slots": {"weapon": null, "armor": null, "trinket": null, "tool": null},
@@ -2137,6 +2288,12 @@ pub fn advanced_component_types() -> &'static [&'static str] {
         "BehaviorTree2D",
         "Stats",
         "Inventory",
+        "SurvivalNeeds",
+        "SurvivalUIBinding",
+        "LootContainer",
+        "CraftingBook",
+        "CraftingStation",
+        "Harvestable",
         "Equipment",
         "Ability",
         "RTSController",
@@ -2251,6 +2408,8 @@ pub fn advanced_component_category(component_type: &str) -> Option<&'static str>
         | "Checkpoint"
         | "CharacterController2D"
         | "EconomyWallet" => "Gameplay",
+        "SurvivalNeeds" | "SurvivalUIBinding" | "LootContainer" | "CraftingBook"
+        | "CraftingStation" | "Harvestable" => "Survival",
         "AIController" => "AI",
         "RTSController"
         | "Commandable"

@@ -9,6 +9,7 @@ use crate::engine::asset_tools::AssetTools;
 use crate::engine::build_placement::{BuildFootprint, BuildPlacement, PlacementResult};
 use crate::engine::component::{Component, component_from_data, default_component};
 use crate::engine::spatial_index::{SpatialEntry, SpatialIndex};
+use crate::engine::survival_systems::{CraftResult, SurvivalInteractionResult, SurvivalSystems};
 use crate::entities::game_object::GameObject;
 use crate::map::flow_field::FlowField;
 use crate::map::grid::Grid;
@@ -593,6 +594,85 @@ impl GameAPI {
             })
             .unwrap_or(0)
             .max(0)
+    }
+
+    pub fn inventory_weight(entity: &GameObject) -> f64 {
+        entity
+            .get_component("Inventory")
+            .map(Component::inventory_weight)
+            .unwrap_or(0.0)
+    }
+
+    pub fn sort_inventory(entity: &mut GameObject, mode: &str) -> bool {
+        let Some(inventory) = entity.get_component_mut("Inventory") else {
+            return false;
+        };
+        inventory.inventory_sort_items(mode);
+        true
+    }
+
+    pub fn survival_need(entity: &GameObject, name: &str) -> Option<f64> {
+        SurvivalSystems::need(entity, name)
+    }
+
+    pub fn survival_state(entity: &GameObject) -> Value {
+        SurvivalSystems::state(entity)
+    }
+
+    pub fn set_survival_need(entity: &mut GameObject, name: &str, value: f64) -> bool {
+        SurvivalSystems::set_need(entity, name, value)
+    }
+
+    pub fn modify_survival_need(entity: &mut GameObject, name: &str, delta: f64) -> bool {
+        SurvivalSystems::modify_need(entity, name, delta)
+    }
+
+    pub fn use_item(entity: &mut GameObject, item_id: &str) -> bool {
+        SurvivalSystems::use_item(entity, item_id)
+    }
+
+    pub fn search_loot_container(container: &mut GameObject) -> usize {
+        SurvivalSystems::search_container(container)
+    }
+
+    pub fn rummage_loot_container(container: &mut GameObject) -> usize {
+        SurvivalSystems::rummage_container(container)
+    }
+
+    pub fn take_container_item(
+        container: &mut GameObject,
+        actor: &mut GameObject,
+        item_id: &str,
+        quantity: i64,
+    ) -> i64 {
+        SurvivalSystems::take_from_container(container, actor, item_id, quantity)
+    }
+
+    pub fn take_all_container_items(container: &mut GameObject, actor: &mut GameObject) -> i64 {
+        SurvivalSystems::take_all(container, actor)
+    }
+
+    pub fn can_craft(entity: &GameObject, recipe_id: &str) -> bool {
+        SurvivalSystems::can_craft(entity, recipe_id)
+    }
+
+    pub fn craft(entity: &mut GameObject, recipe_id: &str) -> CraftResult {
+        SurvivalSystems::craft(entity, recipe_id)
+    }
+
+    pub fn craft_at(actor: &mut GameObject, station: &GameObject, recipe_id: &str) -> CraftResult {
+        SurvivalSystems::craft_at(actor, station, recipe_id)
+    }
+
+    pub fn harvest(source: &mut GameObject, actor: &mut GameObject) -> i64 {
+        SurvivalSystems::harvest(source, actor)
+    }
+
+    pub fn survival_interact(
+        actor: &mut GameObject,
+        target: &mut GameObject,
+    ) -> SurvivalInteractionResult {
+        SurvivalSystems::interact(actor, target)
     }
 
     pub fn equip_item(entity: &mut GameObject, slot: &str, item_id: &str, bonuses: Value) -> bool {

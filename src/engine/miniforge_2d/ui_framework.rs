@@ -1015,6 +1015,76 @@ pub fn inventory_screen_canvas() -> UiCanvas2D {
     )
 }
 
+pub fn survival_hud_canvas() -> UiCanvas2D {
+    let mut rows = Vec::new();
+    let specs = [
+        ("Health", "player.health.percent", 1.0, [220, 60, 72, 255]),
+        ("Hunger", "player.needs.hunger", 100.0, [214, 151, 54, 255]),
+        ("Thirst", "player.needs.thirst", 100.0, [55, 158, 207, 255]),
+        ("Energy", "player.needs.energy", 100.0, [65, 184, 108, 255]),
+        (
+            "Stamina",
+            "player.needs.stamina",
+            100.0,
+            [136, 101, 187, 255],
+        ),
+    ];
+    for (index, (label, path, max, color)) in specs.into_iter().enumerate() {
+        let y = 18.0 + index as f32 * 42.0;
+        rows.push(ui_widget(
+            &format!("{label}Label"),
+            "Label",
+            UiRect2D {
+                x: 16.0,
+                y,
+                width: 72.0,
+                height: 20.0,
+            },
+            Anchor2D::TOP_LEFT,
+            json!({"text": label}),
+            "panel",
+        ));
+        let mut bar = ui_widget(
+            &format!("{label}Bar"),
+            "ProgressBar",
+            UiRect2D {
+                x: 92.0,
+                y,
+                width: 172.0,
+                height: 18.0,
+            },
+            Anchor2D::TOP_LEFT,
+            json!({"value": max, "max": max, "fill": color}),
+            "panel",
+        );
+        bar.bindings.push(UiBinding2D {
+            property: "value".to_string(),
+            source_path: path.to_string(),
+            fallback: json!(max),
+        });
+        rows.push(bar);
+    }
+    root_canvas(
+        "SurvivalHUD",
+        vec![
+            ui_widget(
+                "SurvivalStatusPanel",
+                "Panel",
+                UiRect2D {
+                    x: 24.0,
+                    y: 24.0,
+                    width: 282.0,
+                    height: 228.0,
+                },
+                Anchor2D::TOP_LEFT,
+                json!({"title": "Status"}),
+                "panel",
+            )
+            .with_children(rows),
+        ],
+    )
+}
+
 pub fn dialogue_screen_canvas() -> UiCanvas2D {
     root_canvas(
         "DialogueScreen",

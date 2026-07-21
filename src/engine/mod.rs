@@ -150,6 +150,7 @@ pub mod session_recovery;
 pub mod spatial_index;
 #[cfg(feature = "editor_core")]
 pub mod sprite_editor;
+pub mod survival_systems;
 pub mod system;
 pub mod system_audit;
 pub mod system_scheduler;
