@@ -177,6 +177,42 @@ impl RuntimeWorld {
         self.spatial_index.query_radius(x, y, radius, tag, layer)
     }
 
+    pub fn query_radius_ids(
+        &self,
+        x: f64,
+        y: f64,
+        radius: f64,
+        tag: Option<&str>,
+        layer: Option<&str>,
+    ) -> Vec<u64> {
+        self.spatial_index
+            .query_radius_ids(x, y, radius, tag, layer)
+    }
+
+    pub fn query_radius_ids_into(
+        &self,
+        x: f64,
+        y: f64,
+        radius: f64,
+        tag: Option<&str>,
+        layer: Option<&str>,
+        output: &mut Vec<u64>,
+    ) {
+        self.spatial_index
+            .query_radius_ids_into(x, y, radius, tag, layer, output);
+    }
+
+    pub fn any_in_radius(
+        &self,
+        x: f64,
+        y: f64,
+        radius: f64,
+        tag: Option<&str>,
+        layer: Option<&str>,
+    ) -> bool {
+        self.spatial_index.any_in_radius(x, y, radius, tag, layer)
+    }
+
     pub fn scene_tree(&self) -> SceneTreeIndex {
         SceneTreeIndex::build(&self.units)
     }
@@ -302,6 +338,10 @@ mod tests {
 
         assert!(world.index_is_current());
         assert_eq!(world.query_radius(0.0, 0.0, 4.0, None, None).len(), 1);
+        let mut nearby_ids = Vec::with_capacity(8);
+        world.query_radius_ids_into(0.0, 0.0, 4.0, None, None, &mut nearby_ids);
+        assert_eq!(nearby_ids, vec![near_id]);
+        assert!(world.any_in_radius(0.0, 0.0, 4.0, None, None));
         world.entity_mut(near_id).expect("near entity").x = 30.0;
         assert!(!world.index_is_current());
         world.rebuild_index();

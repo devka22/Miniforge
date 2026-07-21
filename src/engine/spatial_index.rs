@@ -134,18 +134,48 @@ impl SpatialIndex {
         tag: Option<&str>,
         layer: Option<&str>,
     ) -> Vec<SpatialEntry> {
+        self.query_radius_ids(x, y, radius, tag, layer)
+            .into_iter()
+            .filter_map(|entity_id| self.entries.get(&entity_id).cloned())
+            .collect()
+    }
+
+    /// Returns stable entity IDs without cloning entry metadata.
+    ///
+    /// Use this for frequent AI, interaction and collision broad-phase queries
+    /// whose callers can resolve IDs against the canonical runtime world.
+    pub fn query_radius_ids(
+        &self,
+        x: f64,
+        y: f64,
+        radius: f64,
+        tag: Option<&str>,
+        layer: Option<&str>,
+    ) -> Vec<u64> {
+        let mut hits = Vec::new();
+        self.query_radius_ids_into(x, y, radius, tag, layer, &mut hits);
+        hits
+    }
+
+    /// Writes matching IDs into caller-owned storage so hot loops can reuse
+    /// capacity instead of allocating and cloning `SpatialEntry` values.
+    pub fn query_radius_ids_into(
+        &self,
+        x: f64,
+        y: f64,
+        radius: f64,
+        tag: Option<&str>,
+        layer: Option<&str>,
+        output: &mut Vec<u64>,
+    ) {
         let x = finite_or(x, 0.0);
         let y = finite_or(y, 0.0);
         let radius = finite_or(radius, 0.0).max(0.0);
         let min_cell = self.cell_for(x - radius, y - radius);
         let max_cell = self.cell_for(x + radius, y + radius);
-        let mut seen = HashSet::new();
-        let mut hits = Vec::new();
+        output.clear();
 
         self.visit_candidate_ids(min_cell, max_cell, |entity_id| {
-            if !seen.insert(entity_id) {
-                return;
-            }
             let Some(entry) = self.entries.get(&entity_id) else {
                 return;
             };
@@ -156,11 +186,39 @@ impl SpatialIndex {
             let dx = entry.x - x;
             let dy = entry.y - y;
             if dx * dx + dy * dy <= combined_radius * combined_radius {
-                hits.push(entry.clone());
+                output.push(entity_id);
             }
         });
-        hits.sort_unstable_by_key(|entry| entry.entity_id);
-        hits
+        output.sort_unstable();
+        output.dedup();
+    }
+
+    /// Allocation-free early-exit query for high-frequency proximity checks.
+    pub fn any_in_radius(
+        &self,
+        x: f64,
+        y: f64,
+        radius: f64,
+        tag: Option<&str>,
+        layer: Option<&str>,
+    ) -> bool {
+        let x = finite_or(x, 0.0);
+        let y = finite_or(y, 0.0);
+        let radius = finite_or(radius, 0.0).max(0.0);
+        let min_cell = self.cell_for(x - radius, y - radius);
+        let max_cell = self.cell_for(x + radius, y + radius);
+        self.any_candidate_id(min_cell, max_cell, |entity_id| {
+            let Some(entry) = self.entries.get(&entity_id) else {
+                return false;
+            };
+            if !matches_filters(entry, tag, layer) {
+                return false;
+            }
+            let combined_radius = radius + entry.radius;
+            let dx = entry.x - x;
+            let dy = entry.y - y;
+            dx * dx + dy * dy <= combined_radius * combined_radius
+        })
     }
 
     pub fn query_rect(
@@ -278,6 +336,39 @@ impl SpatialIndex {
         for id in &self.oversized_entities {
             visitor(*id);
         }
+    }
+
+    fn any_candidate_id(
+        &self,
+        min_cell: (i32, i32),
+        max_cell: (i32, i32),
+        mut predicate: impl FnMut(u64) -> bool,
+    ) -> bool {
+        if cell_span(min_cell, max_cell) <= MAX_DIRECT_QUERY_CELLS {
+            for cy in min_cell.1..=max_cell.1 {
+                for cx in min_cell.0..=max_cell.0 {
+                    if self
+                        .cells
+                        .get(&(cx, cy))
+                        .is_some_and(|ids| ids.iter().copied().any(&mut predicate))
+                    {
+                        return true;
+                    }
+                }
+            }
+        } else {
+            for (&(cx, cy), ids) in &self.cells {
+                if cx >= min_cell.0
+                    && cx <= max_cell.0
+                    && cy >= min_cell.1
+                    && cy <= max_cell.1
+                    && ids.iter().copied().any(&mut predicate)
+                {
+                    return true;
+                }
+            }
+        }
+        self.oversized_entities.iter().copied().any(predicate)
     }
 }
 
@@ -410,5 +501,28 @@ mod tests {
             hits.iter().map(|entry| entry.entity_id).collect::<Vec<_>>(),
             vec![expected]
         );
+    }
+
+    #[test]
+    fn id_queries_reuse_storage_and_proximity_checks_do_not_clone_entries() {
+        let mut enemy = GameObject::new(2.0, 2.0, Some("Enemy".to_string()));
+        enemy.tag = "Enemy".to_string();
+        enemy.layer = "Actors".to_string();
+        let expected = enemy.id;
+        let far = GameObject::new(80.0, 80.0, Some("Far".to_string()));
+        let mut index = SpatialIndex::new(2.0);
+        index.rebuild(&[enemy, far]);
+
+        let mut output = Vec::with_capacity(32);
+        let capacity = output.capacity();
+        index.query_radius_ids_into(2.0, 2.0, 1.0, Some("Enemy"), Some("Actors"), &mut output);
+        assert_eq!(output, vec![expected]);
+        assert_eq!(output.capacity(), capacity);
+        assert!(index.any_in_radius(2.0, 2.0, 1.0, Some("Enemy"), Some("Actors")));
+        assert!(!index.any_in_radius(2.0, 2.0, 1.0, Some("Player"), None));
+
+        index.query_radius_ids_into(30.0, 30.0, 0.5, None, None, &mut output);
+        assert!(output.is_empty());
+        assert_eq!(output.capacity(), capacity);
     }
 }
