@@ -247,6 +247,40 @@ impl GameAPI {
         index.query_radius(x, y, radius, tag, layer)
     }
 
+    pub fn query_radius_ids_indexed(
+        index: &SpatialIndex,
+        x: f64,
+        y: f64,
+        radius: f64,
+        tag: Option<&str>,
+        layer: Option<&str>,
+    ) -> Vec<u64> {
+        index.query_radius_ids(x, y, radius, tag, layer)
+    }
+
+    pub fn query_radius_ids_indexed_into(
+        index: &SpatialIndex,
+        x: f64,
+        y: f64,
+        radius: f64,
+        tag: Option<&str>,
+        layer: Option<&str>,
+        output: &mut Vec<u64>,
+    ) {
+        index.query_radius_ids_into(x, y, radius, tag, layer, output);
+    }
+
+    pub fn any_in_radius_indexed(
+        index: &SpatialIndex,
+        x: f64,
+        y: f64,
+        radius: f64,
+        tag: Option<&str>,
+        layer: Option<&str>,
+    ) -> bool {
+        index.any_in_radius(x, y, radius, tag, layer)
+    }
+
     pub fn nearest_indexed(
         index: &SpatialIndex,
         x: f64,
