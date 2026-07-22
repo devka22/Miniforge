@@ -987,6 +987,45 @@ impl EditorCore {
                     bytes: 0,
                 }
             }
+            "prepare_wgpu_preview" => {
+                let project_path = self
+                    .project_path
+                    .clone()
+                    .ok_or_else(EditorCoreError::no_project)?;
+                let executable =
+                    crate::engine::packaging_manager::PackagingManager::wgpu_preview_binary();
+                let ready = executable.is_some();
+                let warnings = if ready {
+                    Vec::new()
+                } else {
+                    vec![
+                        "wgpu preview executable unavailable; build miniforge_wgpu_preview with the wgpu_runtime feature or set MINIFORGE_WGPU_PREVIEW"
+                            .to_string(),
+                    ]
+                };
+                let plan = ExternalLaunchPlanDto {
+                    kind: "wgpu-preview".to_string(),
+                    profile: "development".to_string(),
+                    ready,
+                    executable: executable.map(|path| path.to_string_lossy().to_string()),
+                    arguments: vec![project_path.to_string_lossy().to_string()],
+                    working_directory: project_path.to_string_lossy().to_string(),
+                    artifact_path: project_path.to_string_lossy().to_string(),
+                    warnings,
+                };
+                self.external_launch_plan = Some(plan.clone());
+                ProjectOperationOutcomeDto {
+                    action: action.clone(),
+                    message: if plan.ready {
+                        "Native wgpu project preview prepared".to_string()
+                    } else {
+                        "wgpu preview executable is missing".to_string()
+                    },
+                    artifact_path: Some(plan.artifact_path.clone()),
+                    files: 0,
+                    bytes: 0,
+                }
+            }
             "prepare_external_play" => {
                 let profile = parse_export_profile(
                     payload
@@ -8760,6 +8799,14 @@ mod tests {
         assert!(imported.join("project.json").is_file());
         assert!(!imported.join(".miniforge").exists());
         assert!(!imported.join("saves/autosave").exists());
+
+        core.project_operation("prepare_wgpu_preview", "{}")
+            .unwrap();
+        let preview = core.project_operations().unwrap().external_launch.unwrap();
+        assert_eq!(preview.kind, "wgpu-preview");
+        assert_eq!(preview.profile, "development");
+        assert_eq!(preview.arguments, vec![root.to_string_lossy().to_string()]);
+        assert_eq!(preview.ready, preview.executable.is_some());
 
         core.project_operation("prepare_external_play", r#"{"profile":"debug"}"#)
             .unwrap();

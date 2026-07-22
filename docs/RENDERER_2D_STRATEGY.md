@@ -29,9 +29,15 @@ readback. It supports both an off-screen target and owned window surfaces with s
 vsync, resize/reconfigure, occlusion handling and presentation. Atlas UV regions and pixel-space
 scissor clipping share the same sprite path. Hardware coverage includes an ignored test that renders
 colored and atlas-textured geometry and checks the resulting pixels. A generic
-`miniforge_wgpu_preview` binary exercises the window-surface path.
+`miniforge_wgpu_preview` binary exercises the window-surface path and can load any MiniForge
+project through the normal `EngineRuntime`, upload its sprite assets, extract its grid/entities and
+drive player movement with WASD or the arrow keys:
 
-The main project runtime still uses Macroquad while project scene extraction, tilemap/UI/particle
+```bash
+cargo run --bin miniforge_wgpu_preview --features wgpu_runtime -- /path/to/project
+```
+
+The main exported runtime still uses Macroquad while tilemap layers beyond collision, UI/particle
 command geometry and full device-loss recreation are completed. Projects should therefore leave
 `experimental_wgpu` disabled for exports that need the full production renderer. Project Settings
 keeps this migration state visible instead of hiding it in JSON.

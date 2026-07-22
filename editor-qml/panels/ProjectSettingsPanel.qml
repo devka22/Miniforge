@@ -276,13 +276,13 @@ Rectangle {
                             color: backendSelect.currentValue === "wgpu" ? Theme.DarkTheme.warning : Theme.DarkTheme.text
                             wrapMode: Text.Wrap
                             text: backendSelect.currentValue === "wgpu"
-                                  ? "wgpu is the selected long-term backend for compute, modern shaders and Metal/Vulkan/DX12/WebGPU. The current renderer is still a compatibility preview; keep the preview switch off for playable builds so MiniForge falls back to Macroquad."
-                                  : "Macroquad remains the production backend while the native wgpu renderer reaches sprite, tilemap, UI and post-process parity."
+                                  ? "wgpu now uses physical Metal/Vulkan/DX12 adapters, window surfaces, sprite textures, atlas regions and clipping. The project preview is playable for current scene entities; exported builds still fall back to Macroquad until tilemap, UI and particle parity is complete."
+                                  : "Macroquad remains the exported-game fallback while the native wgpu runtime reaches tilemap, UI, particle and device-loss parity."
                         }
                     }
                     Switch {
                         id: wgpuPreview
-                        text: "Enable experimental wgpu compatibility preview"
+                        text: "Enable native wgpu project preview"
                         enabled: backendSelect.currentValue === "wgpu"
                         onToggled: if (!root.loading) root.dirty = true
                     }

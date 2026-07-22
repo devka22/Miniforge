@@ -230,6 +230,13 @@ Rectangle {
                             }
                         }
                         MfButton {
+                            text: "Run wgpu Preview"
+                            onClicked: {
+                                if (root.run("prepare_wgpu_preview", {}))
+                                    editorBridge.launchPreparedExternal()
+                            }
+                        }
+                        MfButton {
                             text: "Package & Run"
                             onClicked: {
                                 if (root.run("prepare_external_build", {
@@ -260,7 +267,9 @@ Rectangle {
                     }
                     Label {
                         Layout.fillWidth: true
-                        text: "External runtime is isolated from the editor process and receives --build <artifact>."
+                        text: (root.opsState.external_launch || {}).kind === "wgpu-preview"
+                              ? "The native wgpu preview loads this project directly and accepts WASD or arrow-key movement."
+                              : "External runtime is isolated from the editor process and receives --build <artifact>."
                         color: Theme.DarkTheme.muted
                         wrapMode: Text.WordWrap
                     }
