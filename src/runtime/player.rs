@@ -616,7 +616,7 @@ fn draw_runtime(
     draw_ui(runtime, &graphics);
     if graphics_notice_timer > 0.0 {
         draw_text_ex(
-            &format!("Graficos: {}  (F1)", graphics.quality.label()),
+            format!("Graficos: {}  (F1)", graphics.quality.label()),
             24.0,
             34.0,
             TextParams {
