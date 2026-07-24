@@ -181,6 +181,7 @@ impl SceneTreeIndex {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_tree(
     entity_id: u64,
     parent_path: Option<&str>,

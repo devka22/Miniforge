@@ -411,9 +411,11 @@ mod tests {
 
     #[test]
     fn diagnostics_find_invalid_layers_and_runtime_values() {
-        let mut settings = Physics2DSettings::default();
-        settings.fixed_hz = 0;
-        settings.max_substeps = 0;
+        let mut settings = Physics2DSettings {
+            fixed_hz: 0,
+            max_substeps: 0,
+            ..Physics2DSettings::default()
+        };
         settings.layers.push(PhysicsLayer2D {
             name: "Pawn".to_string(),
             index: 17,

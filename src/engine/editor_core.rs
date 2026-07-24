@@ -58,6 +58,10 @@ use crate::systems::rts_system::RTSSystem;
 pub const EDITOR_CORE_API_VERSION: u32 = 1;
 const MAX_EDITOR_SCRIPT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CONTENT_TEXT_BYTES: usize = 8 * 1024 * 1024;
+type ParsedInputMap = (
+    BTreeMap<String, Vec<String>>,
+    BTreeMap<String, InputActionInfo>,
+);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EntityRow {
@@ -4283,7 +4287,7 @@ impl EditorCore {
             if !game.script_editor.document.dirty
                 && active_path
                     .as_ref()
-                    .is_some_and(|active| changed_paths.iter().any(|path| *path == active))
+                    .is_some_and(|active| changed_paths.contains(&active))
                 && let Err(error) = game.reload_open_file()
             {
                 game.console
@@ -4853,15 +4857,7 @@ fn validate_engine_settings(value: &Value) -> Result<(), EditorCoreError> {
     Ok(())
 }
 
-fn parse_input_map(
-    value: &Value,
-) -> Result<
-    (
-        BTreeMap<String, Vec<String>>,
-        BTreeMap<String, InputActionInfo>,
-    ),
-    EditorCoreError,
-> {
+fn parse_input_map(value: &Value) -> Result<ParsedInputMap, EditorCoreError> {
     let object = value.as_object().ok_or_else(|| {
         EditorCoreError::new(
             EditorCoreErrorKind::InvalidArgument,
@@ -6668,10 +6664,10 @@ fn manage_asset_import(
         }
         sidecars.push(import_sidecar);
     }
-    if SpriteSheetImporter::supports_image(&destination) {
-        if let Ok(generated) = create_imported_sprite_bundle(project_root, &destination) {
-            sidecars.extend(generated);
-        }
+    if SpriteSheetImporter::supports_image(&destination)
+        && let Ok(generated) = create_imported_sprite_bundle(project_root, &destination)
+    {
+        sidecars.extend(generated);
     }
     sidecars.sort();
     sidecars.dedup();

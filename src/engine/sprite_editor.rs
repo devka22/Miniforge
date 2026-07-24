@@ -50,18 +50,13 @@ pub struct SpriteEditorCanvas {
     pending_edit: Option<SpriteCanvasSnapshot>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SpriteBrushMirror {
+    #[default]
     None,
     Horizontal,
     Vertical,
     Quad,
-}
-
-impl Default for SpriteBrushMirror {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

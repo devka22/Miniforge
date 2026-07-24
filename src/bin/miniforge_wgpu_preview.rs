@@ -334,11 +334,11 @@ impl ApplicationHandler for PreviewApp {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
-                if let Some(backend) = self.backend.as_mut() {
-                    if let Err(error) = backend.resize(size.width, size.height) {
-                        eprintln!("MINIFORGE_WGPU_SURFACE_ERROR {error}");
-                        event_loop.exit();
-                    }
+                if let Some(backend) = self.backend.as_mut()
+                    && let Err(error) = backend.resize(size.width, size.height)
+                {
+                    eprintln!("MINIFORGE_WGPU_SURFACE_ERROR {error}");
+                    event_loop.exit();
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {

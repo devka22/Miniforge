@@ -1371,10 +1371,12 @@ fn required_point(value: &Value, key: &str) -> Result<(usize, usize), String> {
     Ok((required_usize(point, "x")?, required_usize(point, "y")?))
 }
 
+type TileRegionPayload = (usize, (usize, usize), (usize, usize), i32);
+
 fn tile_region_payload(
     editor: &TilemapEditor2D,
     payload: &Value,
-) -> Result<(usize, (usize, usize), (usize, usize), i32), String> {
+) -> Result<TileRegionPayload, String> {
     Ok((
         usize_field(payload, "layer").unwrap_or(editor.active_layer),
         required_point(payload, "start")?,
