@@ -230,6 +230,22 @@ int main(int argc, char** argv)
 
     required = 0;
     expectStatus(
+        mf_editor_authoring_catalog_json(editor, nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "query authoring catalog size"
+    );
+    std::vector<char> authoringCatalog(required);
+    expectStatus(
+        mf_editor_authoring_catalog_json(editor, authoringCatalog.data(), authoringCatalog.size(), &required, &error),
+        MF_STATUS_OK,
+        error,
+        "read authoring catalog"
+    );
+    expect(std::string(authoringCatalog.data()).find("\"physics_world\"") != std::string::npos, "authoring catalog should expose physics profiles");
+
+    required = 0;
+    expectStatus(
         mf_editor_profiler_snapshot_json(editor, nullptr, 0, &required, &error),
         MF_STATUS_BUFFER_TOO_SMALL,
         error,

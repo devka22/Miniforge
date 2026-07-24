@@ -6,11 +6,18 @@ use crate::systems::spatial_index::{EntitySpatialIndex, entity_aabb};
 
 type Vec2 = (f64, f64);
 type RayShapeHit = (f64, Vec2, Vec2);
+type PairMap = BTreeMap<(u64, u64), PairType>;
+type ContactMap = BTreeMap<(u64, u64), Contact>;
+type PairNameMap = BTreeMap<(u64, u64), (String, String)>;
 
 #[derive(Debug, Clone)]
 pub struct PhysicsSystem {
     pub gravity: (f64, f64),
     pub solver_iterations: usize,
+    pub fixed_delta: f64,
+    pub max_substeps: usize,
+    pub continuous_collision: bool,
+    pub sleeping_enabled: bool,
     pub active_pairs: BTreeMap<(u64, u64), PairType>,
     pub active_contacts: BTreeMap<(u64, u64), Contact>,
     pub layer_matrix: BTreeMap<(String, String), bool>,
@@ -49,6 +56,15 @@ pub struct PhysicsEvent {
 pub struct Contact {
     pub normal: (f64, f64),
     pub depth: f64,
+}
+
+struct CollisionPass {
+    collider_count: usize,
+    brute_force_pairs: usize,
+    pairs: PairMap,
+    contacts: ContactMap,
+    names: PairNameMap,
+    broadphase_candidates: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -133,6 +149,10 @@ impl PhysicsSystem {
         Self {
             gravity: (0.0, 18.0),
             solver_iterations: 2,
+            fixed_delta: 1.0 / 60.0,
+            max_substeps: 4,
+            continuous_collision: true,
+            sleeping_enabled: true,
             active_pairs: BTreeMap::new(),
             active_contacts: BTreeMap::new(),
             layer_matrix: BTreeMap::new(),
@@ -180,92 +200,66 @@ impl PhysicsSystem {
             return;
         }
 
-        let dt = dt.clamp(0.0, 0.05);
-        self.integrate_bodies(entities, dt);
+        let fixed_delta = if self.fixed_delta.is_finite() {
+            self.fixed_delta.clamp(1.0 / 480.0, 1.0 / 15.0)
+        } else {
+            1.0 / 60.0
+        };
+        let max_substeps = self.max_substeps.clamp(1, 16);
+        let dt = dt.clamp(0.0, fixed_delta * max_substeps as f64);
+        let body_requests_ccd = entities.iter().any(|entity| {
+            entity
+                .get_component("Rigidbody2D")
+                .is_some_and(|body| body.get_bool("continuous_collision", false))
+        });
+        let substeps = if self.continuous_collision || body_requests_ccd {
+            (dt / fixed_delta).ceil().max(1.0) as usize
+        } else {
+            1
+        }
+        .clamp(1, max_substeps);
+        let step_dt = dt / substeps as f64;
+        let mut final_pass = None;
+        let mut peak_broadphase_candidates = 0;
+        for _ in 0..substeps {
+            self.integrate_bodies(entities, step_dt);
+            let pass = self.solve_collision_pass(entities);
+            peak_broadphase_candidates = peak_broadphase_candidates.max(pass.broadphase_candidates);
+            final_pass = Some(pass);
+        }
         self.rapier_report = Some(RapierPhysicsBridge::inspect_scene(entities, self.gravity));
 
-        let colliders: Vec<usize> = entities
-            .iter()
-            .enumerate()
-            .filter_map(|(index, entity)| {
-                if entity.enabled
-                    && entity.visible
-                    && physics_shape_component(entity).is_some_and(|collider| collider.enabled)
-                {
-                    Some(index)
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let final_pass = final_pass.expect("at least one physics substep");
 
-        let mut current_pairs = BTreeMap::new();
-        let mut current_contacts = BTreeMap::new();
-        let mut current_names = BTreeMap::new();
-        let brute_force_pairs = colliders
-            .len()
-            .saturating_mul(colliders.len().saturating_sub(1))
-            / 2;
-        let mut broadphase_candidates = 0;
-        for _ in 0..self.solver_iterations.max(1) {
-            // Rebuild after each solver pass because contact resolution can move bodies.
-            // R-tree construction is O(n log n) and prevents the narrow phase from
-            // degenerating into O(n²) for sparse scenes.
-            let broadphase = EntitySpatialIndex::from_bounds(colliders.iter().map(|&index| {
-                let (min, max) = entity_aabb(&entities[index]);
-                (index, entities[index].id, min, max)
-            }));
-            let candidates = broadphase.overlapping_pairs();
-            broadphase_candidates = broadphase_candidates.max(candidates.len());
-            for (first_index, second_index) in candidates {
-                let (first, second) = two_entities_mut(entities, first_index, second_index);
-                if !self.layer_collision_enabled(first, second) {
-                    continue;
-                }
-                let Some(contact) = compute_contact(first, second) else {
-                    continue;
-                };
-                if one_way_contact_ignored(first, second, contact) {
-                    continue;
-                }
-                let trigger = collider_is_trigger(first) || collider_is_trigger(second);
-                let pair_type = if trigger {
-                    PairType::Trigger
-                } else {
-                    PairType::Collision
-                };
-                let key = pair_key(first.id, second.id);
-                current_pairs.insert(key, pair_type);
-                current_contacts.insert(key, contact);
-                current_names.insert(key, ordered_pair_names(first, second));
-                if !trigger {
-                    resolve_contact(first, second, contact);
-                }
-            }
-        }
-
-        self.dispatch_pair_events(&current_pairs, &current_contacts, &current_names);
+        self.dispatch_pair_events(&final_pass.pairs, &final_pass.contacts, &final_pass.names);
         let bodies = entities
             .iter()
             .filter(|entity| entity.get_component("Rigidbody2D").is_some())
             .count();
-        let triggers = current_pairs
+        let triggers = final_pass
+            .pairs
             .values()
             .filter(|pair| **pair == PairType::Trigger)
             .count();
-        let collisions = current_pairs.len().saturating_sub(triggers);
+        let collisions = final_pass.pairs.len().saturating_sub(triggers);
         self.stats.extend(BTreeMap::from([
             ("bodies".to_string(), bodies),
-            ("colliders".to_string(), colliders.len()),
-            ("pairs".to_string(), current_pairs.len()),
-            ("contacts".to_string(), current_pairs.len()),
-            ("broadphase_candidates".to_string(), broadphase_candidates),
+            ("colliders".to_string(), final_pass.collider_count),
+            ("pairs".to_string(), final_pass.pairs.len()),
+            ("contacts".to_string(), final_pass.pairs.len()),
+            (
+                "broadphase_candidates".to_string(),
+                peak_broadphase_candidates,
+            ),
             (
                 "broadphase_rejected".to_string(),
-                brute_force_pairs.saturating_sub(broadphase_candidates),
+                final_pass
+                    .brute_force_pairs
+                    .saturating_sub(peak_broadphase_candidates),
             ),
             ("triggers".to_string(), triggers),
             ("collisions".to_string(), collisions),
+            ("substeps".to_string(), substeps),
             (
                 "rapier_ready_colliders".to_string(),
                 self.rapier_report
@@ -529,7 +523,7 @@ impl PhysicsSystem {
                 let Some(body) = entity.get_component("Rigidbody2D") else {
                     continue;
                 };
-                if !body.enabled || body.get_bool("sleeping", false) {
+                if !body.enabled || (self.sleeping_enabled && body.get_bool("sleeping", false)) {
                     continue;
                 }
                 (
@@ -584,6 +578,75 @@ impl PhysicsSystem {
                 body.set_f64("angular_velocity", angular_velocity);
             }
             entity.sync_to_components();
+        }
+    }
+
+    fn solve_collision_pass(&self, entities: &mut [GameObject]) -> CollisionPass {
+        let colliders = entities
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entity)| {
+                if entity.enabled
+                    && entity.visible
+                    && physics_shape_component(entity).is_some_and(|collider| collider.enabled)
+                {
+                    Some(index)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        let brute_force_pairs = colliders
+            .len()
+            .saturating_mul(colliders.len().saturating_sub(1))
+            / 2;
+        let mut current_pairs = BTreeMap::new();
+        let mut current_contacts = BTreeMap::new();
+        let mut current_names = BTreeMap::new();
+        let mut broadphase_candidates = 0;
+        for _ in 0..self.solver_iterations.max(1) {
+            // Rebuild after each solver pass because contact resolution can move bodies.
+            // R-tree construction is O(n log n) and prevents the narrow phase from
+            // degenerating into O(n²) for sparse scenes.
+            let broadphase = EntitySpatialIndex::from_bounds(colliders.iter().map(|&index| {
+                let (min, max) = entity_aabb(&entities[index]);
+                (index, entities[index].id, min, max)
+            }));
+            let candidates = broadphase.overlapping_pairs();
+            broadphase_candidates = broadphase_candidates.max(candidates.len());
+            for (first_index, second_index) in candidates {
+                let (first, second) = two_entities_mut(entities, first_index, second_index);
+                if !self.layer_collision_enabled(first, second) {
+                    continue;
+                }
+                let Some(contact) = compute_contact(first, second) else {
+                    continue;
+                };
+                if one_way_contact_ignored(first, second, contact) {
+                    continue;
+                }
+                let trigger = collider_is_trigger(first) || collider_is_trigger(second);
+                let pair_type = if trigger {
+                    PairType::Trigger
+                } else {
+                    PairType::Collision
+                };
+                let key = pair_key(first.id, second.id);
+                current_pairs.insert(key, pair_type);
+                current_contacts.insert(key, contact);
+                current_names.insert(key, ordered_pair_names(first, second));
+                if !trigger {
+                    resolve_contact(first, second, contact);
+                }
+            }
+        }
+        CollisionPass {
+            collider_count: colliders.len(),
+            brute_force_pairs,
+            pairs: current_pairs,
+            contacts: current_contacts,
+            names: current_names,
+            broadphase_candidates,
         }
     }
 
@@ -1384,5 +1447,52 @@ mod tests {
 
         assert!((hit.distance - 1.0).abs() < 1e-9, "hit was {hit:?}");
         assert!((hit.point.0 - 1.0).abs() < 1e-9, "hit was {hit:?}");
+    }
+
+    #[test]
+    fn adaptive_substeps_stop_fast_body_before_thin_wall() {
+        let mut projectile = GameObject::new(0.0, 0.0, Some("Projectile".to_string()));
+        projectile.add_component(
+            crate::engine::component::default_component("Rigidbody2D")
+                .expect("rigidbody component"),
+        );
+        let body = projectile
+            .get_component_mut("Rigidbody2D")
+            .expect("rigidbody was added");
+        body.set("use_gravity", serde_json::json!(false));
+        body.set("continuous_collision", serde_json::json!(true));
+        body.set_f64("drag", 0.0);
+        body.set_f64("velocity_x", 100.0);
+        projectile.sync_to_components();
+
+        let mut wall = GameObject::new(2.0, 0.0, Some("ThinWall".to_string()));
+        let wall_collider = wall
+            .get_component_mut("Collider2D")
+            .expect("default collider");
+        wall_collider.set("shape", serde_json::json!("rect"));
+        wall_collider.set_f64("width", 0.2);
+        wall_collider.set_f64("height", 10.0);
+        wall.sync_to_components();
+
+        let mut physics = PhysicsSystem::new();
+        physics.fixed_delta = 0.005;
+        physics.max_substeps = 16;
+        physics.continuous_collision = true;
+        let mut entities = vec![projectile, wall];
+        physics.update_entities_mut(&mut entities, 0.05, "PLAY");
+
+        assert!(
+            entities[0].x < 1.5,
+            "projectile tunneled to {}",
+            entities[0].x
+        );
+        assert_eq!(
+            entities[0]
+                .get_component("Rigidbody2D")
+                .expect("rigidbody")
+                .get_f64("velocity_x", -1.0),
+            0.0
+        );
+        assert_eq!(physics.stats.get("substeps"), Some(&10));
     }
 }

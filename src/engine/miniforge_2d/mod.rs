@@ -9,6 +9,7 @@ pub mod actor;
 pub mod ai;
 pub mod animation_blueprint;
 pub mod asset_registry2d;
+pub mod authoring_catalog;
 pub mod blueprint;
 pub mod blueprint_library;
 pub mod console_panel;
@@ -56,6 +57,10 @@ pub use actor::{Actor2DFactory, ActorClass2D, ActorDescriptor2D, Transform2D};
 pub use ai::{BehaviorNode2D, BehaviorTree2D as MiniBehaviorTree2D, Blackboard2D};
 pub use animation_blueprint::{AnimationBlueprint2D as MiniAnimationBlueprint2D, AnimationState2D};
 pub use asset_registry2d::{AssetOperation2D, AssetRegistryReport2D};
+pub use authoring_catalog::{
+    AuthoringApplicationPlan2D, AuthoringCatalog2D, AuthoringPreset2D, AuthoringPresetKind2D,
+    AuthoringPresetMaturity2D, PhysicsWorldProfile2D,
+};
 pub use blueprint::{BlueprintGraph2D as MiniBlueprintGraph2D, BlueprintNode2D};
 pub use blueprint_library::BlueprintLibrary2D;
 pub use console_panel::ConsolePanel2D;
@@ -83,7 +88,7 @@ pub use particles2d::{
     ParticleEmitter2D, ParticleSystem2D as MiniParticleSystem2D, ParticleTemplate2D,
     particle_templates,
 };
-pub use physics2d::{Physics2DSettings, Raycast2DQuery};
+pub use physics2d::{Physics2DSettings, PhysicsRuntimeTuning2D, Raycast2DQuery};
 pub use plugin_system2d::{PluginExtensionPoint2D, PluginExtensionSlot2D, PluginManifest2D};
 pub use problems_panel::ProblemsPanel2D;
 pub use project_settings2d::ProjectSettings2D;

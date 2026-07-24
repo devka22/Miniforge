@@ -821,6 +821,29 @@ QString MfBridge::componentCatalogJson()
     return QString::fromUtf8(buffer.constData());
 }
 
+QString MfBridge::authoringCatalogJson()
+{
+    MfError error {};
+    size_t required = 0;
+    const MfStatus probeStatus = mf_editor_authoring_catalog_json(
+        m_handle, nullptr, 0, &required, &error);
+    if (probeStatus != MF_STATUS_BUFFER_TOO_SMALL || required == 0) {
+        setError(error, QStringLiteral("Failed to query authoring catalog"));
+        return {};
+    }
+    QByteArray buffer(static_cast<qsizetype>(required), '\0');
+    const MfStatus status = mf_editor_authoring_catalog_json(
+        m_handle,
+        buffer.data(),
+        static_cast<size_t>(buffer.size()),
+        &required,
+        &error);
+    if (!ensureOk(status, error, QStringLiteral("Failed to read authoring catalog"))) {
+        return {};
+    }
+    return QString::fromUtf8(buffer.constData());
+}
+
 QString MfBridge::toolStateJson(const QString& tool)
 {
     const QByteArray toolBytes = utf8(tool);

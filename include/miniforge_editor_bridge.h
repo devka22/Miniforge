@@ -177,6 +177,7 @@ MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_scene_state_json(const MfEditorHandle
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_scene_browser_state_json(const MfEditorHandle* editor, char* data, size_t capacity, size_t* required, MfError* error);
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_scene_browser_action_json(MfEditorHandle* editor, const char* action, const char* payload_json, char* data, size_t capacity, size_t* required, MfError* error);
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_component_catalog_json(const MfEditorHandle* editor, char* data, size_t capacity, size_t* required, MfError* error);
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_authoring_catalog_json(const MfEditorHandle* editor, char* data, size_t capacity, size_t* required, MfError* error);
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_tool_state_json(const MfEditorHandle* editor, const char* tool, char* data, size_t capacity, size_t* required, MfError* error);
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_tool_action_json(MfEditorHandle* editor, const char* tool, const char* action, const char* payload_json, char* data, size_t capacity, size_t* required, MfError* error);
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_prefab_state_json(MfEditorHandle* editor, char* data, size_t capacity, size_t* required, MfError* error);

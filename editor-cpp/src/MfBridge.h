@@ -126,6 +126,7 @@ public:
     Q_INVOKABLE QString sceneBrowserStateJson();
     Q_INVOKABLE QString sceneBrowserActionJson(const QString& action, const QString& payloadJson = QStringLiteral("{}"));
     Q_INVOKABLE QString componentCatalogJson();
+    Q_INVOKABLE QString authoringCatalogJson();
     Q_INVOKABLE QString toolStateJson(const QString& tool);
     Q_INVOKABLE QString toolActionJson(const QString& tool, const QString& action, const QString& payloadJson = QStringLiteral("{}"));
     Q_INVOKABLE QString prefabStateJson();

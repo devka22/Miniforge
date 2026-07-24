@@ -204,6 +204,7 @@ impl ProjectSettings2D {
                 "Volumen maestro fuera de 0..1.",
             );
         }
+        report.merge(self.physics2d.validate());
         report
     }
 }

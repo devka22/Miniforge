@@ -1040,6 +1040,34 @@ pub unsafe extern "C" fn mf_editor_component_catalog_json(
 }
 
 #[unsafe(no_mangle)]
+/// Writes the unified ready-made authoring preset catalog as JSON.
+///
+/// The catalog is project-independent and includes entity bundles, physics
+/// profiles, workflow guidance, parameters and compatibility metadata.
+///
+/// # Safety
+/// Buffer pointers follow `mf_editor_project_path` semantics.
+pub unsafe extern "C" fn mf_editor_authoring_catalog_json(
+    handle: *const MfEditorHandle,
+    data: *mut c_char,
+    capacity: usize,
+    required: *mut usize,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_ref(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    write_serialized_result(
+        Ok::<_, EditorCoreError>(core.authoring_catalog()),
+        data,
+        capacity,
+        required,
+        error,
+    )
+}
+
+#[unsafe(no_mangle)]
 /// Writes the persisted state for an advanced editor tool as JSON.
 ///
 /// Supported tool ids are `sequencer`, `tilemap`, and `ui_designer`.
@@ -3733,6 +3761,34 @@ mod tests {
                 MfStatus::BufferTooSmall
             );
             assert!(catalog_required > 3);
+
+            let mut authoring_required = 0;
+            assert_eq!(
+                mf_editor_authoring_catalog_json(
+                    handle,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut authoring_required,
+                    &mut error,
+                ),
+                MfStatus::BufferTooSmall
+            );
+            let mut authoring_json = vec![0 as c_char; authoring_required];
+            assert_eq!(
+                mf_editor_authoring_catalog_json(
+                    handle,
+                    authoring_json.as_mut_ptr(),
+                    authoring_json.len(),
+                    &mut authoring_required,
+                    &mut error,
+                ),
+                MfStatus::Ok
+            );
+            let authoring: serde_json::Value =
+                serde_json::from_str(CStr::from_ptr(authoring_json.as_ptr()).to_str().unwrap())
+                    .unwrap();
+            assert!(authoring["presets"].as_array().unwrap().len() >= 40);
+            assert!(authoring["kinds"]["physics"].as_u64().unwrap() >= 8);
 
             let mut inspector_count = 0;
             assert_eq!(

@@ -109,6 +109,28 @@ Rectangle {
         }
     }
 
+    function loadAuthoringCatalog() {
+        readyMadeSystemModel.clear()
+        var json = editorBridge.authoringCatalogJson()
+        if (json.length === 0)
+            return
+        try {
+            var authoring = JSON.parse(json)
+            var presets = authoring.presets || []
+            for (var index = 0; index < presets.length; ++index) {
+                var preset = presets[index]
+                readyMadeSystemModel.append({
+                    "label": String(preset.label || preset.id || "System"),
+                    "bundle": String(preset.id || ""),
+                    "help": String(preset.summary || "")
+                        + " · " + (preset.components || []).length + " components"
+                })
+            }
+        } catch (error) {
+            componentCatalogError.text = "Invalid authoring catalog · " + error
+        }
+    }
+
     function removableSection(section) {
         return section !== "Transform"
             && section !== "Identity"
@@ -121,18 +143,27 @@ Rectangle {
     ListModel {
         id: componentModel
     }
+    ListModel { id: readyMadeSystemModel }
     ListModel { id: quickActionModel }
     ListModel { id: quickAssetModel }
 
     Connections {
         target: editorBridge
-        function onProjectChanged() { root.loadComponentCatalog(); root.loadQuickActions() }
+        function onProjectChanged() {
+            root.loadComponentCatalog()
+            root.loadAuthoringCatalog()
+            root.loadQuickActions()
+        }
         function onSelectionChanged() { root.loadQuickActions() }
         function onEntitiesChanged() { root.loadQuickActions() }
         function onAssetsChanged() { root.loadQuickActions() }
     }
 
-    Component.onCompleted: { loadComponentCatalog(); loadQuickActions() }
+    Component.onCompleted: {
+        loadComponentCatalog()
+        loadAuthoringCatalog()
+        loadQuickActions()
+    }
 
     Menu {
         id: inspectorMenu
@@ -181,7 +212,8 @@ Rectangle {
             MfPanelHeader {
                 width: parent.width
                 title: "Add Component"
-                detail: "Ready-made systems or " + componentModel.count + " individual components"
+                detail: readyMadeSystemModel.count + " ready-made systems or "
+                    + componentModel.count + " individual components"
                 badge: "Registry"
                 badgeColor: Theme.DarkTheme.info
             }
@@ -196,40 +228,28 @@ Rectangle {
 
             GridView {
                 width: parent.width
-                height: 132
+                height: 165
                 clip: true
                 cellWidth: Math.floor(width / 3)
                 cellHeight: 33
-                model: [
-                        {"label":"Top-down Player", "bundle":"topdown_player", "help":"Movement, input, physics, camera, animation, health and save data"},
-                        {"label":"Platformer Player", "bundle":"platformer_player", "help":"Character body, input, collisions, camera, animation, health and checkpoints"},
-                        {"label":"Action RPG Hero", "bundle":"action_rpg_hero", "help":"Top-down movement, combat, abilities, inventory, equipment, quests and persistence"},
-                        {"label":"Enemy AI", "bundle":"enemy_ai", "help":"Behavior tree, navigation, combat, status effects and loot"},
-                        {"label":"Dialogue NPC", "bundle":"dialogue_npc", "help":"Interaction, dialogue, objective marker and persistence"},
-                        {"label":"Collectible", "bundle":"collectible", "help":"Trigger, interaction, loot, particles and persistence"},
-                        {"label":"Camera Rig", "bundle":"camera_rig", "help":"2D camera follow and screen shake"},
-                        {"label":"Audio Emitter", "bundle":"audio_emitter", "help":"Spatial 2D audio ready for a SoundCue or AudioEvent"},
-                        {"label":"Survival Actor", "bundle":"survival_actor", "help":"Health, needs, weighted inventory, equipment, crafting and save data"},
-                        {"label":"Inventory", "bundle":"inventory", "help":"Inventory and equipment without custom code"},
-                        {"label":"Combat Actor", "bundle":"combat_actor", "help":"Health, stats, damage and status effects"},
-                        {"label":"Lootable", "bundle":"loot_container", "help":"Searchable loot, interaction and persistence"},
-                        {"label":"Harvestable", "bundle":"harvestable", "help":"Reusable resource gathering and persistence"},
-                        {"label":"Craft Station", "bundle":"crafting_station", "help":"Crafting station, interaction and persistence"}
-                    ]
+                model: readyMadeSystemModel
+                ScrollBar.vertical: ScrollBar {}
                 delegate: Item {
-                    required property var modelData
+                    required property string label
+                    required property string bundle
+                    required property string help
                     width: GridView.view.cellWidth
                     height: GridView.view.cellHeight
                     MfButton {
                         anchors.fill: parent
                         anchors.margins: 2
-                        text: modelData.label
+                        text: label
                         ToolTip.visible: hovered
-                        ToolTip.text: modelData.help
+                        ToolTip.text: help
                         onClicked: {
-                            if (root.runAction("add_component_bundle", {"bundle":modelData.bundle})) {
+                            if (root.runAction("add_component_bundle", {"bundle":bundle})) {
                                 componentPopup.close()
-                                root.quickStatus = modelData.label + " systems added"
+                                root.quickStatus = label + " systems added"
                             }
                         }
                     }

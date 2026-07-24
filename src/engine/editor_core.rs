@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -34,8 +35,10 @@ use crate::engine::inspector_editor::InspectorEditor;
 use crate::engine::luau_scripting::{
     LuauScriptRuntime, ScriptBreakpoint, ScriptDebuggerState, ScriptWatchResult,
 };
+use crate::engine::miniforge_2d::authoring_catalog::{AuthoringCatalog2D, AuthoringPreset2D};
 use crate::engine::miniforge_2d::content_browser::asset_from_record;
 use crate::engine::miniforge_2d::paper2d::SpriteFrames2D;
+use crate::engine::miniforge_2d::physics2d::Physics2DSettings;
 use crate::engine::project_launcher::{LauncherTemplate, ProjectLauncherState};
 use crate::engine::project_storage::{BackupPolicy, DEFAULT_BACKUP_GENERATIONS, ProjectStorage};
 use crate::engine::project_validator::ProjectValidator;
@@ -1789,242 +1792,247 @@ impl EditorCore {
             ));
         }
 
-        let result = match action {
-            "rename" => {
-                let name = required_payload_string(&payload, "name")?;
-                if name.trim().is_empty() {
-                    return Err(EditorCoreError::new(
-                        EditorCoreErrorKind::InvalidArgument,
-                        "Entity name cannot be empty",
-                    ));
+        let result =
+            match action {
+                "rename" => {
+                    let name = required_payload_string(&payload, "name")?;
+                    if name.trim().is_empty() {
+                        return Err(EditorCoreError::new(
+                            EditorCoreErrorKind::InvalidArgument,
+                            "Entity name cannot be empty",
+                        ));
+                    }
+                    self.game_mut()?
+                        .edit_inspector_value(entity_id, "Transform", "name", json!(name))
+                        .map_err(|message| {
+                            EditorCoreError::new(EditorCoreErrorKind::CommandFailed, message)
+                        })?;
+                    None
                 }
-                self.game_mut()?
-                    .edit_inspector_value(entity_id, "Transform", "name", json!(name))
-                    .map_err(|message| {
-                        EditorCoreError::new(EditorCoreErrorKind::CommandFailed, message)
-                    })?;
-                None
-            }
-            "duplicate" => Some(
-                self.game_mut()?
-                    .duplicate_entity(entity_id)
-                    .ok_or_else(|| {
+                "duplicate" => Some(self.game_mut()?.duplicate_entity(entity_id).ok_or_else(
+                    || {
                         EditorCoreError::new(
                             EditorCoreErrorKind::CommandFailed,
                             "Entity was not duplicated",
                         )
-                    })?,
-            ),
-            "delete" => {
-                if !self.game_mut()?.delete_entity(entity_id) {
-                    return Err(EditorCoreError::new(
-                        EditorCoreErrorKind::CommandFailed,
-                        "Entity was not deleted",
-                    ));
+                    },
+                )?),
+                "delete" => {
+                    if !self.game_mut()?.delete_entity(entity_id) {
+                        return Err(EditorCoreError::new(
+                            EditorCoreErrorKind::CommandFailed,
+                            "Entity was not deleted",
+                        ));
+                    }
+                    None
                 }
-                None
-            }
-            "reparent" => {
-                let parent_id = required_payload_u64(&payload, "parent_id")?;
-                if !self.game_mut()?.set_entity_parent(entity_id, parent_id) {
-                    return Err(EditorCoreError::new(
-                        EditorCoreErrorKind::CommandFailed,
-                        "Invalid hierarchy operation (missing node or cycle)",
-                    ));
+                "reparent" => {
+                    let parent_id = required_payload_u64(&payload, "parent_id")?;
+                    if !self.game_mut()?.set_entity_parent(entity_id, parent_id) {
+                        return Err(EditorCoreError::new(
+                            EditorCoreErrorKind::CommandFailed,
+                            "Invalid hierarchy operation (missing node or cycle)",
+                        ));
+                    }
+                    None
                 }
-                None
-            }
-            "unparent" => {
-                if !self.game_mut()?.clear_entity_parent(entity_id) {
-                    return Err(EditorCoreError::new(
-                        EditorCoreErrorKind::CommandFailed,
-                        "Entity parent was not cleared",
-                    ));
+                "unparent" => {
+                    if !self.game_mut()?.clear_entity_parent(entity_id) {
+                        return Err(EditorCoreError::new(
+                            EditorCoreErrorKind::CommandFailed,
+                            "Entity parent was not cleared",
+                        ));
+                    }
+                    None
                 }
-                None
-            }
-            "set_visible" | "set_enabled" | "set_locked" => {
-                let value = required_payload_bool(&payload, "value")?;
-                let key = action.trim_start_matches("set_");
-                self.game_mut()?
-                    .edit_inspector_value(entity_id, "Identity", key, json!(value))
-                    .map_err(|message| {
-                        EditorCoreError::new(EditorCoreErrorKind::CommandFailed, message)
+                "set_visible" | "set_enabled" | "set_locked" => {
+                    let value = required_payload_bool(&payload, "value")?;
+                    let key = action.trim_start_matches("set_");
+                    self.game_mut()?
+                        .edit_inspector_value(entity_id, "Identity", key, json!(value))
+                        .map_err(|message| {
+                            EditorCoreError::new(EditorCoreErrorKind::CommandFailed, message)
+                        })?;
+                    None
+                }
+                "apply_asset" => {
+                    let relative_path = required_payload_string(&payload, "relative_path")?;
+                    let record = self
+                        .game()?
+                        .asset_database
+                        .assets
+                        .get(relative_path)
+                        .cloned()
+                        .ok_or_else(|| {
+                            EditorCoreError::new(
+                                EditorCoreErrorKind::NotFound,
+                                format!("Indexed asset not found: {relative_path}"),
+                            )
+                        })?;
+                    let asset = asset_from_record(&record);
+                    if !matches!(
+                        asset.asset_type.as_str(),
+                        "Sprite2D"
+                            | "SpriteSheet"
+                            | "AnimationBlueprint2D"
+                            | "FlipbookAnimation2D"
+                            | "Animation"
+                            | "BlueprintGraph2D"
+                            | "Script"
+                            | "LuauScript"
+                            | "Material"
+                            | "Material2D"
+                            | "Shader"
+                            | "Texture"
+                            | "Texture2D"
+                            | "Image"
+                            | "ImageTexture2D"
+                    ) {
+                        return Err(EditorCoreError::new(
+                            EditorCoreErrorKind::InvalidArgument,
+                            format!(
+                                "Asset type cannot be assigned to an entity: {}",
+                                record.asset_type
+                            ),
+                        ));
+                    }
+                    let game = self.game_mut()?;
+                    let before = game.capture_editor_snapshot();
+                    let entity = game.get_entity_by_id_mut(entity_id).ok_or_else(|| {
+                        EditorCoreError::new(EditorCoreErrorKind::NotFound, "Entity not found")
                     })?;
-                None
-            }
-            "apply_asset" => {
-                let relative_path = required_payload_string(&payload, "relative_path")?;
-                let record = self
-                    .game()?
-                    .asset_database
-                    .assets
-                    .get(relative_path)
-                    .cloned()
-                    .ok_or_else(|| {
-                        EditorCoreError::new(
-                            EditorCoreErrorKind::NotFound,
-                            format!("Indexed asset not found: {relative_path}"),
-                        )
-                    })?;
-                let asset = asset_from_record(&record);
-                if !matches!(
-                    asset.asset_type.as_str(),
-                    "Sprite2D"
-                        | "SpriteSheet"
-                        | "AnimationBlueprint2D"
-                        | "FlipbookAnimation2D"
-                        | "Animation"
-                        | "BlueprintGraph2D"
-                        | "Script"
-                        | "LuauScript"
-                        | "Material"
-                        | "Material2D"
-                        | "Shader"
-                        | "Texture"
-                        | "Texture2D"
-                        | "Image"
-                        | "ImageTexture2D"
-                ) {
-                    return Err(EditorCoreError::new(
-                        EditorCoreErrorKind::InvalidArgument,
+                    let report = EditorAssetConnector::apply_content_asset(entity, &asset);
+                    game.sync_world();
+                    game.mark_scene_dirty("Apply Asset");
+                    game.scene_save_manager.note_entity_dirty(entity_id);
+                    game.push_editor_command(
+                        "Apply Asset",
+                        EditorCommandKind::SceneOperation {
+                            name: format!("Apply {}", record.asset_type),
+                        },
+                        before,
+                    );
+                    game.console.log(
                         format!(
-                            "Asset type cannot be assigned to an entity: {}",
-                            record.asset_type
+                            "Applied {} to entity #{} ({})",
+                            relative_path, entity_id, report.asset_type
                         ),
-                    ));
-                }
-                let game = self.game_mut()?;
-                let before = game.capture_editor_snapshot();
-                let entity = game.get_entity_by_id_mut(entity_id).ok_or_else(|| {
-                    EditorCoreError::new(EditorCoreErrorKind::NotFound, "Entity not found")
-                })?;
-                let report = EditorAssetConnector::apply_content_asset(entity, &asset);
-                game.sync_world();
-                game.mark_scene_dirty("Apply Asset");
-                game.scene_save_manager.note_entity_dirty(entity_id);
-                game.push_editor_command(
-                    "Apply Asset",
-                    EditorCommandKind::SceneOperation {
-                        name: format!("Apply {}", record.asset_type),
-                    },
-                    before,
-                );
-                game.console.log(
-                    format!(
-                        "Applied {} to entity #{} ({})",
-                        relative_path, entity_id, report.asset_type
-                    ),
-                    "EDITOR",
-                );
-                None
-            }
-            "collision_vertex_move" | "collision_vertex_add" | "collision_vertex_remove" => {
-                let index = if action == "collision_vertex_add" {
+                        "EDITOR",
+                    );
                     None
-                } else {
-                    Some(required_payload_u64(&payload, "index")? as usize)
-                };
-                let local = if action == "collision_vertex_remove" {
-                    None
-                } else {
-                    Some((
-                        required_payload_f64(&payload, "x")?,
-                        required_payload_f64(&payload, "y")?,
-                    ))
-                };
-                let game = self.game_mut()?;
-                let before = game.capture_editor_snapshot();
-                let entity = game.get_entity_by_id_mut(entity_id).ok_or_else(|| {
-                    EditorCoreError::new(EditorCoreErrorKind::NotFound, "Entity not found")
-                })?;
-                let changed = match action {
-                    "collision_vertex_move" => EditorSpatialTools2D::move_collision_vertex(
-                        entity,
-                        index.expect("validated index"),
-                        local.expect("validated local point"),
-                        None,
-                    ),
-                    "collision_vertex_add" => EditorSpatialTools2D::add_collision_vertex(
-                        entity,
-                        local.expect("validated local point"),
-                    ),
-                    "collision_vertex_remove" => EditorSpatialTools2D::remove_collision_vertex(
-                        entity,
-                        index.expect("validated index"),
-                    ),
-                    _ => unreachable!(),
-                };
-                if !changed {
-                    return Err(EditorCoreError::new(
-                        EditorCoreErrorKind::CommandFailed,
-                        format!("Collision vertex action could not be applied: {action}"),
-                    ));
                 }
-                game.sync_world();
-                game.mark_scene_dirty("Edit Collision Polygon");
-                game.scene_save_manager.note_entity_dirty(entity_id);
-                game.push_editor_command(
-                    "Edit Collision Polygon",
-                    EditorCommandKind::SceneOperation {
-                        name: action.to_string(),
-                    },
-                    before,
-                );
-                None
-            }
-            "reset_transform" => {
-                let game = self.game_mut()?;
-                let before = game.capture_editor_snapshot();
-                let entity = game.get_entity_by_id_mut(entity_id).ok_or_else(|| {
-                    EditorCoreError::new(EditorCoreErrorKind::NotFound, "Entity not found")
-                })?;
-                InspectorEditor::reset_transform(entity);
-                game.sync_world();
-                game.mark_scene_dirty("Reset Transform");
-                game.push_editor_command(
-                    "Reset Transform",
-                    EditorCommandKind::SceneOperation {
-                        name: "Reset Transform".to_string(),
-                    },
-                    before,
-                );
-                None
-            }
-            "add_component" => {
-                let component_type = required_payload_string(&payload, "component_type")?;
-                if !self
-                    .game_mut()?
-                    .add_component_to_entity(entity_id, component_type)
-                {
+                "collision_vertex_move" | "collision_vertex_add" | "collision_vertex_remove" => {
+                    let index = if action == "collision_vertex_add" {
+                        None
+                    } else {
+                        Some(required_payload_u64(&payload, "index")? as usize)
+                    };
+                    let local = if action == "collision_vertex_remove" {
+                        None
+                    } else {
+                        Some((
+                            required_payload_f64(&payload, "x")?,
+                            required_payload_f64(&payload, "y")?,
+                        ))
+                    };
+                    let game = self.game_mut()?;
+                    let before = game.capture_editor_snapshot();
+                    let entity = game.get_entity_by_id_mut(entity_id).ok_or_else(|| {
+                        EditorCoreError::new(EditorCoreErrorKind::NotFound, "Entity not found")
+                    })?;
+                    let changed = match action {
+                        "collision_vertex_move" => EditorSpatialTools2D::move_collision_vertex(
+                            entity,
+                            index.expect("validated index"),
+                            local.expect("validated local point"),
+                            None,
+                        ),
+                        "collision_vertex_add" => EditorSpatialTools2D::add_collision_vertex(
+                            entity,
+                            local.expect("validated local point"),
+                        ),
+                        "collision_vertex_remove" => EditorSpatialTools2D::remove_collision_vertex(
+                            entity,
+                            index.expect("validated index"),
+                        ),
+                        _ => unreachable!(),
+                    };
+                    if !changed {
+                        return Err(EditorCoreError::new(
+                            EditorCoreErrorKind::CommandFailed,
+                            format!("Collision vertex action could not be applied: {action}"),
+                        ));
+                    }
+                    game.sync_world();
+                    game.mark_scene_dirty("Edit Collision Polygon");
+                    game.scene_save_manager.note_entity_dirty(entity_id);
+                    game.push_editor_command(
+                        "Edit Collision Polygon",
+                        EditorCommandKind::SceneOperation {
+                            name: action.to_string(),
+                        },
+                        before,
+                    );
+                    None
+                }
+                "reset_transform" => {
+                    let game = self.game_mut()?;
+                    let before = game.capture_editor_snapshot();
+                    let entity = game.get_entity_by_id_mut(entity_id).ok_or_else(|| {
+                        EditorCoreError::new(EditorCoreErrorKind::NotFound, "Entity not found")
+                    })?;
+                    InspectorEditor::reset_transform(entity);
+                    game.sync_world();
+                    game.mark_scene_dirty("Reset Transform");
+                    game.push_editor_command(
+                        "Reset Transform",
+                        EditorCommandKind::SceneOperation {
+                            name: "Reset Transform".to_string(),
+                        },
+                        before,
+                    );
+                    None
+                }
+                "add_component" => {
+                    let component_type = required_payload_string(&payload, "component_type")?;
+                    if !self
+                        .game_mut()?
+                        .add_component_to_entity(entity_id, component_type)
+                    {
+                        return Err(EditorCoreError::new(
+                            EditorCoreErrorKind::InvalidArgument,
+                            format!("Unknown component type: {component_type}"),
+                        ));
+                    }
+                    None
+                }
+                "add_component_bundle" => {
+                    let bundle = required_payload_string(&payload, "bundle")?;
+                    let parameters = payload.get("parameters").cloned();
+                    let _ = add_component_bundle_to_entities(
+                        self.game_mut()?,
+                        &[entity_id],
+                        bundle,
+                        parameters.as_ref(),
+                    )?;
+                    None
+                }
+                "remove_component" => {
+                    let component_type = required_payload_string(&payload, "component_type")?;
+                    self.game_mut()?
+                        .remove_component_from_entity(entity_id, component_type)
+                        .map_err(|message| {
+                            EditorCoreError::new(EditorCoreErrorKind::CommandFailed, message)
+                        })?;
+                    None
+                }
+                _ => {
                     return Err(EditorCoreError::new(
                         EditorCoreErrorKind::InvalidArgument,
-                        format!("Unknown component type: {component_type}"),
+                        format!("Unknown entity action: {action}"),
                     ));
                 }
-                None
-            }
-            "add_component_bundle" => {
-                let bundle = required_payload_string(&payload, "bundle")?;
-                let _ = add_component_bundle_to_entities(self.game_mut()?, &[entity_id], bundle)?;
-                None
-            }
-            "remove_component" => {
-                let component_type = required_payload_string(&payload, "component_type")?;
-                self.game_mut()?
-                    .remove_component_from_entity(entity_id, component_type)
-                    .map_err(|message| {
-                        EditorCoreError::new(EditorCoreErrorKind::CommandFailed, message)
-                    })?;
-                None
-            }
-            _ => {
-                return Err(EditorCoreError::new(
-                    EditorCoreErrorKind::InvalidArgument,
-                    format!("Unknown entity action: {action}"),
-                ));
-            }
-        };
+            };
         self.refresh_scene_cache();
         Ok(result)
     }
@@ -2054,10 +2062,12 @@ impl EditorCore {
             )?,
             "add_component_bundle" => {
                 let selection = selected_entity_ids(self.game()?)?;
+                let parameters = payload.get("parameters").cloned();
                 add_component_bundle_to_entities(
                     self.game_mut()?,
                     &selection,
                     required_payload_string(&payload, "bundle")?,
+                    parameters.as_ref(),
                 )?
             }
             "remove_component" => remove_component_from_selected(
@@ -2171,6 +2181,10 @@ impl EditorCore {
 
     pub fn component_catalog(&self) -> Result<Vec<ComponentSubMenu>, EditorCoreError> {
         Ok(self.game()?.component_registry.submenu_model())
+    }
+
+    pub fn authoring_catalog(&self) -> AuthoringCatalog2D {
+        builtin_authoring_catalog().clone()
     }
 
     pub fn prefab_studio_state(&mut self) -> Result<PrefabStudioStateDto, EditorCoreError> {
@@ -7267,187 +7281,34 @@ fn add_component_to_selected(
     Ok(targets.len())
 }
 
-fn component_bundle_types(bundle: &str) -> Option<(&'static str, &'static [&'static str])> {
-    match bundle.trim().to_ascii_lowercase().as_str() {
-        "topdown_player" | "topdown" => Some((
-            "Top-down Player",
-            &[
-                "Actor2D",
-                "Pawn2D",
-                "PlayerController2D",
-                "CharacterController2D",
-                "Rigidbody2D",
-                "Collider2D",
-                "InputActions2D",
-                "CameraFollow",
-                "Animator2D",
-                "Health",
-                "Saveable",
-            ],
-        )),
-        "platformer_player" | "platformer" => Some((
-            "Platformer Player",
-            &[
-                "Actor2D",
-                "Pawn2D",
-                "PlayerController2D",
-                "CharacterBody2D",
-                "Collider2D",
-                "InputActions2D",
-                "CameraFollow",
-                "Animator2D",
-                "Health",
-                "Checkpoint",
-            ],
-        )),
-        "action_rpg_hero" | "action_rpg" => Some((
-            "Action RPG Hero",
-            &[
-                "Actor2D",
-                "Pawn2D",
-                "PlayerController2D",
-                "CharacterController2D",
-                "Rigidbody2D",
-                "Collider2D",
-                "InputActions2D",
-                "CameraFollow",
-                "Health",
-                "Stats",
-                "DamageDealer",
-                "StatusEffects",
-                "Inventory",
-                "Equipment",
-                "Ability",
-                "QuestLog",
-                "Saveable",
-            ],
-        )),
-        "enemy_ai" | "enemy" => Some((
-            "Enemy AI",
-            &[
-                "Actor2D",
-                "AIController2D",
-                "BehaviorTree2D",
-                "Blackboard",
-                "NavAgent",
-                "Collider2D",
-                "Health",
-                "Stats",
-                "DamageDealer",
-                "CombatTarget",
-                "StatusEffects",
-                "LootTable",
-            ],
-        )),
-        "dialogue_npc" | "npc" => Some((
-            "Dialogue NPC",
-            &[
-                "Actor2D",
-                "Interaction",
-                "Dialogue",
-                "ObjectiveMarker",
-                "Saveable",
-            ],
-        )),
-        "collectible" | "pickup" => Some((
-            "Collectible",
-            &[
-                "Area2D",
-                "Trigger2D",
-                "Interaction",
-                "LootTable",
-                "ParticleEmitter",
-                "Saveable",
-            ],
-        )),
-        "camera_rig" | "camera" => {
-            Some(("Camera Rig", &["Camera2D", "CameraFollow", "CameraShake"]))
-        }
-        "audio_emitter" | "audio" => Some(("Audio Emitter", &["AudioSource2D"])),
-        "survival_actor" | "survival" => Some((
-            "Survival Actor",
-            &[
-                "Health",
-                "SurvivalNeeds",
-                "Inventory",
-                "Equipment",
-                "CraftingBook",
-                "StatusEffects",
-                "Saveable",
-            ],
-        )),
-        "inventory" => Some(("Inventory", &["Inventory", "Equipment"])),
-        "combat_actor" | "combat" => Some((
-            "Combat Actor",
-            &["Health", "Stats", "DamageDealer", "StatusEffects"],
-        )),
-        "loot_container" | "lootable" => Some((
-            "Loot Container",
-            &["LootContainer", "Interaction", "Saveable"],
-        )),
-        "harvestable" => Some(("Harvestable", &["Harvestable", "Interaction", "Saveable"])),
-        "crafting_station" => Some((
-            "Crafting Station",
-            &["CraftingStation", "Interaction", "Saveable"],
-        )),
-        _ => None,
-    }
+fn builtin_authoring_catalog() -> &'static AuthoringCatalog2D {
+    static CATALOG: OnceLock<AuthoringCatalog2D> = OnceLock::new();
+    CATALOG.get_or_init(AuthoringCatalog2D::builtin)
 }
 
-fn configure_bundle_component(bundle: &str, component: &mut Component) {
-    let bundle = bundle.trim().to_ascii_lowercase();
-    match (bundle.as_str(), component.component_type.as_str()) {
-        ("topdown_player" | "topdown" | "action_rpg_hero" | "action_rpg", "Pawn2D") => {
-            component.set("movement_mode", json!("topdown"));
-        }
-        ("platformer_player" | "platformer", "Pawn2D") => {
-            component.set("movement_mode", json!("platformer"));
-        }
-        (
-            "topdown_player" | "topdown" | "action_rpg_hero" | "action_rpg",
-            "CharacterController2D",
-        ) => {
-            component.set("mode", json!("topdown"));
-            component.set("jump_force", json!(0.0));
-            component.set("max_jumps", json!(0));
-        }
-        ("topdown_player" | "topdown" | "action_rpg_hero" | "action_rpg", "Rigidbody2D") => {
-            component.set("use_gravity", json!(false));
-            component.set("gravity_scale", json!(0.0));
-            component.set("freeze_rotation", json!(true));
-        }
-        (
-            "topdown_player" | "topdown" | "platformer_player" | "platformer" | "action_rpg_hero"
-            | "action_rpg",
-            "PlayerController2D",
-        ) => {
-            component.set("cursor_visible", json!(false));
-        }
-        ("camera_rig" | "camera", "Camera2D") => {
-            component.set("active", json!(true));
-            component.set("pixel_perfect", json!(true));
-        }
-        ("audio_emitter" | "audio", "AudioSource2D") => {
-            component.set("spatial_blend", json!(1.0));
-        }
-        ("collectible" | "pickup", "Interaction") => {
-            component.set("prompt", json!("Pick up"));
-        }
-        _ => {}
-    }
+fn component_bundle_preset(bundle: &str) -> Option<&'static AuthoringPreset2D> {
+    builtin_authoring_catalog().resolve(bundle)
+}
+
+fn configure_bundle_component(bundle: &str, component: &mut Component, parameters: Option<&Value>) {
+    builtin_authoring_catalog().configure_component(bundle, component, parameters);
 }
 
 fn add_component_bundle_to_entities(
     game: &mut Game,
     entity_ids: &[u64],
     bundle: &str,
+    parameters: Option<&Value>,
 ) -> Result<usize, EditorCoreError> {
-    let (label, component_types) = component_bundle_types(bundle).ok_or_else(|| {
+    let preset = component_bundle_preset(bundle).ok_or_else(|| {
         EditorCoreError::new(
             EditorCoreErrorKind::InvalidArgument,
             format!("Unknown component bundle: {bundle}"),
         )
     })?;
+    let label = &preset.label;
+    let component_types = &preset.components;
+    let physics_world = preset.physics_world.as_ref();
     let targets = entity_ids
         .iter()
         .copied()
@@ -7461,6 +7322,9 @@ fn add_component_bundle_to_entities(
     }
 
     let before = game.capture_editor_snapshot();
+    if let Some(profile) = physics_world {
+        Physics2DSettings::from_world_profile(profile).apply_to_system(&mut game.physics_system);
+    }
     let mut added = 0usize;
     for entity_id in &targets {
         let entity = game.get_entity_by_id_mut(*entity_id).ok_or_else(|| {
@@ -7470,7 +7334,7 @@ fn add_component_bundle_to_entities(
             if entity.get_component(component_type).is_none() {
                 let mut component =
                     default_component(component_type).expect("bundle component must be registered");
-                configure_bundle_component(bundle, &mut component);
+                configure_bundle_component(&preset.id, &mut component, parameters);
                 entity.add_component(component);
                 added += 1;
             }
@@ -9110,52 +8974,39 @@ mod tests {
 
     #[test]
     fn ready_made_system_bundles_only_use_registered_components_and_apply_genre_defaults() {
-        for bundle in [
-            "topdown_player",
-            "platformer_player",
-            "action_rpg_hero",
-            "enemy_ai",
-            "dialogue_npc",
-            "collectible",
-            "camera_rig",
-            "audio_emitter",
-            "survival_actor",
-            "inventory",
-            "combat_actor",
-            "loot_container",
-            "harvestable",
-            "crafting_station",
-        ] {
-            let (_, component_types) = component_bundle_types(bundle).expect("known bundle");
-            assert!(!component_types.is_empty(), "{bundle}");
-            for component_type in component_types {
-                assert!(
-                    default_component(component_type).is_some(),
-                    "{bundle} references unregistered {component_type}"
-                );
-            }
-        }
+        let catalog = builtin_authoring_catalog();
+        let validation = catalog.validate();
+        assert!(validation.valid, "{:?}", validation.issues);
+        assert!(catalog.presets.len() >= 40);
 
         let mut topdown_body = default_component("Rigidbody2D").unwrap();
-        configure_bundle_component("topdown_player", &mut topdown_body);
+        configure_bundle_component("topdown_player", &mut topdown_body, None);
         assert!(!topdown_body.get_bool("use_gravity", true));
         assert!(topdown_body.get_bool("freeze_rotation", false));
 
         let mut platformer_pawn = default_component("Pawn2D").unwrap();
-        configure_bundle_component("platformer_player", &mut platformer_pawn);
+        configure_bundle_component("platformer_player", &mut platformer_pawn, None);
         assert_eq!(
             platformer_pawn.get_string("movement_mode", ""),
             "platformer"
         );
 
         let mut camera = default_component("Camera2D").unwrap();
-        configure_bundle_component("camera_rig", &mut camera);
+        configure_bundle_component("camera_rig", &mut camera, None);
         assert!(camera.get_bool("active", false));
         assert!(camera.get_bool("pixel_perfect", false));
 
         let mut audio = default_component("AudioSource2D").unwrap();
-        configure_bundle_component("audio_emitter", &mut audio);
+        configure_bundle_component("audio_emitter", &mut audio, None);
         assert_eq!(audio.get_f64("spatial_blend", 0.0), 1.0);
+
+        let mut parameterized = default_component("CharacterController2D").unwrap();
+        configure_bundle_component(
+            "topdown_player",
+            &mut parameterized,
+            Some(&json!({"movement_speed": 11.0})),
+        );
+        assert_eq!(parameterized.get_f64("walk_speed", 0.0), 11.0);
     }
 
     #[test]
