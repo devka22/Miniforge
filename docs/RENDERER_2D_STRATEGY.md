@@ -30,17 +30,20 @@ vsync, resize/reconfigure, occlusion handling and presentation. Atlas UV regions
 scissor clipping share the same sprite path. Hardware coverage includes an ignored test that renders
 colored and atlas-textured geometry and checks the resulting pixels. A generic
 `miniforge_wgpu_preview` binary exercises the window-surface path and can load any MiniForge
-project through the normal `EngineRuntime`, upload its sprite assets, extract its grid/entities and
-drive player movement with WASD or the arrow keys:
+project through the normal `EngineRuntime`, upload its sprite assets, extract its camera, layered
+tilemap and entities, expand CPU particles, draw basic UI panels/progress bars, and drive player
+movement with WASD or the arrow keys:
 
 ```bash
 cargo run --bin miniforge_wgpu_preview --features wgpu_runtime -- /path/to/project
 ```
 
-The main exported runtime still uses Macroquad while tilemap layers beyond collision, UI/particle
-command geometry and full device-loss recreation are completed. Projects should therefore leave
-`experimental_wgpu` disabled for exports that need the full production renderer. Project Settings
-keeps this migration state visible instead of hiding it in JSON.
+The shared 2D composer now turns visible tilemap cells, atlas-backed entities, CPU particles and
+basic UI geometry into backend-independent sprite quads with camera transforms, ordering and screen
+culling. The main exported runtime still uses Macroquad while text/minimap widgets, lighting,
+render textures, batching and full device-loss recreation are completed. Projects should therefore
+leave `experimental_wgpu` disabled for exports that need the full production renderer. Project
+Settings keeps this migration state visible instead of hiding it in JSON.
 
 ## Migration gates
 
@@ -50,7 +53,9 @@ The preview becomes playable only after these gates pass on macOS, Windows and L
    resize and recoverable reconfiguration are done; complete device-loss recreation remains.
 2. Sprite atlas regions, camera transforms, clipping, blend modes and stable batching. Atlas
    regions, clipping, full-texture uploads and pixel-space sprite transforms are done.
-3. Chunked tilemaps, UI draw lists, text, particles and render textures.
+3. Chunked tilemaps, UI draw lists, text, particles and render textures. Layered tile cells, basic
+   panels/progress bars and CPU-particle quads are done; text, advanced widgets, chunk batching,
+   GPU particles and render textures remain.
 4. WGSL materials, post-processing and hot reload with readable shader diagnostics.
 5. Compute paths for particles and tile visibility, each with a CPU fallback.
 6. Golden-image parity tests against Macroquad plus GPU timing and device-loss recovery.

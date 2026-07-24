@@ -276,8 +276,8 @@ Rectangle {
                             color: backendSelect.currentValue === "wgpu" ? Theme.DarkTheme.warning : Theme.DarkTheme.text
                             wrapMode: Text.Wrap
                             text: backendSelect.currentValue === "wgpu"
-                                  ? "wgpu now uses physical Metal/Vulkan/DX12 adapters, window surfaces, sprite textures, atlas regions and clipping. The project preview is playable for current scene entities; exported builds still fall back to Macroquad until tilemap, UI and particle parity is complete."
-                                  : "Macroquad remains the exported-game fallback while the native wgpu runtime reaches tilemap, UI, particle and device-loss parity."
+                                  ? "wgpu now uses physical Metal/Vulkan/DX12 adapters and draws layered tilemaps, atlas sprites, CPU particles and basic UI geometry. Exported builds still fall back to Macroquad until text, lighting, render textures, batching and device-loss parity are complete."
+                                  : "Macroquad remains the exported-game fallback while the native wgpu runtime reaches text, lighting, render-texture, batching and device-loss parity."
                         }
                     }
                     Switch {

@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use miniforge::render::backend::{RenderBackend, SpriteDrawCommand, WgpuBackend};
-use miniforge::render::runtime_scene_2d::{draw_runtime_scene_2d, entity_sprite_path};
+use miniforge::render::runtime_scene_2d::{
+    RuntimeTexture2D, draw_engine_runtime_scene_2d, entity_sprite_path,
+};
 use miniforge::runtime::engine_runtime::EngineRuntime;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -28,7 +30,7 @@ struct PreviewApp {
     autotest_frames: Option<u64>,
     runtime: Option<EngineRuntime>,
     project_path: Option<PathBuf>,
-    texture_ids: BTreeMap<String, u64>,
+    texture_ids: BTreeMap<String, RuntimeTexture2D>,
     previous_frame_at: Instant,
     input_left: bool,
     input_right: bool,
@@ -149,7 +151,14 @@ impl PreviewApp {
             backend
                 .upload_texture_rgba8(texture_id, rgba.width(), rgba.height(), rgba.as_raw())
                 .map_err(|error| error.to_string())?;
-            self.texture_ids.insert(relative_path, texture_id);
+            self.texture_ids.insert(
+                relative_path,
+                RuntimeTexture2D {
+                    texture_id,
+                    width: rgba.width(),
+                    height: rgba.height(),
+                },
+            );
         }
         Ok(())
     }
@@ -187,15 +196,8 @@ impl PreviewApp {
                 false,
             );
             runtime.run_headless_once(dt);
-            draw_runtime_scene_2d(
-                backend,
-                &runtime.runtime_world,
-                &runtime.grid,
-                &self.texture_ids,
-                width,
-                height,
-            )
-            .map_err(|error| error.to_string())?;
+            draw_engine_runtime_scene_2d(backend, runtime, &self.texture_ids, width, height)
+                .map_err(|error| error.to_string())?;
         } else {
             draw_renderer_diagnostic(backend, width, height, elapsed)?;
         }
