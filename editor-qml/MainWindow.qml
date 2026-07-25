@@ -27,6 +27,10 @@ ApplicationWindow {
             authoringHub.selectKind(kind)
     }
 
+    function openSdkPacks() {
+        workspaceTabs.currentIndex = 2
+    }
+
     readonly property string projectSummaryText: typeof editorBridge !== "undefined" && editorBridge.projectSummary.length > 0
         ? editorBridge.projectSummary
         : "MiniForge 0.9.3.4 | No project"
@@ -83,6 +87,8 @@ ApplicationWindow {
             Action { text: "Refresh Assets"; onTriggered: root.runCommand("assets.refresh") }
             Action { text: "Validate Luau Scripts"; onTriggered: root.runCommand("luau.validate_scripts") }
             Action { text: "Write 2D Render Profile"; onTriggered: root.runCommand("render.write_2d_profile") }
+            MenuSeparator {}
+            Action { text: "SDK & Content Packs"; onTriggered: root.openSdkPacks() }
         }
     }
 
@@ -194,10 +200,10 @@ ApplicationWindow {
                 }
 
                 Repeater {
-                    model: ["Scene", "Systems", "Sprite", "Luau", "Objects", "Debug"]
+                    model: ["Scene", "Systems", "SDK Packs", "Sprite", "Luau", "Objects", "Debug"]
                     TabButton {
                         text: modelData
-                        width: Math.max(110, workspaceTabs.width / 6)
+                        width: Math.max(100, workspaceTabs.width / 7)
                     }
                 }
             }
@@ -293,6 +299,7 @@ ApplicationWindow {
                     Panels.AuthoringHubPanel {
                         id: authoringHub
                     }
+                    Panels.SdkPacksPanel {}
                     Panels.SpriteStudioPanel {}
                     Panels.LuauStudioPanel {}
                     Panels.ObjectStudioPanel {}

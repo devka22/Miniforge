@@ -13,6 +13,8 @@ Rectangle {
     property var presets: []
     property var visiblePresets: []
     property var pendingPreset: ({})
+    property var applicationPlan: ({})
+    property bool applicationPlanError: false
     property string kindFilter: "all"
     property string statusText: ""
     property bool statusError: false
@@ -133,6 +135,8 @@ Rectangle {
 
     function openConfiguration(preset) {
         pendingPreset = preset
+        applicationPlan = ({})
+        applicationPlanError = false
         parameterModel.clear()
         var parameters = preset.parameters || []
         for (var index = 0; index < parameters.length; ++index) {
@@ -147,10 +151,11 @@ Rectangle {
                 "maximum": Number(parameter.maximum === null ? 1000000 : parameter.maximum)
             })
         }
+        refreshApplicationPlan()
         configurationPopup.open()
     }
 
-    function applyConfiguredPreset() {
+    function configuredParameters() {
         var parameters = {}
         for (var index = 0; index < parameterModel.count; ++index) {
             var parameter = parameterModel.get(index)
@@ -162,6 +167,32 @@ Rectangle {
                 value = Math.round(value)
             parameters[parameter.parameterId] = value
         }
+        return parameters
+    }
+
+    function refreshApplicationPlan() {
+        if (!pendingPreset.id || editorBridge.selectedEntityCount < 1)
+            return
+        var source = editorBridge.authoringPlanJson(
+            String(pendingPreset.id),
+            JSON.stringify(configuredParameters())
+        )
+        if (source.length === 0) {
+            applicationPlan = ({})
+            applicationPlanError = true
+            return
+        }
+        try {
+            applicationPlan = JSON.parse(source)
+            applicationPlanError = false
+        } catch (error) {
+            applicationPlan = ({})
+            applicationPlanError = true
+        }
+    }
+
+    function applyConfiguredPreset() {
+        var parameters = configuredParameters()
         configurationPopup.close()
         applyPreset(pendingPreset, parameters)
     }
@@ -211,9 +242,66 @@ Rectangle {
             MfPanelHeader {
                 Layout.fillWidth: true
                 title: String(root.pendingPreset.label || "Configure preset")
-                detail: "Tune gameplay values before adding the system. No scripting required."
-                badge: parameterModel.count + " values"
+                detail: "Review exact component changes and tune values. No scripting required."
+                badge: String(root.applicationPlan.total_components_to_add || 0) + " changes"
                 badgeColor: Theme.DarkTheme.info
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 92
+                radius: Theme.DarkTheme.radius
+                color: Theme.DarkTheme.surface
+                border.color: root.applicationPlanError
+                    ? Theme.DarkTheme.danger : Theme.DarkTheme.borderSoft
+                border.width: 1
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    spacing: 3
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: root.applicationPlanError
+                            ? editorBridge.lastError
+                            : String(root.applicationPlan.target_count || 0) + " object(s) · "
+                                + String(root.applicationPlan.total_components_to_add || 0) + " components to add · "
+                                + String(root.applicationPlan.total_components_existing || 0) + " already present"
+                        color: root.applicationPlanError
+                            ? Theme.DarkTheme.danger : Theme.DarkTheme.text
+                        font.pixelSize: 11
+                        font.bold: true
+                        elide: Text.ElideRight
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Requirements · "
+                            + ((root.applicationPlan.requirements || []).join(" · ") || "none")
+                        color: Theme.DarkTheme.muted
+                        font.pixelSize: 9
+                        elide: Text.ElideRight
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "First steps · "
+                            + ((root.applicationPlan.workflow_steps || []).slice(0, 2).join(" → ")
+                                || "ready to use")
+                        color: Theme.DarkTheme.muted
+                        font.pixelSize: 9
+                        elide: Text.ElideRight
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: root.applicationPlan.world_profile_will_change
+                            ? "Physics world profile will also be updated"
+                            : "No global physics settings will change"
+                        color: root.applicationPlan.world_profile_will_change
+                            ? Theme.DarkTheme.info : Theme.DarkTheme.muted
+                        font.pixelSize: 9
+                        elide: Text.ElideRight
+                    }
+                }
             }
 
             ListView {
@@ -283,6 +371,7 @@ Rectangle {
                             }
                             onEditingFinished: {
                                 parameterModel.setProperty(parameterRow.index, "editorValue", text)
+                                root.refreshApplicationPlan()
                             }
                             ToolTip.visible: hovered
                             ToolTip.text: "Range " + parameterRow.minimum + " to " + parameterRow.maximum
@@ -300,9 +389,10 @@ Rectangle {
                     onClicked: configurationPopup.close()
                 }
                 MfButton {
-                    text: "Apply configured"
+                    text: parameterModel.count > 0 ? "Apply configured" : "Apply preset"
                     accent: true
                     enabled: editorBridge.selectedEntityCount > 0
+                        && !root.applicationPlanError
                     onClicked: root.applyConfiguredPreset()
                 }
             }
@@ -491,7 +581,7 @@ Rectangle {
                     }
 
                     ColumnLayout {
-                        Layout.preferredWidth: 112
+                        Layout.preferredWidth: 148
                         Layout.fillHeight: true
                         spacing: 7
 
@@ -503,18 +593,11 @@ Rectangle {
 
                         MfButton {
                             Layout.fillWidth: true
-                            text: "Configure"
-                            visible: (presetCard.modelData.parameters || []).length > 0
-                            enabled: editorBridge.selectedEntityCount > 0
-                            onClicked: root.openConfiguration(presetCard.modelData)
-                        }
-
-                        MfButton {
-                            Layout.fillWidth: true
-                            text: "Apply"
+                            text: (presetCard.modelData.parameters || []).length > 0
+                                ? "Configure" : "Review"
                             accent: true
                             enabled: editorBridge.selectedEntityCount > 0
-                            onClicked: root.applyPreset(presetCard.modelData, null)
+                            onClicked: root.openConfiguration(presetCard.modelData)
                         }
 
                         Text {

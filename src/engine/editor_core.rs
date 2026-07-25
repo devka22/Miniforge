@@ -39,6 +39,7 @@ use crate::engine::miniforge_2d::authoring_catalog::{AuthoringCatalog2D, Authori
 use crate::engine::miniforge_2d::content_browser::asset_from_record;
 use crate::engine::miniforge_2d::paper2d::SpriteFrames2D;
 use crate::engine::miniforge_2d::physics2d::Physics2DSettings;
+use crate::engine::miniforge_2d::sdk_packs::{SdkPackCatalog, SdkPackRegistry};
 use crate::engine::project_launcher::{LauncherTemplate, ProjectLauncherState};
 use crate::engine::project_storage::{BackupPolicy, DEFAULT_BACKUP_GENERATIONS, ProjectStorage};
 use crate::engine::project_validator::ProjectValidator;
@@ -2189,6 +2190,112 @@ impl EditorCore {
 
     pub fn authoring_catalog(&self) -> AuthoringCatalog2D {
         builtin_authoring_catalog().clone()
+    }
+
+    pub fn authoring_application_plan(
+        &self,
+        preset_id: &str,
+        parameters_json: &str,
+    ) -> Result<Value, EditorCoreError> {
+        let parameters = if parameters_json.trim().is_empty() {
+            Value::Object(Default::default())
+        } else {
+            serde_json::from_str::<Value>(parameters_json)?
+        };
+        if !parameters.is_object() {
+            return Err(EditorCoreError::new(
+                EditorCoreErrorKind::InvalidArgument,
+                "Authoring preset parameters must be a JSON object",
+            ));
+        }
+
+        let game = self.game()?;
+        let selection = selected_entity_ids(game)?;
+        let catalog = builtin_authoring_catalog();
+        let preset = catalog.resolve(preset_id).ok_or_else(|| {
+            EditorCoreError::new(
+                EditorCoreErrorKind::InvalidArgument,
+                format!("Unknown authoring preset: {preset_id}"),
+            )
+        })?;
+        let mut targets = Vec::with_capacity(selection.len());
+        let mut total_components_to_add = 0usize;
+        let mut total_components_existing = 0usize;
+        for entity_id in selection {
+            let entity = game.get_entity_by_id(entity_id).ok_or_else(|| {
+                EditorCoreError::new(
+                    EditorCoreErrorKind::NotFound,
+                    format!("Selected entity {entity_id} is missing"),
+                )
+            })?;
+            let plan = catalog
+                .application_plan(
+                    &preset.id,
+                    entity
+                        .components
+                        .iter()
+                        .map(|component| component.component_type.as_str()),
+                    Some(&parameters),
+                )
+                .expect("resolved preset must produce an application plan");
+            total_components_to_add += plan.add_components.len();
+            total_components_existing += plan.existing_components.len();
+            targets.push(json!({
+                "entity_id": entity.id,
+                "entity_name": entity.name,
+                "add_components": plan.add_components,
+                "existing_components": plan.existing_components,
+                "configured_components": plan.configured_components,
+            }));
+        }
+
+        Ok(json!({
+            "schema_version": 1,
+            "preset_id": preset.id,
+            "label": preset.label,
+            "summary": preset.summary,
+            "target_count": targets.len(),
+            "total_components_to_add": total_components_to_add,
+            "total_components_existing": total_components_existing,
+            "world_profile_will_change": preset.physics_world.is_some(),
+            "physics_world": preset.physics_world,
+            "requirements": preset.requirements,
+            "workflow_steps": preset.workflow_steps,
+            "recommended_next": preset.recommended_next,
+            "parameters": parameters,
+            "targets": targets,
+        }))
+    }
+
+    pub fn sdk_pack_catalog(&self) -> Value {
+        let catalog = builtin_sdk_pack_catalog();
+        json!({
+            "catalog": catalog,
+            "validation": catalog.validate(),
+        })
+    }
+
+    pub fn sdk_pack_install_plan(
+        &self,
+        profile_id: &str,
+        registry_json: &str,
+    ) -> Result<Value, EditorCoreError> {
+        let registry = if registry_json.trim().is_empty() {
+            SdkPackRegistry::default()
+        } else {
+            serde_json::from_str::<SdkPackRegistry>(registry_json)?
+        };
+        let catalog = builtin_sdk_pack_catalog();
+        let plan = catalog
+            .install_plan(profile_id, &registry)
+            .map_err(|message| {
+                EditorCoreError::new(EditorCoreErrorKind::InvalidArgument, message)
+            })?;
+        Ok(json!({
+            "schema_version": catalog.schema_version,
+            "plan": plan,
+            "registry": registry,
+        }))
     }
 
     pub fn prefab_studio_state(&mut self) -> Result<PrefabStudioStateDto, EditorCoreError> {
@@ -7280,6 +7387,11 @@ fn add_component_to_selected(
 fn builtin_authoring_catalog() -> &'static AuthoringCatalog2D {
     static CATALOG: OnceLock<AuthoringCatalog2D> = OnceLock::new();
     CATALOG.get_or_init(AuthoringCatalog2D::builtin)
+}
+
+fn builtin_sdk_pack_catalog() -> &'static SdkPackCatalog {
+    static CATALOG: OnceLock<SdkPackCatalog> = OnceLock::new();
+    CATALOG.get_or_init(SdkPackCatalog::builtin)
 }
 
 fn component_bundle_preset(bundle: &str) -> Option<&'static AuthoringPreset2D> {

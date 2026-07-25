@@ -10,7 +10,7 @@ use std::fmt;
 use std::sync::mpsc;
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
+use serde::{Deserialize, Serialize};
 
 use crate::engine::error_handler::{MFResult, MiniForgeError};
 
@@ -24,6 +24,7 @@ const OFFSCREEN_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8U
 const SPRITE_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const DEFAULT_WIDTH: u32 = 1280;
 const DEFAULT_HEIGHT: u32 = 720;
+const INITIAL_VERTEX_BUFFER_BYTES: u64 = 64 * 1024;
 
 const SPRITE_SHADER: &str = r#"
 struct VertexOut {
@@ -69,6 +70,29 @@ struct QueuedSprite {
     clip_rect: Option<[u32; 4]>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SpriteBatch {
+    texture_id: u64,
+    clip_rect: [u32; 4],
+    first_sprite: u32,
+    sprite_count: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WgpuFrameDiagnostics {
+    pub frame_index: u64,
+    pub logical_draw_calls: usize,
+    pub queued_sprites: usize,
+    pub culled_sprites: usize,
+    pub gpu_draw_calls: usize,
+    pub texture_bind_changes: usize,
+    pub vertex_bytes_uploaded: u64,
+    pub vertex_buffer_capacity_bytes: u64,
+    pub vertex_buffer_reallocations: u64,
+    pub submitted: bool,
+    pub surface_reconfigurations: u64,
+}
+
 const SPRITE_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
     wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4, 2 => Float32x2];
 
@@ -88,6 +112,8 @@ struct WgpuState {
     sampler: wgpu::Sampler,
     white_texture: WgpuTexture,
     textures: HashMap<u64, WgpuTexture>,
+    vertex_buffer: wgpu::Buffer,
+    vertex_buffer_capacity_bytes: u64,
 }
 
 /// Concrete, renderer-agnostic 2D backend backed by a physical GPU adapter.
@@ -103,9 +129,12 @@ pub struct WgpuBackend {
     pub submitted_frames: u64,
     pub skipped_surface_frames: u64,
     pub surface_reconfigurations: u64,
+    pub vertex_buffer_reallocations: u64,
     frame_open: bool,
     clear_color: [f64; 4],
     sprites: Vec<QueuedSprite>,
+    culled_sprites: usize,
+    last_frame_diagnostics: WgpuFrameDiagnostics,
     state: Option<WgpuState>,
 }
 
@@ -124,6 +153,11 @@ impl fmt::Debug for WgpuBackend {
             .field("submitted_frames", &self.submitted_frames)
             .field("skipped_surface_frames", &self.skipped_surface_frames)
             .field("surface_reconfigurations", &self.surface_reconfigurations)
+            .field(
+                "vertex_buffer_reallocations",
+                &self.vertex_buffer_reallocations,
+            )
+            .field("last_frame_diagnostics", &self.last_frame_diagnostics)
             .field("has_surface", &self.has_surface())
             .field("frame_open", &self.frame_open)
             .finish_non_exhaustive()
@@ -144,9 +178,12 @@ impl Default for WgpuBackend {
             submitted_frames: 0,
             skipped_surface_frames: 0,
             surface_reconfigurations: 0,
+            vertex_buffer_reallocations: 0,
             frame_open: false,
             clear_color: [0.035, 0.043, 0.059, 1.0],
             sprites: Vec::new(),
+            culled_sprites: 0,
+            last_frame_diagnostics: WgpuFrameDiagnostics::default(),
             state: None,
         }
     }
@@ -241,6 +278,10 @@ impl WgpuBackend {
 
     pub fn texture_count(&self) -> usize {
         self.state.as_ref().map_or(0, |state| state.textures.len())
+    }
+
+    pub fn last_frame_diagnostics(&self) -> &WgpuFrameDiagnostics {
+        &self.last_frame_diagnostics
     }
 
     /// Copies the last submitted GPU target into tightly packed RGBA8 bytes.
@@ -462,6 +503,7 @@ impl WgpuBackend {
         let target = surface
             .is_none()
             .then(|| create_target(&device, self.width, self.height));
+        let vertex_buffer = create_vertex_buffer(&device, INITIAL_VERTEX_BUFFER_BYTES);
         let caps = RenderDeviceCaps {
             api: graphics_api(adapter_info.backend),
             device_name: adapter_info.name,
@@ -484,6 +526,8 @@ impl WgpuBackend {
                 sampler,
                 white_texture,
                 textures: HashMap::new(),
+                vertex_buffer,
+                vertex_buffer_capacity_bytes: INITIAL_VERTEX_BUFFER_BYTES,
             },
             caps,
         ))
@@ -521,23 +565,75 @@ impl WgpuBackend {
             .ok_or_else(|| render_error("wgpu backend has not been initialized"))
     }
 
-    fn render_frame(&mut self) -> MFResult<bool> {
+    fn queue_sprite(&mut self, mut queued: QueuedSprite) -> MFResult<()> {
+        let sprite = &mut queued.sprite;
+        if [
+            sprite.x,
+            sprite.y,
+            sprite.width,
+            sprite.height,
+            sprite.rotation,
+        ]
+        .iter()
+        .chain(sprite.color.iter())
+        .any(|value| !value.is_finite())
+        {
+            return Err(render_error(
+                "wgpu sprite geometry and color values must be finite",
+            ));
+        }
+        if sprite.width <= 0.0 || sprite.height <= 0.0 {
+            return Err(render_error(
+                "wgpu sprite width and height must be greater than zero",
+            ));
+        }
+        sprite.color = sprite.color.map(|channel| channel.clamp(0.0, 1.0));
+        self.draw_calls += 1;
+        if !sprite_intersects_viewport(sprite, self.width, self.height)
+            || queued
+                .clip_rect
+                .is_some_and(|clip| normalize_clip_rect(clip, self.width, self.height).is_none())
+        {
+            self.culled_sprites += 1;
+            return Ok(());
+        }
+        self.sprites.push(queued);
+        Ok(())
+    }
+
+    fn render_frame(&mut self) -> MFResult<WgpuFrameDiagnostics> {
         let vertices = sprites_to_vertices(&self.sprites, self.width, self.height);
-        let state = self.state()?;
-        let vertex_buffer = (!vertices.is_empty()).then(|| {
-            state
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("MiniForge wgpu 2D sprite vertices"),
-                    contents: bytemuck::cast_slice(&vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                })
-        });
-        let mut reconfigure_after_present = false;
+        let batches = build_sprite_batches(&self.sprites, self.width, self.height);
+        let vertex_bytes = std::mem::size_of_val(vertices.as_slice()) as u64;
+        let clear_color = self.clear_color;
+        let mut reallocated = false;
         let mut reconfiguration_count = 0u64;
-        let mut surface_output = if let Some(surface) = state.surface.as_ref() {
-            let mut acquire =
-                |surface: &wgpu::Surface<'static>| match surface.get_current_texture() {
+        let submitted;
+        let vertex_buffer_capacity_bytes;
+        {
+            let state = self
+                .state
+                .as_mut()
+                .ok_or_else(|| render_error("wgpu backend has not been initialized"))?;
+            if vertex_bytes > state.vertex_buffer_capacity_bytes {
+                let capacity = vertex_bytes
+                    .next_power_of_two()
+                    .max(INITIAL_VERTEX_BUFFER_BYTES);
+                state.vertex_buffer = create_vertex_buffer(&state.device, capacity);
+                state.vertex_buffer_capacity_bytes = capacity;
+                reallocated = true;
+            }
+            if vertex_bytes > 0 {
+                state
+                    .queue
+                    .write_buffer(&state.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+            }
+
+            let mut reconfigure_after_present = false;
+            let mut surface_output = if let Some(surface) = state.surface.as_ref() {
+                let mut acquire = |surface: &wgpu::Surface<'static>| match surface
+                    .get_current_texture()
+                {
                     wgpu::CurrentSurfaceTexture::Success(texture) => Ok(Some(texture)),
                     wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
                         reconfigure_after_present = true;
@@ -572,86 +668,103 @@ impl WgpuBackend {
                         Err(render_error("wgpu surface acquisition failed validation"))
                     }
                 };
-            acquire(surface)?
-        } else {
-            None
-        };
-        if state.surface.is_some() && surface_output.is_none() {
-            self.surface_reconfigurations += reconfiguration_count;
-            return Ok(false);
-        }
-        let target_texture = surface_output
-            .as_ref()
-            .map(|output| &output.texture)
-            .or(state.target.as_ref())
-            .ok_or_else(|| render_error("wgpu frame has no render target"))?;
-        let view = target_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = state
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("MiniForge wgpu 2D frame encoder"),
-            });
-        {
-            let color_attachment = wgpu::RenderPassColorAttachment {
-                view: &view,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: self.clear_color[0],
-                        g: self.clear_color[1],
-                        b: self.clear_color[2],
-                        a: self.clear_color[3],
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
+                acquire(surface)?
+            } else {
+                None
             };
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("MiniForge wgpu 2D frame"),
-                color_attachments: &[Some(color_attachment)],
-                ..Default::default()
-            });
-            if let Some(buffer) = vertex_buffer.as_ref() {
-                pass.set_pipeline(&state.pipeline);
-                pass.set_vertex_buffer(0, buffer.slice(..));
-                for (index, queued) in self.sprites.iter().enumerate() {
-                    let texture = state
-                        .textures
-                        .get(&queued.sprite.texture_id)
-                        .unwrap_or(&state.white_texture);
-                    pass.set_bind_group(0, &texture.bind_group, &[]);
-                    let clip = queued.clip_rect.unwrap_or([0, 0, self.width, self.height]);
-                    let x = clip[0].min(self.width.saturating_sub(1));
-                    let y = clip[1].min(self.height.saturating_sub(1));
-                    let width = clip[2].min(self.width.saturating_sub(x));
-                    let height = clip[3].min(self.height.saturating_sub(y));
-                    if width == 0 || height == 0 {
-                        continue;
+
+            if state.surface.is_some() && surface_output.is_none() {
+                submitted = false;
+            } else {
+                let target_texture = surface_output
+                    .as_ref()
+                    .map(|output| &output.texture)
+                    .or(state.target.as_ref())
+                    .ok_or_else(|| render_error("wgpu frame has no render target"))?;
+                let view = target_texture.create_view(&wgpu::TextureViewDescriptor::default());
+                let mut encoder =
+                    state
+                        .device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("MiniForge wgpu 2D frame encoder"),
+                        });
+                {
+                    let color_attachment = wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: clear_color[0],
+                                g: clear_color[1],
+                                b: clear_color[2],
+                                a: clear_color[3],
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    };
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("MiniForge wgpu 2D frame"),
+                        color_attachments: &[Some(color_attachment)],
+                        ..Default::default()
+                    });
+                    if !batches.is_empty() {
+                        pass.set_pipeline(&state.pipeline);
+                        pass.set_vertex_buffer(0, state.vertex_buffer.slice(..vertex_bytes));
+                        let mut bound_texture = None;
+                        for batch in &batches {
+                            if bound_texture != Some(batch.texture_id) {
+                                let texture = state
+                                    .textures
+                                    .get(&batch.texture_id)
+                                    .unwrap_or(&state.white_texture);
+                                pass.set_bind_group(0, &texture.bind_group, &[]);
+                                bound_texture = Some(batch.texture_id);
+                            }
+                            let [x, y, clip_width, clip_height] = batch.clip_rect;
+                            pass.set_scissor_rect(x, y, clip_width, clip_height);
+                            let first_vertex = batch.first_sprite * 6;
+                            let vertex_count = batch.sprite_count * 6;
+                            pass.draw(first_vertex..first_vertex + vertex_count, 0..1);
+                        }
                     }
-                    pass.set_scissor_rect(x, y, width, height);
-                    let first_vertex = index as u32 * 6;
-                    pass.draw(first_vertex..first_vertex + 6, 0..1);
                 }
+                state.queue.submit([encoder.finish()]);
+                if let Some(output) = surface_output.take() {
+                    state.queue.present(output);
+                    if reconfigure_after_present {
+                        let surface = state
+                            .surface
+                            .as_ref()
+                            .expect("surface output requires a surface");
+                        let config = state
+                            .surface_config
+                            .as_ref()
+                            .expect("surface output requires configuration");
+                        surface.configure(&state.device, config);
+                        reconfiguration_count += 1;
+                    }
+                }
+                submitted = true;
             }
+            vertex_buffer_capacity_bytes = state.vertex_buffer_capacity_bytes;
         }
-        state.queue.submit([encoder.finish()]);
-        if let Some(output) = surface_output.take() {
-            state.queue.present(output);
-            if reconfigure_after_present {
-                let surface = state
-                    .surface
-                    .as_ref()
-                    .expect("surface output requires a surface");
-                let config = state
-                    .surface_config
-                    .as_ref()
-                    .expect("surface output requires configuration");
-                surface.configure(&state.device, config);
-                reconfiguration_count += 1;
-            }
-        }
+
         self.surface_reconfigurations += reconfiguration_count;
-        Ok(true)
+        self.vertex_buffer_reallocations += u64::from(reallocated);
+        Ok(WgpuFrameDiagnostics {
+            frame_index: self.submitted_frames + self.skipped_surface_frames + 1,
+            logical_draw_calls: self.draw_calls,
+            queued_sprites: self.sprites.len(),
+            culled_sprites: self.culled_sprites,
+            gpu_draw_calls: batches.len(),
+            texture_bind_changes: texture_bind_changes(&batches),
+            vertex_bytes_uploaded: vertex_bytes,
+            vertex_buffer_capacity_bytes,
+            vertex_buffer_reallocations: self.vertex_buffer_reallocations,
+            submitted,
+            surface_reconfigurations: reconfiguration_count,
+        })
     }
 }
 
@@ -672,6 +785,7 @@ impl RenderBackend for WgpuBackend {
         self.state()?;
         self.sprites.clear();
         self.draw_calls = 0;
+        self.culled_sprites = 0;
         self.frame_open = true;
         Ok(())
     }
@@ -680,13 +794,15 @@ impl RenderBackend for WgpuBackend {
         if !self.frame_open {
             return Err(render_error("wgpu end_frame called without begin_frame"));
         }
-        let submitted = self.render_frame()?;
+        let diagnostics = self.render_frame();
         self.frame_open = false;
-        if submitted {
+        let diagnostics = diagnostics?;
+        if diagnostics.submitted {
             self.submitted_frames += 1;
         } else {
             self.skipped_surface_frames += 1;
         }
+        self.last_frame_diagnostics = diagnostics;
         Ok(())
     }
 
@@ -712,13 +828,11 @@ impl RenderBackend for WgpuBackend {
         if !self.frame_open {
             return Err(render_error("wgpu draw_sprite called outside a frame"));
         }
-        self.sprites.push(QueuedSprite {
+        self.queue_sprite(QueuedSprite {
             sprite: command,
             uv_rect: [0.0, 0.0, 1.0, 1.0],
             clip_rect: None,
-        });
-        self.draw_calls += 1;
-        Ok(())
+        })
     }
 
     fn draw_sprite_region(&mut self, command: SpriteRegionDrawCommand) -> MFResult<()> {
@@ -735,13 +849,11 @@ impl RenderBackend for WgpuBackend {
                 "wgpu sprite atlas UV rectangle must be finite and ordered",
             ));
         }
-        self.sprites.push(QueuedSprite {
+        self.queue_sprite(QueuedSprite {
             sprite: command.sprite,
             uv_rect: command.uv_rect.map(|value| value.clamp(0.0, 1.0)),
             clip_rect: command.clip_rect,
-        });
-        self.draw_calls += 1;
-        Ok(())
+        })
     }
 
     fn draw_tilemap(&mut self, _command: TilemapDrawCommand) -> MFResult<()> {
@@ -771,6 +883,74 @@ impl RenderBackend for WgpuBackend {
     fn draw_light_3d(&mut self, _command: LightDrawCommand3D) -> MFResult<()> {
         Ok(())
     }
+}
+
+fn create_vertex_buffer(device: &wgpu::Device, capacity_bytes: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("MiniForge persistent wgpu 2D sprite vertices"),
+        size: capacity_bytes.max(1),
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn normalize_clip_rect(clip: [u32; 4], width: u32, height: u32) -> Option<[u32; 4]> {
+    let x = clip[0].min(width.saturating_sub(1));
+    let y = clip[1].min(height.saturating_sub(1));
+    let clip_width = clip[2].min(width.saturating_sub(x));
+    let clip_height = clip[3].min(height.saturating_sub(y));
+    (clip_width > 0 && clip_height > 0).then_some([x, y, clip_width, clip_height])
+}
+
+fn build_sprite_batches(sprites: &[QueuedSprite], width: u32, height: u32) -> Vec<SpriteBatch> {
+    let mut batches: Vec<SpriteBatch> = Vec::new();
+    for (index, queued) in sprites.iter().enumerate() {
+        let Some(clip_rect) = normalize_clip_rect(
+            queued.clip_rect.unwrap_or([0, 0, width, height]),
+            width,
+            height,
+        ) else {
+            continue;
+        };
+        if let Some(batch) = batches.last_mut()
+            && batch.texture_id == queued.sprite.texture_id
+            && batch.clip_rect == clip_rect
+            && batch.first_sprite + batch.sprite_count == index as u32
+        {
+            batch.sprite_count += 1;
+            continue;
+        }
+        batches.push(SpriteBatch {
+            texture_id: queued.sprite.texture_id,
+            clip_rect,
+            first_sprite: index as u32,
+            sprite_count: 1,
+        });
+    }
+    batches
+}
+
+fn texture_bind_changes(batches: &[SpriteBatch]) -> usize {
+    batches
+        .iter()
+        .map(|batch| batch.texture_id)
+        .fold((None, 0usize), |(previous, count), texture_id| {
+            (
+                Some(texture_id),
+                count + usize::from(previous != Some(texture_id)),
+            )
+        })
+        .1
+}
+
+fn sprite_intersects_viewport(sprite: &SpriteDrawCommand, width: u32, height: u32) -> bool {
+    let center_x = sprite.x + sprite.width * 0.5;
+    let center_y = sprite.y + sprite.height * 0.5;
+    let radius = sprite.width.hypot(sprite.height) * 0.5;
+    center_x + radius >= 0.0
+        && center_y + radius >= 0.0
+        && center_x - radius <= width as f32
+        && center_y - radius <= height as f32
 }
 
 fn create_target(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
@@ -919,6 +1099,23 @@ fn render_error(message: impl Into<String>) -> MiniForgeError {
 mod tests {
     use super::*;
 
+    fn queued(texture_id: u64, clip_rect: Option<[u32; 4]>) -> QueuedSprite {
+        QueuedSprite {
+            sprite: SpriteDrawCommand {
+                entity_id: texture_id,
+                texture_id,
+                x: 10.0,
+                y: 10.0,
+                width: 16.0,
+                height: 16.0,
+                rotation: 0.0,
+                color: [1.0; 4],
+            },
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            clip_rect,
+        }
+    }
+
     #[test]
     fn sprite_vertices_cover_requested_pixel_rect() {
         let vertices = sprites_to_vertices(
@@ -944,5 +1141,37 @@ mod tests {
         assert_eq!(vertices[2].position, [0.0, 0.5]);
         assert_eq!(vertices[0].uv, [0.25, 0.5]);
         assert_eq!(vertices[2].uv, [0.75, 1.0]);
+    }
+
+    #[test]
+    fn sprite_batches_merge_contiguous_texture_and_clip_runs() {
+        let sprites = vec![
+            queued(1, None),
+            queued(1, None),
+            queued(2, None),
+            queued(2, Some([0, 0, 50, 50])),
+            queued(2, Some([0, 0, 50, 50])),
+            queued(1, None),
+        ];
+        let batches = build_sprite_batches(&sprites, 100, 100);
+        assert_eq!(batches.len(), 4);
+        assert_eq!(batches[0].sprite_count, 2);
+        assert_eq!(batches[1].sprite_count, 1);
+        assert_eq!(batches[2].sprite_count, 2);
+        assert_eq!(batches[3].sprite_count, 1);
+        assert_eq!(texture_bind_changes(&batches), 3);
+    }
+
+    #[test]
+    fn viewport_and_clip_culling_are_conservative_and_safe() {
+        let mut sprite = queued(0, None).sprite;
+        assert!(sprite_intersects_viewport(&sprite, 100, 100));
+        sprite.x = 500.0;
+        assert!(!sprite_intersects_viewport(&sprite, 100, 100));
+        assert_eq!(
+            normalize_clip_rect([90, 90, 20, 20], 100, 100),
+            Some([90, 90, 10, 10])
+        );
+        assert_eq!(normalize_clip_rect([0, 0, 0, 10], 100, 100), None);
     }
 }

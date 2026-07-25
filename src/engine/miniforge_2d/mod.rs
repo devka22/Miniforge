@@ -31,6 +31,7 @@ pub mod problems_panel;
 pub mod project_settings2d;
 pub mod rts_tools;
 pub mod scene_view;
+pub mod sdk_packs;
 pub mod sequencer2d;
 pub mod tilemap_editor2d;
 pub mod toolbar;
@@ -96,6 +97,10 @@ pub use rts_tools::RtsTools2D;
 pub use scene_view::{
     SceneGuide2D, SceneOverlayCommand2D, SceneOverlayKind2D, SceneSnapResult2D, SceneSnapTarget2D,
     SceneView2D,
+};
+pub use sdk_packs::{
+    InstalledSdkPack, SdkPackCatalog, SdkPackCatalogValidation, SdkPackInstallItem,
+    SdkPackInstallPlan, SdkPackKind, SdkPackManifest, SdkPackProfile, SdkPackRegistry,
 };
 pub use sequencer2d::Sequencer2D as MiniSequencer2D;
 pub use tilemap_editor2d::{

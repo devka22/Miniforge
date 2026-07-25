@@ -209,7 +209,7 @@ impl PreviewApp {
                 || self.frames >= target.max(1).saturating_mul(120)
         }) {
             println!(
-                "MINIFORGE_WGPU_SURFACE_{} frames={} presented={} skipped={} reconfigured={} entities={} textures={} api={:?}",
+                "MINIFORGE_WGPU_SURFACE_{} frames={} presented={} skipped={} reconfigured={} logical_draws={} gpu_draws={} binds={} vertex_bytes={} entities={} textures={} api={:?}",
                 if backend.submitted_frames >= self.autotest_frames.unwrap_or(1).max(1) {
                     "OK"
                 } else {
@@ -219,6 +219,10 @@ impl PreviewApp {
                 backend.submitted_frames,
                 backend.skipped_surface_frames,
                 backend.surface_reconfigurations,
+                backend.last_frame_diagnostics().logical_draw_calls,
+                backend.last_frame_diagnostics().gpu_draw_calls,
+                backend.last_frame_diagnostics().texture_bind_changes,
+                backend.last_frame_diagnostics().vertex_bytes_uploaded,
                 self.runtime
                     .as_ref()
                     .map(|runtime| runtime.runtime_world.units.len())

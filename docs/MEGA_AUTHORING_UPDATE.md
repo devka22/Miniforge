@@ -1,4 +1,4 @@
-# Mega Authoring Update — fase 1
+# Mega Authoring Update — fases 1 y 2
 
 Esta fase convierte los sistemas reutilizables de MiniForge en una API de autoría
 común para cualquier género 2D. El editor ya no mantiene una lista QML separada:
@@ -33,6 +33,10 @@ El editor ofrece tres entradas al mismo catálogo:
 El **Mega Authoring Hub** permite buscar, filtrar, marcar favoritos y aplicar un
 sistema a uno o varios objetos. Los valores comunes —velocidad, vida, masa,
 daño y capacidad de inventario— se configuran antes de aplicar el preset. El
+paso de revisión calcula, sin mutar la escena, qué componentes se añadirán a
+cada objeto, cuáles ya existen, si cambiará el mundo físico y cuáles son los
+primeros pasos y requisitos. Así el modo rápido sigue siendo simple, pero el
+creador puede comprobar el cambio exacto antes de confirmarlo. El
 payload usa la misma acción pública que el resto del editor:
 
 ```json
@@ -80,7 +84,9 @@ La API de motor expone:
 - `PhysicsRuntimeTuning2D`;
 - serialización JSON del catálogo;
 - `mf_editor_authoring_catalog_json` en la ABI C;
-- `MfBridge::authoringCatalogJson()` en Qt.
+- `mf_editor_authoring_plan_json` para previsualizar la aplicación a la
+  selección actual;
+- `MfBridge::authoringCatalogJson()` y `MfBridge::authoringPlanJson()` en Qt.
 
 El catálogo puede consumirse desde otro frontend sin copiar reglas del editor.
 
@@ -94,6 +100,12 @@ de depuración— fuera del repositorio Git del motor.
 
 Así GitHub mantiene sólo código y recursos del motor, nunca juegos de usuario,
 y cada creador instala únicamente los paquetes que necesita.
+
+La fase 2 incorpora el catálogo y el planificador reales: **Creator 2D** resuelve
+aproximadamente 6.05 GiB y **Studio Heavy** aproximadamente 9.03 GiB. El editor
+los muestra en la pestaña **SDK Packs**, calcula dependencias, descarga y tamaño
+final, y exige manifests SHA-256 de release antes de una futura instalación
+atómica. Consulta `docs/SDK_CONTENT_PACKS.md`.
 
 ## Compatibilidad
 

@@ -178,6 +178,9 @@ MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_scene_browser_state_json(const MfEdit
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_scene_browser_action_json(MfEditorHandle* editor, const char* action, const char* payload_json, char* data, size_t capacity, size_t* required, MfError* error);
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_component_catalog_json(const MfEditorHandle* editor, char* data, size_t capacity, size_t* required, MfError* error);
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_authoring_catalog_json(const MfEditorHandle* editor, char* data, size_t capacity, size_t* required, MfError* error);
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_authoring_plan_json(const MfEditorHandle* editor, const char* preset_id, const char* parameters_json, char* data, size_t capacity, size_t* required, MfError* error);
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_sdk_pack_catalog_json(const MfEditorHandle* editor, char* data, size_t capacity, size_t* required, MfError* error);
+MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_sdk_pack_plan_json(const MfEditorHandle* editor, const char* profile_id, const char* registry_json, char* data, size_t capacity, size_t* required, MfError* error);
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_tool_state_json(const MfEditorHandle* editor, const char* tool, char* data, size_t capacity, size_t* required, MfError* error);
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_tool_action_json(MfEditorHandle* editor, const char* tool, const char* action, const char* payload_json, char* data, size_t capacity, size_t* required, MfError* error);
 MINIFORGE_EDITOR_EXPORT MfStatus mf_editor_prefab_state_json(MfEditorHandle* editor, char* data, size_t capacity, size_t* required, MfError* error);

@@ -1068,6 +1068,107 @@ pub unsafe extern "C" fn mf_editor_authoring_catalog_json(
 }
 
 #[unsafe(no_mangle)]
+/// Builds a read-only plan for applying one authoring preset to the current
+/// selection, including per-entity component changes and world settings.
+///
+/// # Safety
+/// `preset_id` and `parameters_json` must be valid null-terminated UTF-8.
+/// Buffer pointers follow `mf_editor_project_path` semantics.
+pub unsafe extern "C" fn mf_editor_authoring_plan_json(
+    handle: *const MfEditorHandle,
+    preset_id: *const c_char,
+    parameters_json: *const c_char,
+    data: *mut c_char,
+    capacity: usize,
+    required: *mut usize,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_ref(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    let (Ok(preset_id), Ok(parameters_json)) = (read_cstr(preset_id), read_cstr(parameters_json))
+    else {
+        set_error(
+            error,
+            MfStatus::InvalidArgument,
+            "Authoring plan strings are invalid",
+        );
+        return MfStatus::InvalidArgument;
+    };
+    write_serialized_result(
+        core.authoring_application_plan(preset_id, parameters_json),
+        data,
+        capacity,
+        required,
+        error,
+    )
+}
+
+#[unsafe(no_mangle)]
+/// Writes the optional, versioned SDK/content pack catalog and validation
+/// report as JSON.
+///
+/// # Safety
+/// Buffer pointers follow `mf_editor_project_path` semantics.
+pub unsafe extern "C" fn mf_editor_sdk_pack_catalog_json(
+    handle: *const MfEditorHandle,
+    data: *mut c_char,
+    capacity: usize,
+    required: *mut usize,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_ref(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    write_serialized_result(
+        Ok::<_, EditorCoreError>(core.sdk_pack_catalog()),
+        data,
+        capacity,
+        required,
+        error,
+    )
+}
+
+#[unsafe(no_mangle)]
+/// Builds a dependency-resolved SDK/content pack installation plan.
+///
+/// # Safety
+/// `profile_id` and `registry_json` must be valid null-terminated UTF-8.
+/// Buffer pointers follow `mf_editor_project_path` semantics.
+pub unsafe extern "C" fn mf_editor_sdk_pack_plan_json(
+    handle: *const MfEditorHandle,
+    profile_id: *const c_char,
+    registry_json: *const c_char,
+    data: *mut c_char,
+    capacity: usize,
+    required: *mut usize,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_ref(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    let (Ok(profile_id), Ok(registry_json)) = (read_cstr(profile_id), read_cstr(registry_json))
+    else {
+        set_error(
+            error,
+            MfStatus::InvalidArgument,
+            "SDK pack plan strings are invalid",
+        );
+        return MfStatus::InvalidArgument;
+    };
+    write_serialized_result(
+        core.sdk_pack_install_plan(profile_id, registry_json),
+        data,
+        capacity,
+        required,
+        error,
+    )
+}
+
+#[unsafe(no_mangle)]
 /// Writes the persisted state for an advanced editor tool as JSON.
 ///
 /// Supported tool ids are `sequencer`, `tilemap`, and `ui_designer`.
@@ -3789,6 +3890,106 @@ mod tests {
                     .unwrap();
             assert!(authoring["presets"].as_array().unwrap().len() >= 40);
             assert!(authoring["kinds"]["physics"].as_u64().unwrap() >= 8);
+
+            let preset_id = CString::new("topdown_player").unwrap();
+            let preset_parameters = CString::new(r#"{"speed":8.5,"max_health":140}"#).unwrap();
+            let mut plan_required = 0;
+            assert_eq!(
+                mf_editor_authoring_plan_json(
+                    handle,
+                    preset_id.as_ptr(),
+                    preset_parameters.as_ptr(),
+                    std::ptr::null_mut(),
+                    0,
+                    &mut plan_required,
+                    &mut error,
+                ),
+                MfStatus::BufferTooSmall
+            );
+            let mut plan_json = vec![0 as c_char; plan_required];
+            assert_eq!(
+                mf_editor_authoring_plan_json(
+                    handle,
+                    preset_id.as_ptr(),
+                    preset_parameters.as_ptr(),
+                    plan_json.as_mut_ptr(),
+                    plan_json.len(),
+                    &mut plan_required,
+                    &mut error,
+                ),
+                MfStatus::Ok
+            );
+            let plan: serde_json::Value =
+                serde_json::from_str(CStr::from_ptr(plan_json.as_ptr()).to_str().unwrap()).unwrap();
+            assert_eq!(plan["preset_id"], "topdown_player");
+            assert_eq!(plan["target_count"], 1);
+            assert!(plan["total_components_to_add"].as_u64().unwrap() > 0);
+
+            let mut sdk_catalog_required = 0;
+            assert_eq!(
+                mf_editor_sdk_pack_catalog_json(
+                    handle,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut sdk_catalog_required,
+                    &mut error,
+                ),
+                MfStatus::BufferTooSmall
+            );
+            let mut sdk_catalog_json = vec![0 as c_char; sdk_catalog_required];
+            assert_eq!(
+                mf_editor_sdk_pack_catalog_json(
+                    handle,
+                    sdk_catalog_json.as_mut_ptr(),
+                    sdk_catalog_json.len(),
+                    &mut sdk_catalog_required,
+                    &mut error,
+                ),
+                MfStatus::Ok
+            );
+            let sdk_catalog: serde_json::Value =
+                serde_json::from_str(CStr::from_ptr(sdk_catalog_json.as_ptr()).to_str().unwrap())
+                    .unwrap();
+            assert_eq!(sdk_catalog["validation"]["valid"], true);
+
+            let studio_profile = CString::new("studio-heavy").unwrap();
+            let empty_registry = CString::new(r#"{"installed":[]}"#).unwrap();
+            let mut sdk_plan_required = 0;
+            assert_eq!(
+                mf_editor_sdk_pack_plan_json(
+                    handle,
+                    studio_profile.as_ptr(),
+                    empty_registry.as_ptr(),
+                    std::ptr::null_mut(),
+                    0,
+                    &mut sdk_plan_required,
+                    &mut error,
+                ),
+                MfStatus::BufferTooSmall
+            );
+            let mut sdk_plan_json = vec![0 as c_char; sdk_plan_required];
+            assert_eq!(
+                mf_editor_sdk_pack_plan_json(
+                    handle,
+                    studio_profile.as_ptr(),
+                    empty_registry.as_ptr(),
+                    sdk_plan_json.as_mut_ptr(),
+                    sdk_plan_json.len(),
+                    &mut sdk_plan_required,
+                    &mut error,
+                ),
+                MfStatus::Ok
+            );
+            let sdk_plan: serde_json::Value =
+                serde_json::from_str(CStr::from_ptr(sdk_plan_json.as_ptr()).to_str().unwrap())
+                    .unwrap();
+            assert_eq!(sdk_plan["plan"]["meets_profile_target"], true);
+            assert!(
+                sdk_plan["plan"]["projected_installed_bytes"]
+                    .as_u64()
+                    .unwrap()
+                    > 8_000_000_000
+            );
 
             let mut inspector_count = 0;
             assert_eq!(

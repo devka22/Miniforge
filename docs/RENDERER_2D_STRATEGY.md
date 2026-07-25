@@ -38,6 +38,13 @@ movement with WASD or the arrow keys:
 cargo run --bin miniforge_wgpu_preview --features wgpu_runtime -- /path/to/project
 ```
 
+The sprite path now keeps a persistent, geometrically growing vertex buffer instead of allocating
+one GPU buffer per frame. Contiguous quads that share texture and scissor state become one draw,
+without reordering transparent geometry. `WgpuFrameDiagnostics` reports logical calls, culled
+sprites, GPU draws, texture bindings, uploaded bytes, buffer capacity/reallocations, presentation
+and surface recovery. A Metal surface smoke with the default 70×30 grid reduced 2,100 logical
+sprite calls to one GPU draw and one texture binding while presenting three verified frames.
+
 The shared 2D composer now turns visible tilemap cells, atlas-backed entities, CPU particles and
 basic UI geometry into backend-independent sprite quads with camera transforms, ordering and screen
 culling. The main exported runtime still uses Macroquad while text/minimap widgets, lighting,
@@ -52,7 +59,9 @@ The preview becomes playable only after these gates pass on macOS, Windows and L
 1. Window surface, presentation and device-loss lifecycle. Surface configuration, presentation,
    resize and recoverable reconfiguration are done; complete device-loss recreation remains.
 2. Sprite atlas regions, camera transforms, clipping, blend modes and stable batching. Atlas
-   regions, clipping, full-texture uploads and pixel-space sprite transforms are done.
+   regions, clipping, full-texture uploads, pixel-space transforms, conservative culling,
+   persistent vertex uploads and stable contiguous batching are done. Additional blend modes
+   remain.
 3. Chunked tilemaps, UI draw lists, text, particles and render textures. Layered tile cells, basic
    panels/progress bars and CPU-particle quads are done; text, advanced widgets, chunk batching,
    GPU particles and render textures remain.

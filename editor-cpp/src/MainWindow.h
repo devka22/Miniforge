@@ -42,6 +42,7 @@ private:
     void applyWorkspacePreset(const QString& workspace);
     void activateViewportTool(int key);
     void focusDock(QDockWidget* dock);
+    void openAuthoringHub(const QString& kind = QStringLiteral("all"));
     void saveWorkbenchState();
     void resetCurrentWorkspace();
     void showCommandPalette();
@@ -78,6 +79,8 @@ private:
     QDockWidget* m_aiDock = nullptr;
     QDockWidget* m_buildDock = nullptr;
     QDockWidget* m_objectsDock = nullptr;
+    QDockWidget* m_authoringDock = nullptr;
+    QDockWidget* m_sdkPacksDock = nullptr;
     QDockWidget* m_contentDock = nullptr;
     QDockWidget* m_consoleDock = nullptr;
     QDockWidget* m_spriteDock = nullptr;

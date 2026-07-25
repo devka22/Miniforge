@@ -40,6 +40,7 @@
 #include <QToolButton>
 #include <QTimer>
 #include <QUrl>
+#include <QVariant>
 #include <QWidgetAction>
 
 #include "ViewportWidget.h"
@@ -68,6 +69,8 @@ const QStringList& editorWorkspaceNames()
         QStringLiteral("Debug"),
         QStringLiteral("Minimal"),
         QStringLiteral("Sprites"),
+        QStringLiteral("Systems"),
+        QStringLiteral("SDK"),
     };
     return workspaces;
 }
@@ -643,6 +646,30 @@ void MainWindow::createMenus()
             m_projectOperationsDock->raise();
         }
     });
+    auto* sdkPacks = project->addAction(QStringLiteral("SDK && Content Packs..."));
+    connect(sdkPacks, &QAction::triggered, this, [this] {
+        setWorkspace(QStringLiteral("SDK"));
+        focusDock(m_sdkPacksDock);
+    });
+
+    auto* systems = menuBar()->addMenu(QStringLiteral("&Systems"));
+    auto* allSystems = systems->addAction(QStringLiteral("Mega Authoring Hub..."));
+    connect(allSystems, &QAction::triggered, this, [this] { openAuthoringHub(); });
+    systems->addSeparator();
+    for (const auto& entry : {
+             std::pair { QStringLiteral("Players && Actors"), QStringLiteral("actor") },
+             std::pair { QStringLiteral("Gameplay Systems"), QStringLiteral("gameplay") },
+             std::pair { QStringLiteral("Physics Profiles"), QStringLiteral("physics") },
+             std::pair { QStringLiteral("World Building"), QStringLiteral("world") },
+             std::pair { QStringLiteral("Effects && Audio"), QStringLiteral("effects") },
+             std::pair { QStringLiteral("User Interface"), QStringLiteral("user_interface") },
+             std::pair { QStringLiteral("Strategy && RTS"), QStringLiteral("strategy") },
+         }) {
+        QAction* action = systems->addAction(entry.first);
+        connect(action, &QAction::triggered, this, [this, kind = entry.second] {
+            openAuthoringHub(kind);
+        });
+    }
 
     auto* build = menuBar()->addMenu(QStringLiteral("&Build"));
     auto* openBuild = build->addAction(QStringLiteral("Build && Export..."));
@@ -710,6 +737,9 @@ void MainWindow::createMenus()
     addToolWorkspace(QStringLiteral("Asset Management && Dependencies"), QStringLiteral("Assets"));
     addToolWorkspace(QStringLiteral("Profiler"), QStringLiteral("Profiler"));
     addToolWorkspace(QStringLiteral("Python Automation"), QStringLiteral("Automation"));
+    tools->addSeparator();
+    addToolWorkspace(QStringLiteral("Mega Authoring Hub"), QStringLiteral("Systems"));
+    addToolWorkspace(QStringLiteral("SDK && Content Packs"), QStringLiteral("SDK"));
 
     auto* workspace = menuBar()->addMenu(QStringLiteral("&Workspace"));
     auto* workspaceGroup = new QActionGroup(this);
@@ -964,6 +994,8 @@ void MainWindow::createPanels()
     m_aiDock = addDock(QStringLiteral("Forge AI"), Qt::RightDockWidgetArea, makeQmlPanel(QStringLiteral("ForgeAiPanel.qml")));
     m_buildDock = addDock(QStringLiteral("Build & Export"), Qt::RightDockWidgetArea, makeQmlPanel(QStringLiteral("BuildExportPanel.qml")));
     m_objectsDock = addDock(QStringLiteral("Object Studio"), Qt::LeftDockWidgetArea, makeQmlPanel(QStringLiteral("ObjectStudioPanel.qml")));
+    m_authoringDock = addDock(QStringLiteral("Mega Authoring Hub"), Qt::RightDockWidgetArea, makeQmlPanel(QStringLiteral("AuthoringHubPanel.qml")));
+    m_sdkPacksDock = addDock(QStringLiteral("SDK & Content Packs"), Qt::RightDockWidgetArea, makeQmlPanel(QStringLiteral("SdkPacksPanel.qml")));
     m_prefabDock = addDock(QStringLiteral("Prefab Studio"), Qt::RightDockWidgetArea, makeQmlPanel(QStringLiteral("PrefabStudioPanel.qml")));
     m_projectSettingsDock = addDock(QStringLiteral("Project Settings"), Qt::RightDockWidgetArea, makeQmlPanel(QStringLiteral("ProjectSettingsPanel.qml")));
     m_projectLauncherDock = addDock(QStringLiteral("Project Launcher"), Qt::RightDockWidgetArea, makeQmlPanel(QStringLiteral("ProjectLauncherPanel.qml")));
@@ -995,6 +1027,8 @@ void MainWindow::createPanels()
     tabifyDockWidget(m_inspectorDock, m_healthDock);
     tabifyDockWidget(m_inspectorDock, m_aiDock);
     tabifyDockWidget(m_inspectorDock, m_buildDock);
+    tabifyDockWidget(m_inspectorDock, m_authoringDock);
+    tabifyDockWidget(m_inspectorDock, m_sdkPacksDock);
     tabifyDockWidget(m_inspectorDock, m_prefabDock);
     tabifyDockWidget(m_inspectorDock, m_projectSettingsDock);
     tabifyDockWidget(m_inspectorDock, m_projectLauncherDock);
@@ -1049,6 +1083,8 @@ void MainWindow::populatePanelMenu()
              m_aiDock,
              m_buildDock,
              m_objectsDock,
+             m_authoringDock,
+             m_sdkPacksDock,
              m_prefabDock,
              m_projectSettingsDock,
              m_projectLauncherDock,
@@ -1248,6 +1284,8 @@ void MainWindow::setWorkspace(const QString& workspace)
     const bool build = workspace == QStringLiteral("Build");
     const bool debug = workspace == QStringLiteral("Debug");
     const bool sprites = workspace == QStringLiteral("Sprites");
+    const bool systems = workspace == QStringLiteral("Systems");
+    const bool sdk = workspace == QStringLiteral("SDK");
 
     if ((scene || scripting || animation || world || ui) && m_inspectorDock) {
         m_inspectorDock->raise();
@@ -1292,6 +1330,10 @@ void MainWindow::setWorkspace(const QString& workspace)
         m_consoleDock->raise();
     } else if (sprites && m_spriteDock) {
         m_spriteDock->raise();
+    } else if (systems && m_authoringDock) {
+        m_authoringDock->raise();
+    } else if (sdk && m_sdkPacksDock) {
+        m_sdkPacksDock->raise();
     }
     statusBar()->showMessage(QStringLiteral("Workspace: %1").arg(workspace), 1800);
 }
@@ -1313,6 +1355,8 @@ void MainWindow::applyWorkspacePreset(const QString& workspace)
     const bool debug = workspace == QStringLiteral("Debug");
     const bool minimal = workspace == QStringLiteral("Minimal");
     const bool sprites = workspace == QStringLiteral("Sprites");
+    const bool systems = workspace == QStringLiteral("Systems");
+    const bool sdk = workspace == QStringLiteral("SDK");
 
     const auto dockAt = [this](Qt::DockWidgetArea area, QDockWidget* dock) {
         if (!dock) {
@@ -1323,7 +1367,7 @@ void MainWindow::applyWorkspacePreset(const QString& workspace)
     };
     dockAt(scene ? Qt::RightDockWidgetArea : Qt::LeftDockWidgetArea, m_hierarchyDock);
     dockAt(scene ? Qt::LeftDockWidgetArea : Qt::RightDockWidgetArea, m_objectsDock);
-    for (QDockWidget* dock : { m_inspectorDock, m_readinessDock, m_healthDock, m_aiDock, m_buildDock, m_prefabDock, m_projectSettingsDock, m_projectLauncherDock, m_projectOperationsDock, m_assetManagementDock, m_profilerDock, m_sceneBrowserDock, m_pythonToolsDock }) {
+    for (QDockWidget* dock : { m_inspectorDock, m_readinessDock, m_healthDock, m_aiDock, m_buildDock, m_authoringDock, m_sdkPacksDock, m_prefabDock, m_projectSettingsDock, m_projectLauncherDock, m_projectOperationsDock, m_assetManagementDock, m_profilerDock, m_sceneBrowserDock, m_pythonToolsDock }) {
         dockAt(Qt::RightDockWidgetArea, dock);
     }
     for (QDockWidget* dock : { m_contentDock, m_consoleDock, m_spriteDock, m_luauDock, m_animationTimelineDock, m_tilemapDock, m_uiDesignerDock, m_blueprintsDock, m_assetGraphDock }) {
@@ -1343,6 +1387,12 @@ void MainWindow::applyWorkspacePreset(const QString& workspace)
     }
     if (m_inspectorDock && m_buildDock) {
         tabifyDockWidget(m_inspectorDock, m_buildDock);
+    }
+    if (m_inspectorDock && m_authoringDock) {
+        tabifyDockWidget(m_inspectorDock, m_authoringDock);
+    }
+    if (m_inspectorDock && m_sdkPacksDock) {
+        tabifyDockWidget(m_inspectorDock, m_sdkPacksDock);
     }
     if (m_inspectorDock && m_prefabDock) {
         tabifyDockWidget(m_inspectorDock, m_prefabDock);
@@ -1417,6 +1467,12 @@ void MainWindow::applyWorkspacePreset(const QString& workspace)
     }
     if (m_buildDock) {
         m_buildDock->setVisible(build);
+    }
+    if (m_authoringDock) {
+        m_authoringDock->setVisible(systems);
+    }
+    if (m_sdkPacksDock) {
+        m_sdkPacksDock->setVisible(sdk);
     }
     if (m_objectsDock) {
         m_objectsDock->setVisible(scene);
@@ -1526,6 +1582,23 @@ void MainWindow::focusDock(QDockWidget* dock)
     }
 }
 
+void MainWindow::openAuthoringHub(const QString& kind)
+{
+    setWorkspace(QStringLiteral("Systems"));
+    focusDock(m_authoringDock);
+    auto* view = m_authoringDock
+        ? qobject_cast<QQuickWidget*>(m_authoringDock->widget())
+        : nullptr;
+    if (view && view->rootObject()) {
+        QMetaObject::invokeMethod(
+            view->rootObject(),
+            "selectKind",
+            Qt::DirectConnection,
+            Q_ARG(QVariant, QVariant(kind))
+        );
+    }
+}
+
 void MainWindow::executeShellCommand(const QString& commandId)
 {
     closeCommandPalette();
@@ -1544,6 +1617,8 @@ void MainWindow::executeShellCommand(const QString& commandId)
         { QStringLiteral("workspace.build"), QStringLiteral("Build") },
         { QStringLiteral("workspace.debug"), QStringLiteral("Debug") },
         { QStringLiteral("workspace.sprites"), QStringLiteral("Sprites") },
+        { QStringLiteral("workspace.systems"), QStringLiteral("Systems") },
+        { QStringLiteral("workspace.sdk"), QStringLiteral("SDK") },
     };
     const auto workspace = workspaceCommands.constFind(commandId);
     if (workspace != workspaceCommands.cend()) {
