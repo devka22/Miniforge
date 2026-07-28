@@ -497,7 +497,10 @@ Hay dos modelos UI:
 - Scene-level canvas: `ui_canvases` con `UiCanvasRoot`.
 - MiniForge2D UI: `UiCanvas2D`, `ScreenManager2D`, widgets y focus navigation.
 
-`UiRuntime` soporta layout, hover, click, focus, comandos y hit testing para canvas y UIElement legacy.
+`UiRuntime` soporta layout, hover, click, focus, comandos, rueda y hit testing para canvas y
+`UIElement`. `InventoryGrid` y `AbilityBar` calculan sus filas, recortan el contenido, virtualizan
+los slots fuera de vista y desplazan con la rueda sin script. `ScrollBox` usa `content_height`,
+`scroll_y` y `scroll_step`; el inspector expone esos campos junto con `show_scrollbar`.
 
 El modelo de `UiCanvasRoot` incluye `Panel`, `Button`, `Label` e `Image`. Cada elemento tiene `UiRect` con anchors, pivots, offsets y tamano.
 

@@ -163,6 +163,51 @@ impl UiRuntime {
         events
     }
 
+    /// Scrolls the top-most scrollable `UIElement` below the pointer.
+    ///
+    /// Inventory grids, ability bars and scroll boxes work without a game
+    /// script. `wheel_lines` follows the usual wheel convention: positive
+    /// values move the visible content toward its beginning.
+    pub fn scroll_entity_under_pointer(
+        &mut self,
+        entities: &mut [GameObject],
+        pointer: (f64, f64),
+        wheel_lines: f64,
+    ) -> Option<u64> {
+        if !wheel_lines.is_finite() || wheel_lines == 0.0 {
+            return None;
+        }
+        let entity_id = entities
+            .iter()
+            .filter_map(|entity| {
+                let ui = entity.get_component("UIElement")?;
+                let inside = entity.enabled
+                    && entity.visible
+                    && ui.enabled
+                    && ui.get_bool("visible", true)
+                    && point_in_entity_ui(pointer, ui);
+                (inside && entity_ui_scroll_range(ui).is_some_and(|range| range > 0.0))
+                    .then_some((ui.get_i64("sorting_order", 0), entity.id))
+            })
+            .max()
+            .map(|(_, entity_id)| entity_id)?;
+        let entity = entities.iter_mut().find(|entity| entity.id == entity_id)?;
+        let ui = entity.get_component_mut("UIElement")?;
+        let max_scroll = entity_ui_scroll_range(ui)?;
+        let automatic_step = default_entity_scroll_step(ui);
+        let authored_step = ui.get_f64("scroll_step", 0.0);
+        let step = if authored_step.is_finite() && authored_step > 0.0 {
+            authored_step
+        } else {
+            automatic_step
+        }
+        .clamp(1.0, 512.0);
+        let current = finite_or(ui.get_f64("scroll_y", 0.0), 0.0);
+        let next = (current - wheel_lines * step).clamp(0.0, max_scroll);
+        ui.set("scroll_y", serde_json::json!(next));
+        Some(entity_id)
+    }
+
     pub fn layout_miniforge_canvas(
         &mut self,
         canvas: &UiCanvas2D,
@@ -323,7 +368,8 @@ fn clicked_slot(ui: &crate::engine::component::Component, pointer: (f64, f64)) -
     let gap = 2.0;
     let slot_size = finite_or(ui.get_f64("slot_size", 32.0), 32.0).clamp(8.0, 128.0);
     let local_x = pointer.0 - x;
-    let local_y = pointer.1 - y;
+    let scroll_y = finite_or(ui.get_f64("scroll_y", 0.0), 0.0).max(0.0);
+    let local_y = pointer.1 - y + scroll_y;
     if local_x < 0.0 || local_y < 0.0 {
         return None;
     }
@@ -335,6 +381,61 @@ fn clicked_slot(ui: &crate::engine::component::Component, pointer: (f64, f64)) -
     }
     let slot = row.saturating_mul(columns).saturating_add(column);
     (slot < slot_count).then_some(slot)
+}
+
+fn point_in_entity_ui(pointer: (f64, f64), ui: &crate::engine::component::Component) -> bool {
+    let x = finite_or(ui.get_f64("x", 0.0), 0.0);
+    let y = finite_or(ui.get_f64("y", 0.0), 0.0);
+    let width = finite_or(ui.get_f64("width", 0.0), 0.0).max(0.0);
+    let height = finite_or(ui.get_f64("height", 0.0), 0.0).max(0.0);
+    pointer.0 >= x && pointer.1 >= y && pointer.0 <= x + width && pointer.1 <= y + height
+}
+
+fn entity_ui_scroll_range(ui: &crate::engine::component::Component) -> Option<f64> {
+    let widget_type = ui.get_string("element_type", "Label");
+    let implicitly_scrollable = matches!(
+        widget_type.as_str(),
+        "InventoryGrid" | "AbilityBar" | "ScrollBox"
+    );
+    if !implicitly_scrollable && !ui.get_bool("scrollable", false) {
+        return None;
+    }
+    let viewport_height = finite_or(ui.get_f64("height", 0.0), 0.0).max(0.0);
+    let content_height = if matches!(widget_type.as_str(), "InventoryGrid" | "AbilityBar") {
+        let columns = ui.get_i64("columns", 4).clamp(1, 16) as usize;
+        let slot_count = ui
+            .get("slot_count")
+            .or_else(|| ui.get("slots"))
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(columns as i64)
+            .clamp(1, 256) as usize;
+        let rows = slot_count.div_ceil(columns);
+        let width = finite_or(ui.get_f64("width", 160.0), 160.0).max(0.0);
+        let max_slot_width =
+            ((width - 8.0 - 2.0 * columns.saturating_sub(1) as f64) / columns as f64).max(1.0);
+        let slot_size = finite_or(ui.get_f64("slot_size", 32.0), 32.0)
+            .clamp(8.0, 128.0)
+            .min(max_slot_width);
+        8.0 + rows as f64 * (slot_size + 2.0) - 2.0
+    } else {
+        finite_or(
+            ui.get_f64("content_height", viewport_height),
+            viewport_height,
+        )
+        .max(0.0)
+    };
+    Some((content_height - viewport_height).max(0.0))
+}
+
+fn default_entity_scroll_step(ui: &crate::engine::component::Component) -> f64 {
+    if matches!(
+        ui.get_string("element_type", "Label").as_str(),
+        "InventoryGrid" | "AbilityBar"
+    ) {
+        finite_or(ui.get_f64("slot_size", 32.0), 32.0).clamp(8.0, 128.0) + 2.0
+    } else {
+        32.0
+    }
 }
 
 fn finite_or(value: f64, fallback: f64) -> f64 {
@@ -495,6 +596,59 @@ mod tests {
                 .unwrap()
                 .get_i64("selected_slot", -1),
             4
+        );
+    }
+
+    #[test]
+    fn inventory_scroll_is_clamped_and_clicks_use_scrolled_content() {
+        let mut inventory = ui_entity("LargeBag", "InventoryGrid", 0.0);
+        let inventory_id = inventory.id;
+        {
+            let ui = inventory.get_component_mut("UIElement").unwrap();
+            ui.set("columns", json!(2));
+            ui.set("slot_count", json!(20));
+            ui.set("slot_size", json!(20.0));
+            ui.set("height", json!(52.0));
+        }
+        let mut entities = vec![inventory];
+        let mut runtime = UiRuntime::default();
+
+        assert_eq!(
+            runtime.scroll_entity_under_pointer(&mut entities, (10.0, 10.0), -2.0),
+            Some(inventory_id)
+        );
+        assert_eq!(
+            entities[0]
+                .get_component("UIElement")
+                .unwrap()
+                .get_f64("scroll_y", 0.0),
+            44.0
+        );
+
+        runtime.update_entity_interaction(&mut entities, (10.0, 10.0), true);
+        assert_eq!(
+            entities[0]
+                .get_component("UIElement")
+                .unwrap()
+                .get_i64("selected_slot", -1),
+            4
+        );
+
+        runtime.scroll_entity_under_pointer(&mut entities, (10.0, 10.0), -100.0);
+        assert_eq!(
+            entities[0]
+                .get_component("UIElement")
+                .unwrap()
+                .get_f64("scroll_y", 0.0),
+            174.0
+        );
+        runtime.scroll_entity_under_pointer(&mut entities, (10.0, 10.0), 100.0);
+        assert_eq!(
+            entities[0]
+                .get_component("UIElement")
+                .unwrap()
+                .get_f64("scroll_y", -1.0),
+            0.0
         );
     }
 }

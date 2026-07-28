@@ -542,6 +542,9 @@ Hay tres superficies UI:
 - focus.
 - comandos por widget.
 - hit testing legacy.
+- controles `UIElement` sin script (slider, toggle, dropdown, input e inventario).
+- desplazamiento bajo el puntero mediante `scroll_entity_under_pointer`; grids grandes se recortan
+  y virtualizan automáticamente.
 
 Eventos:
 

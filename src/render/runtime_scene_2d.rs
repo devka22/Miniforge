@@ -39,6 +39,8 @@ pub struct RuntimeScene2DStats {
     pub textured_ui_images: usize,
     pub minimap_quads: usize,
     pub textured_entities: usize,
+    pub clipped_ui_quads: usize,
+    pub virtualized_ui_items: usize,
 }
 
 /// Draws the currently migrated 2D passes of an exported runtime through any
@@ -844,33 +846,91 @@ fn draw_runtime_ui<B: RenderBackend>(
                 let slot_size = (ui.get_f64("slot_size", 32.0) as f32)
                     .clamp(8.0, 128.0)
                     .min(max_slot_width);
+                let rows = slot_count.div_ceil(columns);
+                let stride = slot_size + gap;
+                let content_height = 8.0 + rows as f32 * stride - gap;
+                let viewport_height = (height - 8.0).max(1.0);
+                let max_scroll = (content_height - height).max(0.0);
+                let scroll_y =
+                    finite_f64_to_f32(ui.get_f64("scroll_y", 0.0)).clamp(0.0, max_scroll);
+                let clip_rect = pixel_clip_rect(
+                    x + 4.0,
+                    y + 4.0,
+                    (width - 8.0).max(1.0),
+                    viewport_height,
+                    screen_width,
+                    screen_height,
+                );
+                let first_row = (scroll_y / stride).floor().max(0.0) as usize;
+                let visible_rows = (viewport_height / stride).ceil().max(1.0) as usize + 1;
+                let last_row = first_row.saturating_add(visible_rows).min(rows);
                 let items = ui.get("items").and_then(serde_json::Value::as_array);
-                for slot in 0..slot_count {
-                    let column = slot % columns;
-                    let row = slot / columns;
-                    let slot_x = x + 4.0 + column as f32 * (slot_size + gap);
-                    let slot_y = y + 4.0 + row as f32 * (slot_size + gap);
-                    if slot_y + slot_size > y + height - 3.0 {
-                        break;
+                let mut rendered_slots = 0usize;
+                for row in first_row..last_row {
+                    for column in 0..columns {
+                        let slot = row.saturating_mul(columns).saturating_add(column);
+                        if slot >= slot_count {
+                            break;
+                        }
+                        let slot_x = x + 4.0 + column as f32 * stride;
+                        let slot_y = y + 4.0 + row as f32 * stride - scroll_y;
+                        let occupied = items
+                            .and_then(|values| values.get(slot))
+                            .is_some_and(|value| !value.is_null());
+                        if clip_rect.is_some() {
+                            draw_quad_clipped(
+                                backend,
+                                ui_base.saturating_add(32 + slot as u64),
+                                0,
+                                slot_x,
+                                slot_y,
+                                slot_size,
+                                slot_size,
+                                if occupied {
+                                    component_color(
+                                        ui.get("accent_color"),
+                                        [82, 150, 216, 255],
+                                        opacity,
+                                    )
+                                } else {
+                                    [0.12, 0.14, 0.18, opacity]
+                                },
+                                clip_rect,
+                            )?;
+                            stats.ui_quads += 1;
+                            stats.clipped_ui_quads += 1;
+                            rendered_slots += 1;
+                        }
                     }
-                    let occupied = items
-                        .and_then(|values| values.get(slot))
-                        .is_some_and(|value| !value.is_null());
+                }
+                stats.virtualized_ui_items += slot_count.saturating_sub(rendered_slots);
+                if max_scroll > 0.0 && ui.get_bool("show_scrollbar", true) {
+                    let track_height = viewport_height;
+                    let thumb_height =
+                        (track_height * (height / content_height)).clamp(12.0, track_height);
+                    let thumb_travel = (track_height - thumb_height).max(0.0);
+                    let thumb_y = y + 4.0 + thumb_travel * (scroll_y / max_scroll);
                     draw_quad(
                         backend,
-                        ui_base.saturating_add(32 + slot as u64),
+                        ui_base.saturating_add(288),
                         0,
-                        slot_x,
-                        slot_y,
-                        slot_size,
-                        slot_size,
-                        if occupied {
-                            component_color(ui.get("accent_color"), [82, 150, 216, 255], opacity)
-                        } else {
-                            [0.12, 0.14, 0.18, opacity]
-                        },
+                        x + width - 4.0,
+                        y + 4.0,
+                        2.0,
+                        track_height,
+                        [0.08, 0.1, 0.14, opacity],
                     )?;
-                    stats.ui_quads += 1;
+                    draw_quad(
+                        backend,
+                        ui_base.saturating_add(289),
+                        0,
+                        x + width - 4.0,
+                        thumb_y,
+                        2.0,
+                        thumb_height,
+                        component_color(ui.get("accent_color"), [92, 186, 255, 255], opacity),
+                    )?;
+                    stats.ui_quads += 2;
                 }
             }
             "InputField" | "TextInput" if ui.get_bool("focused", false) => {
@@ -931,14 +991,22 @@ fn draw_runtime_ui<B: RenderBackend>(
             } else {
                 6.0
             };
+            let content_height =
+                finite_f64_to_f32(ui.get_f64("content_height", height.into())).max(height);
+            let text_scroll_y = if kind == "ScrollBox" || ui.get_bool("scrollable", false) {
+                finite_f64_to_f32(ui.get_f64("scroll_y", 0.0))
+                    .clamp(0.0, (content_height - height).max(0.0))
+            } else {
+                0.0
+            };
             backend.draw_text(TextDrawCommand {
                 text_id: ui_base.saturating_add(900),
                 text,
                 font_family: ui.get_string("font_family", ""),
                 x: x + text_left,
-                y: y + ((height - line_height) * 0.5).max(2.0),
+                y: y + ((height - line_height) * 0.5).max(2.0) - text_scroll_y,
                 width: (width - text_left - 6.0).max(1.0),
-                height: (height - 4.0).max(1.0),
+                height: (content_height - 4.0).max(1.0),
                 font_size,
                 line_height,
                 color: text_color,
@@ -947,7 +1015,7 @@ fn draw_runtime_ui<B: RenderBackend>(
                     "glyph" | "character" => TextWrapMode::Glyph,
                     _ => TextWrapMode::Word,
                 },
-                clip_rect: None,
+                clip_rect: pixel_clip_rect(x, y, width, height, screen_width, screen_height),
             })?;
             stats.ui_text_areas += 1;
         }
@@ -1294,6 +1362,7 @@ fn draw_scene_ui_canvases<B: RenderBackend>(
                             width,
                             height,
                             18.0,
+                            pixel_clip_rect(x, y, width, height, screen_width, screen_height),
                         )?;
                         stats.ui_text_areas += 1;
                         stats.ui_canvas_text_areas += 1;
@@ -1312,6 +1381,7 @@ fn draw_scene_ui_canvases<B: RenderBackend>(
                             width,
                             height,
                             sanitize_canvas_font_size(*font_size),
+                            pixel_clip_rect(x, y, width, height, screen_width, screen_height),
                         )?;
                         stats.ui_text_areas += 1;
                         stats.ui_canvas_text_areas += 1;
@@ -1372,6 +1442,7 @@ fn draw_canvas_text<B: RenderBackend>(
     width: f32,
     height: f32,
     font_size: f32,
+    clip_rect: Option<[u32; 4]>,
 ) -> MFResult<()> {
     let line_height = font_size * 1.25;
     backend.draw_text(TextDrawCommand {
@@ -1386,7 +1457,7 @@ fn draw_canvas_text<B: RenderBackend>(
         line_height,
         color: [235, 240, 248, 255],
         wrap: TextWrapMode::Word,
-        clip_rect: None,
+        clip_rect,
     })
 }
 
@@ -1475,6 +1546,69 @@ fn draw_quad<B: RenderBackend>(
         color,
         SpriteDrawOptions::default(),
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_quad_clipped<B: RenderBackend>(
+    backend: &mut B,
+    entity_id: u64,
+    texture_id: u64,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    color: [f32; 4],
+    clip_rect: Option<[u32; 4]>,
+) -> MFResult<()> {
+    if width <= 0.0 || height <= 0.0 || clip_rect.is_none() {
+        return Ok(());
+    }
+    backend.draw_sprite_region(SpriteRegionDrawCommand {
+        sprite: SpriteDrawCommand {
+            entity_id,
+            texture_id,
+            x,
+            y,
+            width,
+            height,
+            rotation: 0.0,
+            color,
+        },
+        uv_rect: [0.0, 0.0, 1.0, 1.0],
+        clip_rect,
+    })
+}
+
+fn pixel_clip_rect(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    screen_width: f32,
+    screen_height: f32,
+) -> Option<[u32; 4]> {
+    if ![x, y, width, height, screen_width, screen_height]
+        .into_iter()
+        .all(f32::is_finite)
+        || width <= 0.0
+        || height <= 0.0
+        || screen_width <= 0.0
+        || screen_height <= 0.0
+    {
+        return None;
+    }
+    let left = x.max(0.0).min(screen_width);
+    let top = y.max(0.0).min(screen_height);
+    let right = (x + width).max(left).min(screen_width);
+    let bottom = (y + height).max(top).min(screen_height);
+    let clip_width = (right.ceil() - left.floor()).max(0.0) as u32;
+    let clip_height = (bottom.ceil() - top.floor()).max(0.0) as u32;
+    (clip_width > 0 && clip_height > 0).then_some([
+        left.floor() as u32,
+        top.floor() as u32,
+        clip_width,
+        clip_height,
+    ])
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1826,6 +1960,47 @@ mod tests {
 
         ui.set("value", json!(f64::NAN));
         assert_eq!(normalized_ui_slider(&ui), 0.0);
+    }
+
+    #[test]
+    fn large_inventory_renders_only_clipped_visible_rows() {
+        let mut inventory = GameObject::new(0.0, 0.0, Some("Large Inventory".to_string()));
+        let mut ui = default_component("UIElement").unwrap();
+        ui.set("element_type", json!("InventoryGrid"));
+        ui.set("text", json!(""));
+        ui.set("x", json!(8.0));
+        ui.set("y", json!(8.0));
+        ui.set("width", json!(100.0));
+        ui.set("height", json!(52.0));
+        ui.set("columns", json!(2));
+        ui.set("slot_count", json!(100));
+        ui.set("slot_size", json!(20.0));
+        ui.set("scroll_y", json!(440.0));
+        inventory.add_component(ui);
+
+        let world = RuntimeWorld::new(vec![inventory]);
+        let tilemap = TilemapLayers::new(1, 1);
+        let mut backend = MacroquadBackend::default();
+        backend.init().unwrap();
+        backend.begin_frame().unwrap();
+        let mut stats = RuntimeScene2DStats::default();
+
+        draw_runtime_ui(
+            &mut backend,
+            &world,
+            &tilemap,
+            &BTreeMap::new(),
+            320.0,
+            180.0,
+            &mut stats,
+        )
+        .unwrap();
+        backend.end_frame().unwrap();
+
+        assert_eq!(stats.clipped_ui_quads, 6);
+        assert_eq!(stats.virtualized_ui_items, 94);
+        assert_eq!(stats.ui_quads, 13);
+        assert_eq!(backend.draw_calls, 13);
     }
 
     #[test]

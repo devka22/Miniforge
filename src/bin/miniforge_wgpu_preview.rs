@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use miniforge::engine::ui_runtime::UiRuntime;
 use miniforge::render::backend::{
     RenderBackend, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions, TextDrawCommand,
     TextWrapMode, WgpuBackend,
@@ -15,7 +16,7 @@ use miniforge::render::runtime_scene_2d::{
 use miniforge::runtime::engine_runtime::EngineRuntime;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
@@ -42,6 +43,8 @@ struct PreviewApp {
     input_up: bool,
     input_down: bool,
     input_run: bool,
+    cursor_position: Option<(f64, f64)>,
+    ui_runtime: UiRuntime,
 }
 
 impl PreviewApp {
@@ -71,6 +74,8 @@ impl PreviewApp {
             input_up: false,
             input_down: false,
             input_run: false,
+            cursor_position: None,
+            ui_runtime: UiRuntime::default(),
         })
     }
 
@@ -421,6 +426,42 @@ impl ApplicationHandler for PreviewApp {
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.input_run = modifiers.state().shift_key();
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_position = Some((position.x, position.y));
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor_position = None;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let (Some(runtime), Some(pointer)) =
+                    (self.runtime.as_mut(), self.cursor_position)
+                {
+                    self.ui_runtime.update_entity_interaction(
+                        &mut runtime.runtime_world.units,
+                        pointer,
+                        true,
+                    );
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let wheel_lines = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(y),
+                    MouseScrollDelta::PixelDelta(position) => position.y / 32.0,
+                };
+                if let (Some(runtime), Some(pointer)) =
+                    (self.runtime.as_mut(), self.cursor_position)
+                {
+                    self.ui_runtime.scroll_entity_under_pointer(
+                        &mut runtime.runtime_world.units,
+                        pointer,
+                        wheel_lines,
+                    );
+                }
             }
             WindowEvent::RedrawRequested => {
                 if let Err(error) = self.draw(event_loop) {

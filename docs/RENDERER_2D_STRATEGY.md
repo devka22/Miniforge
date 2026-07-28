@@ -31,8 +31,8 @@ scissor clipping share the same sprite path. Hardware coverage includes an ignor
 colored and atlas-textured geometry and checks the resulting pixels. A generic
 `miniforge_wgpu_preview` binary exercises the window-surface path and can load any MiniForge
 project through the normal `EngineRuntime`, upload its sprite assets, extract its camera, layered
-tilemap and entities, expand CPU particles, draw basic UI panels/progress bars, and drive player
-movement with WASD or the arrow keys:
+tilemap and entities, expand CPU particles, draw interactive UI, drive player movement with WASD or
+the arrow keys, and route pointer clicks and wheel input through the scriptless UI runtime:
 
 ```bash
 cargo run --bin miniforge_wgpu_preview --features wgpu_runtime -- /path/to/project
@@ -69,12 +69,12 @@ and every uploaded texture from CPU backups. The Metal surface smoke also destro
 mid-run and verifies that presentation resumes with `device_loss_recoveries=1`.
 
 The shared 2D composer now turns visible tilemap cells, atlas-backed entities, CPU particles and
-basic and interactive UI geometry into backend-independent sprite quads with camera transforms,
-ordering and screen culling. The main exported runtime still uses Macroquad while scroll containers,
-ambient/directional light and shadows, render textures and custom hot-reloaded shader materials are
-completed. Projects should therefore leave `experimental_wgpu` disabled for exports that need the
-full production renderer. Project Settings keeps this migration state visible instead of hiding it
-in JSON.
+interactive UI geometry into backend-independent sprite quads with camera transforms, ordering and
+screen culling. The main exported runtime still uses Macroquad while retained-canvas hierarchy
+clipping, ambient/directional light and shadows, render textures and custom hot-reloaded shader
+materials are completed. Projects should therefore leave `experimental_wgpu` disabled for exports
+that need the full production renderer. Project Settings keeps this migration state visible instead
+of hiding it in JSON.
 
 ## Migration gates
 
@@ -88,7 +88,9 @@ The preview becomes playable only after these gates pass on macOS, Windows and L
 3. Chunked tilemaps, UI draw lists, text, particles and render textures. Layered tile cells,
    Unicode text, responsive Canvas panels/buttons/labels/images, nine-slice frames, sliders,
    checkbox/toggle controls, inventory/ability slots, text-input feedback, a bounded runtime minimap
-   and CPU-particle quads are done. Additive point-light emission is done; scrolling/virtualization,
+   and CPU-particle quads are done. Additive point-light emission is done. Runtime inventory and
+   ability grids now use clipped, virtualized rows with scriptless wheel scrolling, and ScrollBox
+   text uses the same scissor path; broader retained-canvas virtualization,
    chunk batching, shadowed lighting, GPU particles and render textures remain.
 4. WGSL materials, post-processing and hot reload with readable shader diagnostics. Four built-in
    per-sprite WGSL effects are done; custom material compilation, post-processing and hot reload
