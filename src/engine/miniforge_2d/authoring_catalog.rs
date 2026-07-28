@@ -1321,6 +1321,111 @@ fn builtin_presets() -> Vec<AuthoringPreset2D> {
             ],
             &["shooter", "action", "simulation"],
         ),
+        preset(
+            "physics_ice_surface",
+            "Ice Surface",
+            "Physics Profiles",
+            AuthoringPresetKind2D::Physics,
+            "Reusable nearly frictionless static surface with explicit material combining.",
+            &["StaticBody2D", "Collider2D", "PhysicsMaterial2D"],
+            &[
+                ov("PhysicsMaterial2D", "friction", json!(0.015)),
+                ov("PhysicsMaterial2D", "bounciness", json!(0.0)),
+                ov("PhysicsMaterial2D", "friction_combine", json!("minimum")),
+                ov("Collider2D", "collision_layer", json!("WorldStatic")),
+            ],
+            &["platformer", "racing", "puzzle"],
+            &["physics", "material", "ice", "surface"],
+        )
+        .aliases(&["ice", "slippery_surface"]),
+        preset(
+            "physics_rubber_surface",
+            "Rubber Surface",
+            "Physics Profiles",
+            AuthoringPresetKind2D::Physics,
+            "High-restitution surface for trampolines, pinball tables and arcade props.",
+            &["StaticBody2D", "Collider2D", "PhysicsMaterial2D"],
+            &[
+                ov("PhysicsMaterial2D", "friction", json!(0.35)),
+                ov("PhysicsMaterial2D", "bounciness", json!(0.92)),
+                ov("PhysicsMaterial2D", "bounce_combine", json!("maximum")),
+                ov("Collider2D", "collision_layer", json!("WorldStatic")),
+            ],
+            &["platformer", "sports", "pinball"],
+            &["physics", "material", "rubber", "bounce"],
+        )
+        .aliases(&["rubber", "trampoline_surface"]),
+        preset(
+            "physics_distance_joint",
+            "Distance Joint",
+            "Physics Profiles",
+            AuthoringPresetKind2D::Physics,
+            "Dynamic body constrained to a second selected entity without custom code.",
+            &["Rigidbody2D", "Collider2D", "Joint2D"],
+            &[
+                ov("Joint2D", "joint_type", json!("distance")),
+                ov("Joint2D", "rest_length", json!(2.0)),
+                ov("Joint2D", "max_distance", json!(2.0)),
+                ov("Joint2D", "stiffness", json!(0.9)),
+                ov("Joint2D", "collide_connected", json!(false)),
+            ],
+            &["physics", "puzzle", "simulation"],
+            &["physics", "joint", "rope", "constraint"],
+        )
+        .aliases(&["rope_joint", "distance_constraint"]),
+        preset(
+            "physics_spring_joint",
+            "Spring Joint",
+            "Physics Profiles",
+            AuthoringPresetKind2D::Physics,
+            "Damped spring constraint for suspension, soft attachments and physical props.",
+            &["Rigidbody2D", "Collider2D", "Joint2D"],
+            &[
+                ov("Joint2D", "joint_type", json!("spring")),
+                ov("Joint2D", "rest_length", json!(2.0)),
+                ov("Joint2D", "max_distance", json!(3.0)),
+                ov("Joint2D", "stiffness", json!(18.0)),
+                ov("Joint2D", "damping", json!(3.0)),
+            ],
+            &["physics", "vehicle", "simulation"],
+            &["physics", "joint", "spring", "suspension"],
+        )
+        .aliases(&["spring", "suspension_joint"]),
+        preset(
+            "physics_wind_zone",
+            "Directional Wind Zone",
+            "Physics Profiles",
+            AuthoringPresetKind2D::Physics,
+            "Bounded directional force field that accelerates matching physics layers.",
+            &["ForceField2D"],
+            &[
+                ov("ForceField2D", "field_type", json!("directional")),
+                ov("ForceField2D", "direction_x", json!(1.0)),
+                ov("ForceField2D", "direction_y", json!(0.0)),
+                ov("ForceField2D", "strength", json!(12.0)),
+                ov("ForceField2D", "radius", json!(8.0)),
+            ],
+            &["platformer", "puzzle", "simulation"],
+            &["physics", "force-field", "wind", "zone"],
+        )
+        .aliases(&["wind", "wind_zone"]),
+        preset(
+            "physics_radial_field",
+            "Radial Force Field",
+            "Physics Profiles",
+            AuthoringPresetKind2D::Physics,
+            "Radial attraction or repulsion zone with radius, falloff and layer filtering.",
+            &["ForceField2D"],
+            &[
+                ov("ForceField2D", "field_type", json!("radial")),
+                ov("ForceField2D", "strength", json!(-24.0)),
+                ov("ForceField2D", "radius", json!(10.0)),
+                ov("ForceField2D", "falloff", json!(1.0)),
+            ],
+            &["space", "puzzle", "simulation"],
+            &["physics", "force-field", "gravity", "radial"],
+        )
+        .aliases(&["gravity_well", "radial_force"]),
     ]
 }
 
@@ -1465,6 +1570,66 @@ fn automatic_parameters(components: &[String]) -> Vec<PresetParameter2D> {
             &[("Rigidbody2D", "mass")],
         ));
     }
+    if has(components, "PhysicsMaterial2D") {
+        parameters.push(number_parameter(
+            "surface_friction",
+            "Surface Friction",
+            0.25,
+            0.0,
+            4.0,
+            "Friction used by the contact solver.",
+            &[("PhysicsMaterial2D", "friction")],
+        ));
+        parameters.push(number_parameter(
+            "surface_bounce",
+            "Surface Bounce",
+            0.0,
+            0.0,
+            1.0,
+            "Restitution used by the contact solver.",
+            &[("PhysicsMaterial2D", "bounciness")],
+        ));
+    }
+    if has(components, "Joint2D") {
+        parameters.push(number_parameter(
+            "joint_length",
+            "Joint Length",
+            2.0,
+            0.0,
+            100_000.0,
+            "Rest and maximum distance for the generated joint.",
+            &[("Joint2D", "rest_length"), ("Joint2D", "max_distance")],
+        ));
+        parameters.push(number_parameter(
+            "joint_stiffness",
+            "Joint Stiffness",
+            0.9,
+            0.0,
+            100_000.0,
+            "Constraint or spring correction strength.",
+            &[("Joint2D", "stiffness")],
+        ));
+    }
+    if has(components, "ForceField2D") {
+        parameters.push(number_parameter(
+            "field_strength",
+            "Field Strength",
+            10.0,
+            -1_000_000.0,
+            1_000_000.0,
+            "Signed force applied inside the field.",
+            &[("ForceField2D", "strength")],
+        ));
+        parameters.push(number_parameter(
+            "field_radius",
+            "Field Radius",
+            8.0,
+            0.0,
+            1_000_000.0,
+            "World-space influence radius; zero means unbounded.",
+            &[("ForceField2D", "radius")],
+        ));
+    }
     if has(components, "DamageDealer") {
         parameters.push(number_parameter(
             "damage",
@@ -1561,6 +1726,12 @@ fn automatic_requirements(components: &[String]) -> Vec<String> {
     if has(components, "AudioSource2D") {
         requirements.push("Assign a SoundCue, AudioEvent or audio asset".to_string());
     }
+    if has(components, "Joint2D") {
+        requirements.push(
+            "Select two entities and use Physics > Connect Selection to assign the joint target"
+                .to_string(),
+        );
+    }
     requirements
 }
 
@@ -1577,6 +1748,12 @@ fn automatic_workflow_steps(kind: AuthoringPresetKind2D, components: &[String]) 
     }
     if kind == AuthoringPresetKind2D::Physics {
         steps.push("Run Physics Debug Draw and inspect contacts".to_string());
+    }
+    if has(components, "Joint2D") {
+        steps.push("Connect the owner and target from the two-entity selection".to_string());
+    }
+    if has(components, "ForceField2D") {
+        steps.push("Resize the force-field radius directly in the Scene view".to_string());
     }
     steps.push("Play the scene and inspect Runtime Health".to_string());
     steps
@@ -1624,6 +1801,9 @@ mod tests {
             "rts_unit",
             "grand_strategy_nation",
             "physics_projectile_ccd",
+            "physics_ice_surface",
+            "physics_distance_joint",
+            "physics_wind_zone",
         ] {
             assert!(catalog.resolve(expected).is_some(), "{expected}");
         }
@@ -1666,5 +1846,59 @@ mod tests {
                 .iter()
                 .all(|preset| preset.kind == AuthoringPresetKind2D::Physics)
         );
+    }
+
+    #[test]
+    fn advanced_physics_presets_create_material_joint_and_force_field_components() {
+        let catalog = AuthoringCatalog2D::builtin();
+        let ice = catalog
+            .application_plan(
+                "ice",
+                std::iter::empty::<&str>(),
+                Some(&json!({"surface_friction": 0.04})),
+            )
+            .unwrap();
+        let material = ice
+            .configured_components
+            .iter()
+            .find(|component| component.component_type == "PhysicsMaterial2D")
+            .unwrap();
+        assert_eq!(material.get_f64("friction", 1.0), 0.04);
+
+        let joint = catalog
+            .application_plan(
+                "rope_joint",
+                std::iter::empty::<&str>(),
+                Some(&json!({"joint_length": 6.5})),
+            )
+            .unwrap();
+        let constraint = joint
+            .configured_components
+            .iter()
+            .find(|component| component.component_type == "Joint2D")
+            .unwrap();
+        assert_eq!(constraint.get_f64("rest_length", 0.0), 6.5);
+        assert_eq!(constraint.get_f64("max_distance", 0.0), 6.5);
+        assert!(
+            joint
+                .requirements
+                .iter()
+                .any(|requirement| requirement.contains("Select two entities"))
+        );
+
+        let wind = catalog
+            .application_plan(
+                "wind",
+                std::iter::empty::<&str>(),
+                Some(&json!({"field_strength": 42.0, "field_radius": 15.0})),
+            )
+            .unwrap();
+        let field = wind
+            .configured_components
+            .iter()
+            .find(|component| component.component_type == "ForceField2D")
+            .unwrap();
+        assert_eq!(field.get_f64("strength", 0.0), 42.0);
+        assert_eq!(field.get_f64("radius", 0.0), 15.0);
     }
 }

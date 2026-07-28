@@ -68,6 +68,40 @@ pub struct Collider2DSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PhysicsMaterial2DSpec {
+    pub friction: f64,
+    pub bounciness: f64,
+    pub density: f64,
+    pub friction_combine: String,
+    pub bounce_combine: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Joint2DSpec {
+    pub joint_type: String,
+    pub target_id: u64,
+    pub target_name: String,
+    pub rest_length: f64,
+    pub min_distance: f64,
+    pub max_distance: f64,
+    pub stiffness: f64,
+    pub damping: f64,
+    pub collide_connected: bool,
+    pub break_force: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ForceField2DSpec {
+    pub field_type: String,
+    pub direction: (f64, f64),
+    pub strength: f64,
+    pub radius: f64,
+    pub falloff: f64,
+    #[serde(default)]
+    pub layers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Raycast2DQuery {
     pub origin: (f64, f64),
     pub direction: (f64, f64),
@@ -379,7 +413,43 @@ pub fn minimal_physics_config() -> Value {
         "boxcast": {"origin": [0.0, 0.0], "half_extents": [0.5, 0.5], "direction": [1.0, 0.0], "max_distance": 4.0, "layers": ["WorldStatic"]},
         "circlecast": {"origin": [0.0, 0.0], "radius": 0.5, "direction": [1.0, 0.0], "max_distance": 4.0, "layers": ["WorldStatic"]},
         "overlap_area": {"center": [0.0, 0.0], "half_extents": [1.0, 1.0], "layers": ["Pawn", "Trigger"]},
-        "events": ["OnCollisionEnter", "OnCollisionStay", "OnCollisionExit", "OnTriggerEnter", "OnTriggerExit"]
+        "material": {
+            "friction": 0.25,
+            "bounciness": 0.0,
+            "density": 1.0,
+            "friction_combine": "average",
+            "bounce_combine": "maximum"
+        },
+        "distance_joint": {
+            "joint_type": "distance",
+            "target_id": 0,
+            "target_name": "",
+            "rest_length": 2.0,
+            "min_distance": 0.0,
+            "max_distance": 2.0,
+            "stiffness": 0.9,
+            "damping": 0.18,
+            "collide_connected": false,
+            "break_force": 0.0
+        },
+        "force_field": {
+            "field_type": "directional",
+            "direction": [1.0, 0.0],
+            "strength": 10.0,
+            "radius": 8.0,
+            "falloff": 1.0,
+            "layers": ["*"]
+        },
+        "script_api": [
+            "Rigidbody2D.set_velocity",
+            "Rigidbody2D.apply_force",
+            "Rigidbody2D.apply_impulse",
+            "Rigidbody2D.apply_torque",
+            "Rigidbody2D.wake",
+            "Rigidbody2D.sleep"
+        ],
+        "events": ["OnCollisionEnter", "OnCollisionStay", "OnCollisionExit", "OnTriggerEnter", "OnTriggerExit"],
+        "debug_draw": ["bodies", "colliders", "velocity", "contacts", "joints", "force_fields", "sleeping"]
     })
 }
 

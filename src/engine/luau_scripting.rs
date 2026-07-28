@@ -144,6 +144,21 @@ pub enum ScriptCommand {
         x: f64,
         y: f64,
     },
+    ApplyForce {
+        target: ScriptTarget,
+        x: f64,
+        y: f64,
+    },
+    ApplyTorque {
+        target: ScriptTarget,
+        torque: f64,
+    },
+    WakeBody {
+        target: ScriptTarget,
+    },
+    SleepBody {
+        target: ScriptTarget,
+    },
     SetCharacterInput {
         target: ScriptTarget,
         x: f64,
@@ -2015,6 +2030,50 @@ impl LuauScriptRuntime {
                     false
                 })
             }
+            ScriptCommand::ApplyForce { target, x, y } => {
+                for_each_target(entities, &target, report, |entity| {
+                    ensure_component(entity, "Rigidbody2D");
+                    if let Some(body) = entity.get_component_mut("Rigidbody2D") {
+                        body.add_force(x, y, false);
+                        return true;
+                    }
+                    false
+                })
+            }
+            ScriptCommand::ApplyTorque { target, torque } => {
+                for_each_target(entities, &target, report, |entity| {
+                    ensure_component(entity, "Rigidbody2D");
+                    if let Some(body) = entity.get_component_mut("Rigidbody2D") {
+                        body.set_f64("_torque", body.get_f64("_torque", 0.0) + torque);
+                        body.set("sleeping", json!(false));
+                        body.set_f64("_sleep_timer", 0.0);
+                        return true;
+                    }
+                    false
+                })
+            }
+            ScriptCommand::WakeBody { target } => {
+                for_each_target(entities, &target, report, |entity| {
+                    let Some(body) = entity.get_component_mut("Rigidbody2D") else {
+                        return false;
+                    };
+                    body.set("sleeping", json!(false));
+                    body.set_f64("_sleep_timer", 0.0);
+                    true
+                })
+            }
+            ScriptCommand::SleepBody { target } => {
+                for_each_target(entities, &target, report, |entity| {
+                    let Some(body) = entity.get_component_mut("Rigidbody2D") else {
+                        return false;
+                    };
+                    body.set_f64("velocity_x", 0.0);
+                    body.set_f64("velocity_y", 0.0);
+                    body.set_f64("angular_velocity", 0.0);
+                    body.set("sleeping", json!(true));
+                    true
+                })
+            }
             ScriptCommand::SetCharacterInput {
                 target,
                 x,
@@ -3638,6 +3697,46 @@ fn register_safe_luau_api(
         lua.create_function(move |_, (target, x, y): (LuaValue, f64, f64)| {
             if let Some(target) = target_from_luau_or_current(&shared, target)? {
                 push_command(&shared, ScriptCommand::ApplyImpulse { target, x, y });
+            }
+            Ok(())
+        })?,
+    )?;
+    let shared = host.clone();
+    rigidbody.set(
+        "apply_force",
+        lua.create_function(move |_, (target, x, y): (LuaValue, f64, f64)| {
+            if let Some(target) = target_from_luau_or_current(&shared, target)? {
+                push_command(&shared, ScriptCommand::ApplyForce { target, x, y });
+            }
+            Ok(())
+        })?,
+    )?;
+    let shared = host.clone();
+    rigidbody.set(
+        "apply_torque",
+        lua.create_function(move |_, (target, torque): (LuaValue, f64)| {
+            if let Some(target) = target_from_luau_or_current(&shared, target)? {
+                push_command(&shared, ScriptCommand::ApplyTorque { target, torque });
+            }
+            Ok(())
+        })?,
+    )?;
+    let shared = host.clone();
+    rigidbody.set(
+        "wake",
+        lua.create_function(move |_, target: LuaValue| {
+            if let Some(target) = target_from_luau_or_current(&shared, target)? {
+                push_command(&shared, ScriptCommand::WakeBody { target });
+            }
+            Ok(())
+        })?,
+    )?;
+    let shared = host.clone();
+    rigidbody.set(
+        "sleep",
+        lua.create_function(move |_, target: LuaValue| {
+            if let Some(target) = target_from_luau_or_current(&shared, target)? {
+                push_command(&shared, ScriptCommand::SleepBody { target });
             }
             Ok(())
         })?,

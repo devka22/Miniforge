@@ -144,12 +144,21 @@ impl Component {
             return;
         }
         let mass = self.get_f64("mass", 1.0).max(0.0001);
-        let scale = if impulse { 1.0 } else { 1.0 / mass };
-        let vx = self.get_f64("velocity_x", 0.0) + force_x * scale;
-        let vy = self.get_f64("velocity_y", 0.0) + force_y * scale;
-        self.set_f64("velocity_x", vx);
-        self.set_f64("velocity_y", vy);
+        if impulse {
+            self.set_f64(
+                "velocity_x",
+                self.get_f64("velocity_x", 0.0) + force_x / mass,
+            );
+            self.set_f64(
+                "velocity_y",
+                self.get_f64("velocity_y", 0.0) + force_y / mass,
+            );
+        } else {
+            self.set_f64("_force_x", self.get_f64("_force_x", 0.0) + force_x);
+            self.set_f64("_force_y", self.get_f64("_force_y", 0.0) + force_y);
+        }
         self.set("sleeping", json!(false));
+        self.set_f64("_sleep_timer", 0.0);
     }
 
     pub fn is_dynamic_body(&self) -> bool {
@@ -1148,6 +1157,10 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "freeze_y": false,
             "freeze_rotation": false,
             "continuous_collision": false,
+            "allow_sleeping": true,
+            "linear_sleep_threshold": 0.03,
+            "angular_sleep_threshold": 0.03,
+            "sleep_time_threshold": 0.5,
             "sleeping": false,
         }),
         "StaticBody2D" => json!({
@@ -1162,7 +1175,51 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "body_type": "kinematic",
             "velocity_x": 0.0,
             "velocity_y": 0.0,
+            "angular_velocity": 0.0,
             "move_and_slide": true,
+            "freeze_x": false,
+            "freeze_y": false,
+            "freeze_rotation": false,
+        }),
+        "PhysicsMaterial2D" => json!({
+            "friction": 0.25,
+            "bounciness": 0.0,
+            "density": 1.0,
+            "friction_combine": "average",
+            "bounce_combine": "maximum",
+        }),
+        "Joint2D" => json!({
+            "joint_type": "distance",
+            "target_id": 0,
+            "target_name": "",
+            "anchor_x": 0.0,
+            "anchor_y": 0.0,
+            "target_anchor_x": 0.0,
+            "target_anchor_y": 0.0,
+            "rest_length": 2.0,
+            "min_distance": 0.0,
+            "max_distance": 2.0,
+            "stiffness": 0.85,
+            "damping": 0.18,
+            "collide_connected": false,
+            "break_force": 0.0,
+            "broken": false,
+            "motor_enabled": false,
+            "motor_speed": 0.0,
+            "motor_force": 0.0,
+            "limits_enabled": false,
+            "lower_angle": -180.0,
+            "upper_angle": 180.0,
+        }),
+        "ForceField2D" => json!({
+            "field_type": "directional",
+            "direction_x": 1.0,
+            "direction_y": 0.0,
+            "strength": 10.0,
+            "radius": 8.0,
+            "falloff": 1.0,
+            "layers": ["*"],
+            "enabled": true,
         }),
         "CharacterBody2D" => json!({
             "mode": "platformer",
@@ -2293,6 +2350,9 @@ pub fn advanced_component_types() -> &'static [&'static str] {
         "Trigger2D",
         "StaticBody2D",
         "KinematicBody2D",
+        "PhysicsMaterial2D",
+        "Joint2D",
+        "ForceField2D",
         "CharacterBody2D",
         "BehaviorTree2D",
         "Stats",
@@ -2405,7 +2465,7 @@ pub fn advanced_component_category(component_type: &str) -> Option<&'static str>
         "WidgetCanvas2D" => "UI",
         "Sequencer2D" => "Cinematics",
         "Area2D" | "OneWayPlatform2D" | "Trigger2D" | "StaticBody2D" | "KinematicBody2D"
-        | "CharacterBody2D" => "Physics",
+        | "PhysicsMaterial2D" | "Joint2D" | "ForceField2D" | "CharacterBody2D" => "Physics",
         "Stats"
         | "Inventory"
         | "Equipment"

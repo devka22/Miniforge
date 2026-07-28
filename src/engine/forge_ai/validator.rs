@@ -168,6 +168,19 @@ impl AiValidator {
                             "Rigidbody2D.apply_impulse(target, x: number, y: number)",
                             "Apply an impulse to a body.",
                         ),
+                        symbol(
+                            "Rigidbody2D.apply_force(target, x: number, y: number)",
+                            "Accumulate a force for the next physics update.",
+                        ),
+                        symbol(
+                            "Rigidbody2D.apply_torque(target, torque: number)",
+                            "Accumulate angular force for the next physics update.",
+                        ),
+                        symbol("Rigidbody2D.wake(target)", "Wake a sleeping dynamic body."),
+                        symbol(
+                            "Rigidbody2D.sleep(target)",
+                            "Stop and explicitly sleep a dynamic body.",
+                        ),
                     ],
                 ),
                 class(

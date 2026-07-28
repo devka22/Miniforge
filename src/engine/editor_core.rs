@@ -2535,6 +2535,9 @@ impl EditorCore {
         let (tile, scale, offset_x, offset_y) =
             viewport_layout(game, viewport_width, viewport_height);
         let pixels_per_unit = tile * scale;
+        let physics_debug = game
+            .physics_system
+            .debug_snapshot(&game.runtime_world.units, 2_048);
         let entities = game
             .runtime_world
             .units
@@ -2542,6 +2545,21 @@ impl EditorCore {
             .map(|entity| {
                 let component_types = entity.component_types();
                 let light = entity.get_component("Light2D");
+                let body = entity
+                    .get_component("Rigidbody2D")
+                    .or_else(|| entity.get_component("KinematicBody2D"))
+                    .or_else(|| entity.get_component("StaticBody2D"));
+                let physics_material = entity.get_component("PhysicsMaterial2D");
+                let force_field = entity.get_component("ForceField2D");
+                let joint = entity.get_component("Joint2D");
+                let joint_target = joint.and_then(|joint| {
+                    let target_id = joint.get("target_id").and_then(Value::as_u64);
+                    let target_name = joint.get_string("target_name", "");
+                    game.runtime_world.units.iter().find(|candidate| {
+                        target_id.is_some_and(|id| candidate.id == id)
+                            || (!target_name.is_empty() && candidate.name == target_name)
+                    })
+                });
                 json!({
                     "id": entity.id,
                     "name": entity.name,
@@ -2563,6 +2581,34 @@ impl EditorCore {
                         || entity.get_component("Area2D").is_some(),
                     "is_trigger": entity.get_component("Trigger2D").is_some()
                         || entity.get_component("Area2D").is_some(),
+                    "body_type": body.map(|component| {
+                        match component.component_type.as_str() {
+                            "KinematicBody2D" => "kinematic".to_string(),
+                            "StaticBody2D" => "static".to_string(),
+                            _ => component.get_string("body_type", "dynamic"),
+                        }
+                    }),
+                    "velocity_x": body.map(|component| component.get_f64("velocity_x", 0.0)).unwrap_or(0.0),
+                    "velocity_y": body.map(|component| component.get_f64("velocity_y", 0.0)).unwrap_or(0.0),
+                    "physics_sleeping": body.map(|component| component.get_bool("sleeping", false)).unwrap_or(false),
+                    "physics_friction": physics_material
+                        .map(|component| component.get_f64("friction", 0.25))
+                        .or_else(|| body.map(|component| component.get_f64("friction", 0.25)))
+                        .unwrap_or(0.25),
+                    "physics_bounciness": physics_material
+                        .map(|component| component.get_f64("bounciness", 0.0))
+                        .or_else(|| body.map(|component| component.get_f64("bounciness", 0.0)))
+                        .unwrap_or(0.0),
+                    "force_field_type": force_field.map(|component| component.get_string("field_type", "directional")),
+                    "force_field_radius": force_field.map(|component| component.get_f64("radius", 8.0)).unwrap_or(0.0),
+                    "force_field_strength": force_field.map(|component| component.get_f64("strength", 10.0)).unwrap_or(0.0),
+                    "force_field_direction_x": force_field.map(|component| component.get_f64("direction_x", 1.0)).unwrap_or(0.0),
+                    "force_field_direction_y": force_field.map(|component| component.get_f64("direction_y", 0.0)).unwrap_or(0.0),
+                    "joint_type": joint.map(|component| component.get_string("joint_type", "distance")),
+                    "joint_broken": joint.map(|component| component.get_bool("broken", false)).unwrap_or(false),
+                    "joint_target_id": joint_target.map(|target| target.id),
+                    "joint_target_x": joint_target.map(|target| target.x),
+                    "joint_target_y": joint_target.map(|target| target.y),
                     "light_radius": light.map(|component| component.get_f64("radius", 5.0)).unwrap_or(0.0),
                     "light_angle": light.map(|component| component.get_f64("angle", 360.0)).unwrap_or(360.0),
                     "light_direction": light.map(|component| component.get_f64("direction", 0.0)).unwrap_or(0.0),
@@ -2578,6 +2624,7 @@ impl EditorCore {
             "pixels_per_unit": pixels_per_unit,
             "offset_x": offset_x,
             "offset_y": offset_y,
+            "physics_debug": physics_debug,
             "entities": entities,
         }))
     }
@@ -3707,6 +3754,31 @@ impl EditorCore {
                     message: format!("Created StaticBody2D #{id}"),
                 }
             }
+            "object.create_kinematic_body2d" => {
+                let (x, y) = editor_spawn_position(game);
+                let id = game.spawn_scene_node(
+                    "KinematicBody2D",
+                    &["KinematicBody2D", "Collider2D"],
+                    x,
+                    y,
+                );
+                CommandOutcome {
+                    changed: true,
+                    message: format!("Created moving KinematicBody2D #{id}"),
+                }
+            }
+            "object.create_force_field2d" => {
+                let (x, y) = editor_spawn_position(game);
+                let id = game.spawn_scene_node("ForceField2D", &["ForceField2D"], x, y);
+                CommandOutcome {
+                    changed: true,
+                    message: format!("Created configurable ForceField2D #{id}"),
+                }
+            }
+            "physics.connect_selection_distance" => {
+                connect_selected_physics_joint(game, "distance")?
+            }
+            "physics.connect_selection_spring" => connect_selected_physics_joint(game, "spring")?,
             "object.create_trigger_volume2d" => {
                 let (x, y) = editor_spawn_position(game);
                 let id = game.spawn_scene_node("TriggerVolume2D", &["Area2D", "Trigger2D"], x, y);
@@ -4828,6 +4900,81 @@ fn editor_spawn_position(game: &Game) -> (f64, f64) {
     )
 }
 
+fn connect_selected_physics_joint(
+    game: &mut Game,
+    joint_type: &str,
+) -> Result<CommandOutcome, EditorCoreError> {
+    if game.selected_units.len() != 2 {
+        return Err(EditorCoreError::new(
+            EditorCoreErrorKind::InvalidArgument,
+            "Select exactly two entities: the joint owner first and its target second",
+        ));
+    }
+    let owner_id = game.selected_units[0];
+    let target_id = game.selected_units[1];
+    let target = game.get_entity_by_id(target_id).cloned().ok_or_else(|| {
+        EditorCoreError::new(EditorCoreErrorKind::NotFound, "Joint target is missing")
+    })?;
+    let owner = game.get_entity_by_id(owner_id).cloned().ok_or_else(|| {
+        EditorCoreError::new(EditorCoreErrorKind::NotFound, "Joint owner is missing")
+    })?;
+    let owner_name = owner.name.clone();
+    let rest_length = ((owner.x - target.x).powi(2) + (owner.y - target.y).powi(2))
+        .sqrt()
+        .max(0.001);
+    let before = game.capture_editor_snapshot();
+    let owner = game.get_entity_by_id_mut(owner_id).ok_or_else(|| {
+        EditorCoreError::new(EditorCoreErrorKind::NotFound, "Joint owner is missing")
+    })?;
+    if owner.get_component("Rigidbody2D").is_none()
+        && owner.get_component("KinematicBody2D").is_none()
+    {
+        owner.add_component(default_component("Rigidbody2D").expect("registered Rigidbody2D"));
+    }
+    if owner.get_component("Collider2D").is_none() {
+        owner.add_component(default_component("Collider2D").expect("registered Collider2D"));
+    }
+    if owner.get_component("Joint2D").is_none() {
+        owner.add_component(default_component("Joint2D").expect("registered Joint2D"));
+    }
+    let joint = owner
+        .get_component_mut("Joint2D")
+        .expect("joint was just attached");
+    joint.set("joint_type", json!(joint_type));
+    joint.set("target_id", json!(target_id));
+    joint.set("target_name", json!(target.name));
+    joint.set_f64("rest_length", rest_length);
+    joint.set_f64(
+        "max_distance",
+        if joint_type == "spring" {
+            rest_length * 1.5
+        } else {
+            rest_length
+        },
+    );
+    joint.set_f64("stiffness", if joint_type == "spring" { 18.0 } else { 0.9 });
+    joint.set_f64("damping", if joint_type == "spring" { 3.0 } else { 0.18 });
+    joint.set("broken", json!(false));
+    owner.sync_to_components();
+    game.sync_world();
+    game.mark_scene_dirty("Connect Physics Joint");
+    game.scene_save_manager.note_entity_dirty(owner_id);
+    game.push_editor_command(
+        format!("Connect {joint_type} Joint"),
+        EditorCommandKind::SceneOperation {
+            name: format!("Connect {joint_type} joint"),
+        },
+        before,
+    );
+    Ok(CommandOutcome {
+        changed: true,
+        message: format!(
+            "Connected {} to {} with a {joint_type} joint ({rest_length:.2} units)",
+            owner_name, target.name
+        ),
+    })
+}
+
 fn queue_worker_on_selection(game: &mut Game) -> CommandOutcome {
     let Some(entity_id) = game.selected_units.first().copied() else {
         return CommandOutcome {
@@ -5385,6 +5532,30 @@ fn default_command_descriptors() -> Vec<CommandDescriptor> {
         command(
             "object.create_static_body2d",
             "Create StaticBody2D",
+            "Physics",
+            None,
+        ),
+        command(
+            "object.create_kinematic_body2d",
+            "Create KinematicBody2D",
+            "Physics",
+            None,
+        ),
+        command(
+            "object.create_force_field2d",
+            "Create Force Field 2D",
+            "Physics",
+            None,
+        ),
+        command(
+            "physics.connect_selection_distance",
+            "Connect Selection with Distance Joint",
+            "Physics",
+            None,
+        ),
+        command(
+            "physics.connect_selection_spring",
+            "Connect Selection with Spring Joint",
             "Physics",
             None,
         ),
@@ -7962,6 +8133,11 @@ mod tests {
                 "object.create_static_body2d",
                 &["StaticBody2D", "Collider2D"],
             ),
+            (
+                "object.create_kinematic_body2d",
+                &["KinematicBody2D", "Collider2D"],
+            ),
+            ("object.create_force_field2d", &["ForceField2D"]),
             ("object.create_trigger_volume2d", &["Area2D", "Trigger2D"]),
             (
                 "object.create_one_way_platform2d",
@@ -8018,6 +8194,55 @@ mod tests {
             assert_eq!(core.entity_count().unwrap(), before, "undo {command_id}");
         }
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn physics_joint_command_connects_exactly_two_selected_entities_and_is_undoable() {
+        let root = temp_project("physics_joint_command");
+        let mut core = EditorCore::new();
+        core.open_project(&root).unwrap();
+
+        core.execute_command("object.create_rigidbody2d").unwrap();
+        let owner_id = core.game().unwrap().selected_units[0];
+        core.execute_command("object.create_static_body2d").unwrap();
+        let target_id = core.game().unwrap().selected_units[0];
+        core.select_entity(owner_id).unwrap();
+        core.update_selection(target_id, "add").unwrap();
+
+        let outcome = core
+            .execute_command("physics.connect_selection_spring")
+            .unwrap();
+        assert!(outcome.changed);
+        let owner = core.game().unwrap().get_entity_by_id(owner_id).unwrap();
+        let joint = owner.get_component("Joint2D").expect("joint component");
+        assert_eq!(joint.get_string("joint_type", ""), "spring");
+        assert_eq!(
+            joint.get("target_id").and_then(Value::as_u64),
+            Some(target_id)
+        );
+        assert!(joint.get_f64("rest_length", 0.0) > 0.0);
+
+        let state = core.viewport_state(800, 600).unwrap();
+        assert!(state["physics_debug"]["joints"].is_array());
+        let owner_state = state["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entity| entity["id"].as_u64() == Some(owner_id))
+            .unwrap();
+        assert_eq!(owner_state["joint_target_id"].as_u64(), Some(target_id));
+        assert_eq!(owner_state["joint_type"].as_str(), Some("spring"));
+
+        assert!(core.execute_command("edit.undo").unwrap().changed);
+        assert!(
+            core.game()
+                .unwrap()
+                .get_entity_by_id(owner_id)
+                .unwrap()
+                .get_component("Joint2D")
+                .is_none()
+        );
         let _ = fs::remove_dir_all(root);
     }
 

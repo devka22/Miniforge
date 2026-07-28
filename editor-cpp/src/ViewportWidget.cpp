@@ -12,6 +12,7 @@
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QFontMetrics>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -760,6 +761,14 @@ void ViewportWidget::contextMenuEvent(QContextMenuEvent* event)
     QAction* collisions = menu.addAction(tr("Collision Overlay"));
     collisions->setCheckable(true);
     collisions->setChecked(m_collisionOverlay);
+    QMenu* physics = menu.addMenu(tr("Physics"));
+    QAction* connectDistance =
+        physics->addAction(tr("Connect Selection · Distance Joint"));
+    QAction* connectSpring =
+        physics->addAction(tr("Connect Selection · Spring Joint"));
+    const bool canConnect = m_bridge && m_bridge->selectedEntityCount() == 2;
+    connectDistance->setEnabled(canConnect);
+    connectSpring->setEnabled(canConnect);
     QAction* cameraFrame = menu.addAction(tr("Camera Frame"));
     cameraFrame->setCheckable(true);
     cameraFrame->setChecked(m_cameraFrame);
@@ -800,6 +809,10 @@ void ViewportWidget::contextMenuEvent(QContextMenuEvent* event)
     else if (selected == hud) setHudVisible(hud->isChecked());
     else if (selected == smartSnap) m_smartSnap = smartSnap->isChecked();
     else if (selected == collisions) m_collisionOverlay = collisions->isChecked();
+    else if (selected == connectDistance && m_bridge)
+        m_bridge->executeCommand(QStringLiteral("physics.connect_selection_distance"));
+    else if (selected == connectSpring && m_bridge)
+        m_bridge->executeCommand(QStringLiteral("physics.connect_selection_spring"));
     else if (selected == cameraFrame) m_cameraFrame = cameraFrame->isChecked();
     else if (selected == duplicate && m_bridge) m_bridge->performEntityAction(entityId, QStringLiteral("duplicate"));
     else if (selected == resetTransform && m_bridge) m_bridge->performEntityAction(entityId, QStringLiteral("reset_transform"));
@@ -1033,10 +1046,93 @@ void ViewportWidget::paintSceneOverlays(QPainter& painter)
         }
     }
     if (m_collisionOverlay) {
+        const qreal dpr = devicePixelRatioF();
+        const qreal sourceOffsetX = state.value(QStringLiteral("offset_x")).toDouble() / dpr;
+        const qreal sourceOffsetY = state.value(QStringLiteral("offset_y")).toDouble() / dpr;
+        QHash<qulonglong, QPointF> centers;
         for (const QJsonValue& value : entities) {
             const QJsonObject entity = value.toObject();
-            if (entity.value(QStringLiteral("visible")).toBool()
-                && entity.value(QStringLiteral("has_collision")).toBool()) {
+            if (!entity.value(QStringLiteral("visible")).toBool()) {
+                continue;
+            }
+            const qulonglong entityId =
+                entity.value(QStringLiteral("id")).toVariant().toULongLong();
+            const QPointF sourceCenter = entitySourceCenter(entity);
+            const QPointF center = viewTransform().map(sourceCenter);
+            centers.insert(entityId, center);
+            const bool selected = entity.value(QStringLiteral("selected")).toBool();
+
+            if (entityHasComponent(entity, QStringLiteral("ForceField2D"))) {
+                const qreal radius = entity.value(QStringLiteral("force_field_radius"))
+                                         .toDouble(8.0)
+                    * unit * m_zoom;
+                const qreal strength =
+                    entity.value(QStringLiteral("force_field_strength")).toDouble(10.0);
+                const QString fieldType =
+                    entity.value(QStringLiteral("force_field_type")).toString();
+                painter.setPen(QPen(QColor(78, 207, 255, selected ? 235 : 155),
+                    selected ? 2.0 : 1.0, Qt::DashLine));
+                painter.setBrush(QColor(65, 184, 255, selected ? 28 : 12));
+                painter.drawEllipse(center, radius, radius);
+                if (fieldType == QStringLiteral("directional")) {
+                    QPointF direction(
+                        entity.value(QStringLiteral("force_field_direction_x")).toDouble(1.0),
+                        entity.value(QStringLiteral("force_field_direction_y")).toDouble());
+                    const qreal length = std::hypot(direction.x(), direction.y());
+                    if (length > 0.0001) {
+                        direction /= length;
+                        if (strength < 0.0) {
+                            direction = -direction;
+                        }
+                        const QPointF tip = center + direction * std::min<qreal>(radius, 54.0);
+                        painter.drawLine(center, tip);
+                        painter.setBrush(QColor(78, 207, 255, 220));
+                        painter.drawEllipse(tip, 4, 4);
+                    }
+                } else {
+                    painter.drawText(QRectF(center + QPointF(8, -18), QSizeF(120, 20)),
+                        fieldType == QStringLiteral("vortex") ? tr("Vortex") : tr("Radial"));
+                }
+            }
+
+            if (entityHasComponent(entity, QStringLiteral("Joint2D"))
+                && !entity.value(QStringLiteral("joint_broken")).toBool()) {
+                const QJsonValue targetX = entity.value(QStringLiteral("joint_target_x"));
+                const QJsonValue targetY = entity.value(QStringLiteral("joint_target_y"));
+                if (targetX.isDouble() && targetY.isDouble()) {
+                    const QPointF targetSource(
+                        sourceOffsetX + targetX.toDouble() * unit,
+                        sourceOffsetY + targetY.toDouble() * unit);
+                    const QPointF target = viewTransform().map(targetSource);
+                    painter.setPen(QPen(QColor(255, 194, 88, selected ? 245 : 180),
+                        selected ? 2.5 : 1.5,
+                        entity.value(QStringLiteral("joint_type")).toString()
+                                    == QStringLiteral("spring")
+                            ? Qt::DotLine
+                            : Qt::DashLine));
+                    painter.drawLine(center, target);
+                    painter.setBrush(QColor(255, 194, 88, 220));
+                    painter.drawEllipse(center, 4, 4);
+                    painter.drawEllipse(target, 4, 4);
+                }
+            }
+
+            const qreal velocityX = entity.value(QStringLiteral("velocity_x")).toDouble();
+            const qreal velocityY = entity.value(QStringLiteral("velocity_y")).toDouble();
+            if (std::hypot(velocityX, velocityY) > 0.001) {
+                const QPointF tip = center
+                    + QPointF(velocityX, velocityY) * unit * m_zoom * 0.2;
+                painter.setPen(QPen(QColor(93, 238, 163, 215), 2));
+                painter.drawLine(center, tip);
+                painter.setBrush(QColor(93, 238, 163, 230));
+                painter.drawEllipse(tip, 3, 3);
+            } else if (entity.value(QStringLiteral("physics_sleeping")).toBool()) {
+                painter.setPen(QColor(142, 164, 190, 220));
+                painter.drawText(QRectF(center + QPointF(7, -19), QSizeF(22, 18)),
+                    QStringLiteral("Zz"));
+            }
+
+            if (entity.value(QStringLiteral("has_collision")).toBool()) {
                 const bool trigger = entity.value(QStringLiteral("is_trigger")).toBool();
                 painter.setPen(QPen(trigger ? QColor(186, 108, 255, 210) : QColor(255, 92, 88, 190),
                     1.5, Qt::DashLine));
@@ -1071,6 +1167,34 @@ void ViewportWidget::paintSceneOverlays(QPainter& painter)
                     painter.drawPolygon(viewTransform().map(QPolygonF(entitySourceRect(entity))));
                 }
             }
+        }
+        const QJsonArray contacts = state.value(QStringLiteral("physics_debug"))
+                                        .toObject()
+                                        .value(QStringLiteral("contacts"))
+                                        .toArray();
+        for (const QJsonValue& value : contacts) {
+            const QJsonObject contact = value.toObject();
+            const qulonglong firstId =
+                contact.value(QStringLiteral("first_id")).toVariant().toULongLong();
+            const qulonglong secondId =
+                contact.value(QStringLiteral("second_id")).toVariant().toULongLong();
+            if (!centers.contains(firstId) || !centers.contains(secondId)) {
+                continue;
+            }
+            const QPointF midpoint = (centers.value(firstId) + centers.value(secondId)) * 0.5;
+            const QJsonArray normal = contact.value(QStringLiteral("normal")).toArray();
+            if (normal.size() < 2) {
+                continue;
+            }
+            const QPointF tip = midpoint
+                + QPointF(normal.at(0).toDouble(), normal.at(1).toDouble()) * 24.0;
+            painter.setPen(QPen(contact.value(QStringLiteral("trigger")).toBool()
+                    ? QColor(198, 121, 255, 220)
+                    : QColor(255, 226, 112, 230),
+                2));
+            painter.drawLine(midpoint, tip);
+            painter.setBrush(painter.pen().color());
+            painter.drawEllipse(midpoint, 3, 3);
         }
     }
     if (m_gizmoDragging && m_gizmoTool == GizmoTool::Move && m_smartSnap) {
@@ -1114,6 +1238,16 @@ void ViewportWidget::paintHud(QPainter& painter)
     };
     if (m_collisionOverlay) {
         lines.push_back(tr("Collision: Alt+click add/drag · Alt+Shift+click remove"));
+        const QJsonObject stats = viewportState()
+                                      .value(QStringLiteral("physics_debug"))
+                                      .toObject()
+                                      .value(QStringLiteral("stats"))
+                                      .toObject();
+        lines.push_back(tr("Physics: %1 bodies · %2 contacts · %3 joints · %4 sleeping")
+                            .arg(stats.value(QStringLiteral("bodies")).toInt())
+                            .arg(stats.value(QStringLiteral("contacts")).toInt())
+                            .arg(stats.value(QStringLiteral("joints")).toInt())
+                            .arg(stats.value(QStringLiteral("sleeping_bodies")).toInt()));
     }
     QFont font = QFontDatabase::systemFont(QFontDatabase::GeneralFont);
     font.setPointSize(10);

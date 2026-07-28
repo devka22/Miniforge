@@ -90,7 +90,11 @@ pub use particles2d::{
     ParticleEmitter2D, ParticleSystem2D as MiniParticleSystem2D, ParticleTemplate2D,
     particle_templates,
 };
-pub use physics2d::{Physics2DSettings, PhysicsRuntimeTuning2D, Raycast2DQuery};
+pub use physics2d::{
+    BoxCast2DQuery, CircleCast2DQuery, Collider2DSpec, ForceField2DSpec, Joint2DSpec,
+    OverlapArea2DQuery, Physics2DSettings, PhysicsMaterial2DSpec, PhysicsRuntimeTuning2D,
+    Raycast2DQuery, Rigidbody2DSpec,
+};
 pub use plugin_system2d::{PluginExtensionPoint2D, PluginExtensionSlot2D, PluginManifest2D};
 pub use problems_panel::ProblemsPanel2D;
 pub use project_settings2d::ProjectSettings2D;
