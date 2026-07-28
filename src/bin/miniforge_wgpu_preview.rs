@@ -10,8 +10,8 @@ use miniforge::render::backend::{
     TextWrapMode, WgpuBackend,
 };
 use miniforge::render::runtime_scene_2d::{
-    RuntimeScene2DStats, RuntimeTexture2D, draw_engine_runtime_scene_2d, entity_sprite_path,
-    entity_ui_sprite_path, scene_ui_sprite_paths, ui_document_sprite_paths,
+    RuntimeScene2DStats, RuntimeTexture2D, draw_engine_runtime_scene_2d, entity_normal_map_path,
+    entity_sprite_path, entity_ui_sprite_path, scene_ui_sprite_paths, ui_document_sprite_paths,
 };
 use miniforge::runtime::engine_runtime::EngineRuntime;
 use winit::application::ApplicationHandler;
@@ -149,8 +149,14 @@ impl PreviewApp {
             .runtime_world
             .units
             .iter()
-            .filter_map(|entity| {
-                entity_sprite_path(entity).or_else(|| entity_ui_sprite_path(entity))
+            .flat_map(|entity| {
+                [
+                    entity_sprite_path(entity),
+                    entity_normal_map_path(entity),
+                    entity_ui_sprite_path(entity),
+                ]
+                .into_iter()
+                .flatten()
             })
             .map(ToString::to_string)
             .collect::<std::collections::BTreeSet<_>>();
@@ -236,7 +242,7 @@ impl PreviewApp {
                 || self.frames >= target.max(1).saturating_mul(120)
         }) {
             println!(
-                "MINIFORGE_WGPU_SURFACE_{} frames={} presented={} skipped={} reconfigured={} surface_loss_recoveries={} device_loss_recoveries={} logical_draws={} gpu_draws={} binds={} pipelines={} vertex_bytes={} particle_emitters={} particle_capacity={} particle_spawned={} particle_dispatches={} entities={} textures={} ui_documents={} retained_ui_widgets={} retained_ui_quads={} api={:?}",
+                "MINIFORGE_WGPU_SURFACE_{} frames={} presented={} skipped={} reconfigured={} surface_loss_recoveries={} device_loss_recoveries={} logical_draws={} gpu_draws={} color_binds={} normal_binds={} pipelines={} vertex_bytes={} particle_emitters={} particle_capacity={} particle_spawned={} particle_dispatches={} entities={} textures={} normal_mapped={} lit={} ui_documents={} retained_ui_widgets={} retained_ui_quads={} api={:?}",
                 if backend.submitted_frames >= self.autotest_frames.unwrap_or(1).max(1) {
                     "OK"
                 } else {
@@ -251,6 +257,7 @@ impl PreviewApp {
                 backend.last_frame_diagnostics().logical_draw_calls,
                 backend.last_frame_diagnostics().gpu_draw_calls,
                 backend.last_frame_diagnostics().texture_bind_changes,
+                backend.last_frame_diagnostics().normal_texture_bind_changes,
                 backend.last_frame_diagnostics().pipeline_changes,
                 backend.last_frame_diagnostics().vertex_bytes_uploaded,
                 backend.last_frame_diagnostics().queued_particle_systems,
@@ -262,6 +269,8 @@ impl PreviewApp {
                     .map(|runtime| runtime.runtime_world.units.len())
                     .unwrap_or(0),
                 self.texture_ids.len(),
+                self.last_scene_stats.normal_mapped_entities,
+                self.last_scene_stats.lit_entities,
                 self.runtime
                     .as_ref()
                     .map(|runtime| runtime.ui_documents.len())

@@ -263,6 +263,62 @@ fn physical_wgpu_backend_renders_and_reads_pixels() {
 
 #[test]
 #[ignore = "requires a physical or software wgpu adapter"]
+fn physical_wgpu_normal_maps_react_to_tangent_space_light_direction() {
+    let mut backend = WgpuBackend::new(true, cfg!(target_os = "macos"));
+    backend.resize(64, 32).unwrap();
+    backend.set_clear_color([0.0, 0.0, 0.0, 1.0]);
+    backend.init().unwrap();
+    backend
+        .upload_texture_rgba8(41, 1, 1, &[255, 128, 128, 255])
+        .unwrap();
+
+    backend.begin_frame().unwrap();
+    for (entity_id, x, light_x) in [(1, 0.0, i16::MAX), (2, 32.0, -i16::MAX)] {
+        backend
+            .draw_sprite_with_options(
+                SpriteDrawCommand {
+                    entity_id,
+                    texture_id: 0,
+                    x,
+                    y: 0.0,
+                    width: 32.0,
+                    height: 32.0,
+                    rotation: 0.0,
+                    color: [1.0; 4],
+                },
+                SpriteDrawOptions {
+                    normal_texture_id: Some(41),
+                    normal_strength: u8::MAX,
+                    light_direction: [light_x, 0],
+                    light_color: [u8::MAX; 3],
+                    ambient_light: 16,
+                    ..SpriteDrawOptions::default()
+                },
+            )
+            .unwrap();
+    }
+    backend.end_frame().unwrap();
+
+    let pixels = backend.readback_rgba8().unwrap();
+    let luma = |x: usize| {
+        let offset = (16 * 64 + x) * 4;
+        u16::from(pixels[offset]) + u16::from(pixels[offset + 1]) + u16::from(pixels[offset + 2])
+    };
+    let facing = luma(16);
+    let opposing = luma(48);
+    assert!(
+        facing > opposing + 300,
+        "right-facing normal should receive substantially more light: facing={facing}, opposing={opposing}"
+    );
+    assert_eq!(
+        backend.last_frame_diagnostics().normal_texture_bind_changes,
+        1
+    );
+    assert!(backend.is_using_physical_device());
+}
+
+#[test]
+#[ignore = "requires a physical or software wgpu adapter"]
 fn physical_wgpu_runtime_composes_ambient_directional_and_shadow_lighting() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

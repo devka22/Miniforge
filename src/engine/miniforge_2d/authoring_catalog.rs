@@ -1083,6 +1083,21 @@ fn builtin_presets() -> Vec<AuthoringPreset2D> {
             &["background", "parallax", "rendering"],
         ),
         preset(
+            "lit_sprite",
+            "WGPU Lit Sprite",
+            "Presentation",
+            AuthoringPresetKind2D::Effects,
+            "Sprite material with tangent-space normal mapping and automatic point or directional light selection.",
+            &["SpriteRenderer", "Material2D", "NormalMap2D"],
+            &[
+                ov("Material2D", "lighting", json!(true)),
+                ov("NormalMap2D", "strength", json!(1.0)),
+            ],
+            &["all"],
+            &["lighting", "normal-map", "sprite", "wgpu"],
+        )
+        .aliases(&["normal_mapped_sprite", "normal_sprite"]),
+        preset(
             "lighting_rig",
             "2D Lighting Rig",
             "Presentation",
@@ -1707,6 +1722,17 @@ fn automatic_parameters(components: &[String]) -> Vec<PresetParameter2D> {
             ],
         ));
     }
+    if has(components, "NormalMap2D") {
+        parameters.push(number_parameter(
+            "normal_strength",
+            "Normal Strength",
+            1.0,
+            0.0,
+            1.0,
+            "Tangent-space normal influence used by the WGPU sprite shader.",
+            &[("NormalMap2D", "strength")],
+        ));
+    }
     parameters
 }
 
@@ -1793,6 +1819,12 @@ fn automatic_requirements(components: &[String]) -> Vec<String> {
                 .to_string(),
         );
     }
+    if has(components, "NormalMap2D") {
+        requirements.push(
+            "Assign a tangent-space normal texture to NormalMap2D; color and normal textures share the standard asset workflow"
+                .to_string(),
+        );
+    }
     requirements
 }
 
@@ -1819,6 +1851,16 @@ fn automatic_workflow_steps(kind: AuthoringPresetKind2D, components: &[String]) 
     if has(components, "GpuParticles2D") {
         steps.push(
             "Use Render Diagnostics to verify compute dispatches, capacity and spawned particles"
+                .to_string(),
+        );
+    }
+    if has(components, "NormalMap2D") {
+        steps.push(
+            "Assign the normal texture, then tune strength and Flip Y directly in the Inspector"
+                .to_string(),
+        );
+        steps.push(
+            "Add a Point Light 2D or Directional Light 2D and inspect the live normal response"
                 .to_string(),
         );
     }
@@ -1872,6 +1914,7 @@ mod tests {
             "physics_distance_joint",
             "physics_wind_zone",
             "gpu_particle_emitter",
+            "lit_sprite",
         ] {
             assert!(catalog.resolve(expected).is_some(), "{expected}");
         }

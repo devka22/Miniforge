@@ -49,11 +49,141 @@ pub struct RuntimeScene2DStats {
     pub textured_ui_images: usize,
     pub minimap_quads: usize,
     pub textured_entities: usize,
+    pub normal_mapped_entities: usize,
+    pub lit_entities: usize,
     pub clipped_ui_quads: usize,
     pub virtualized_ui_items: usize,
     pub ambient_light_quads: usize,
     pub directional_light_quads: usize,
     pub shadow_quads: usize,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeNormalLighting2D {
+    ambient: f32,
+    lights: Vec<RuntimeNormalLight2D>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RuntimeNormalLight2D {
+    position: [f32; 2],
+    direction: [f32; 2],
+    color: [f32; 3],
+    intensity: f32,
+    radius: f32,
+    falloff: f32,
+    directional: bool,
+}
+
+impl RuntimeNormalLighting2D {
+    fn from_world(world: &RuntimeWorld) -> Self {
+        const MAX_NORMAL_LIGHTS: usize = 256;
+        let mut ambient = 0.0f32;
+        let mut has_light = false;
+        let mut lights = Vec::new();
+        for entity in world.units.iter().filter(|entity| entity.enabled) {
+            let Some(light) = entity
+                .get_component("Light2D")
+                .filter(|light| light.enabled)
+            else {
+                continue;
+            };
+            let intensity = finite_f64_to_f32(light.get_f64("intensity", 1.0)).clamp(0.0, 8.0);
+            if intensity <= f32::EPSILON {
+                continue;
+            }
+            has_light = true;
+            let color = component_color(light.get("color"), [255, 240, 200, 255], 1.0);
+            let kind = light
+                .get_string("light_type", "point")
+                .trim()
+                .to_ascii_lowercase();
+            if kind == "ambient" {
+                let luminance = color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722;
+                ambient += luminance * intensity;
+                continue;
+            }
+            let angle = finite_f64_to_f32(light.get_f64("direction", 0.0)).to_radians();
+            let directional = matches!(kind.as_str(), "directional" | "sun" | "moon");
+            lights.push(RuntimeNormalLight2D {
+                position: [finite_f64_to_f32(entity.x), finite_f64_to_f32(entity.y)],
+                direction: [-angle.cos(), -angle.sin()],
+                color: [color[0], color[1], color[2]],
+                intensity,
+                radius: finite_f64_to_f32(light.get_f64("radius", 5.0)).clamp(0.1, 1_024.0),
+                falloff: finite_f64_to_f32(light.get_f64("falloff", 1.0)).clamp(0.1, 8.0),
+                directional,
+            });
+        }
+        lights.sort_by(|left, right| {
+            right
+                .intensity
+                .total_cmp(&left.intensity)
+                .then_with(|| right.radius.total_cmp(&left.radius))
+        });
+        lights.truncate(MAX_NORMAL_LIGHTS);
+        Self {
+            ambient: if ambient > 0.0 {
+                ambient.clamp(0.0, 1.0)
+            } else if has_light {
+                0.16
+            } else {
+                0.35
+            },
+            lights,
+        }
+    }
+
+    fn options_for_entity(&self, entity: &GameObject) -> ([i16; 2], [u8; 3], u8) {
+        let mut best = None;
+        for light in &self.lights {
+            let (direction, influence) = if light.directional {
+                (light.direction, light.intensity)
+            } else {
+                let dx = light.position[0] - finite_f64_to_f32(entity.x);
+                let dy = light.position[1] - finite_f64_to_f32(entity.y);
+                let distance = dx.hypot(dy);
+                if distance <= f32::EPSILON {
+                    ([0.0, -1.0], light.intensity)
+                } else {
+                    let attenuation = (1.0 - distance / light.radius)
+                        .clamp(0.0, 1.0)
+                        .powf(light.falloff);
+                    (
+                        [dx / distance, dy / distance],
+                        light.intensity * attenuation,
+                    )
+                }
+            };
+            if influence <= f32::EPSILON {
+                continue;
+            }
+            if best
+                .as_ref()
+                .is_none_or(|(_, _, score): &([f32; 2], [f32; 3], f32)| influence > *score)
+            {
+                best = Some((direction, light.color, influence));
+            }
+        }
+        let rotation = finite_f64_to_f32(entity.rotation).to_radians();
+        let (sine, cosine) = rotation.sin_cos();
+        let (direction, color, influence) = best.unwrap_or(([0.0, -1.0], [0.0; 3], 0.0));
+        let local_direction = [
+            (direction[0] * cosine + direction[1] * sine)
+                * if entity.scale_x < 0.0 { -1.0 } else { 1.0 },
+            (-direction[0] * sine + direction[1] * cosine)
+                * if entity.scale_y < 0.0 { -1.0 } else { 1.0 },
+        ];
+        let packed_direction = local_direction
+            .map(|axis| (axis.clamp(-1.0, 1.0) * f32::from(i16::MAX)).round() as i16);
+        let packed_color =
+            color.map(|channel| (channel * influence.clamp(0.0, 1.0) * 255.0).round() as u8);
+        (
+            packed_direction,
+            packed_color,
+            (self.ambient * 255.0).round() as u8,
+        )
+    }
 }
 
 /// Draws the currently migrated 2D passes of an exported runtime through any
@@ -74,6 +204,7 @@ pub fn draw_engine_runtime_scene_2d<B: RenderBackend>(
     let origin_x = -runtime.camera.x as f32 * zoom;
     let origin_y = -runtime.camera.y as f32 * zoom;
     let mut stats = RuntimeScene2DStats::default();
+    let normal_lighting = RuntimeNormalLighting2D::from_world(&runtime.runtime_world);
 
     draw_grid_base(
         backend,
@@ -89,6 +220,7 @@ pub fn draw_engine_runtime_scene_2d<B: RenderBackend>(
         backend,
         &runtime.runtime_world,
         textures,
+        &normal_lighting,
         origin_x,
         origin_y,
         tile,
@@ -112,6 +244,7 @@ pub fn draw_engine_runtime_scene_2d<B: RenderBackend>(
         backend,
         &runtime.runtime_world,
         textures,
+        &normal_lighting,
         origin_x,
         origin_y,
         tile,
@@ -226,6 +359,24 @@ pub fn entity_sprite_path(entity: &GameObject) -> Option<&str> {
     .into_iter()
     .find_map(|key| sprite.get(key).and_then(serde_json::Value::as_str))
     .filter(|path| !path.trim().is_empty())
+}
+
+pub fn entity_normal_map_path(entity: &GameObject) -> Option<&str> {
+    entity
+        .get_component("NormalMap2D")
+        .and_then(|component| {
+            ["normal_texture", "normal_map", "texture"]
+                .into_iter()
+                .find_map(|key| component.get(key).and_then(serde_json::Value::as_str))
+        })
+        .or_else(|| {
+            entity.get_component("Material2D").and_then(|component| {
+                ["normal_texture", "normal_map"]
+                    .into_iter()
+                    .find_map(|key| component.get(key).and_then(serde_json::Value::as_str))
+            })
+        })
+        .filter(|path| !path.trim().is_empty())
 }
 
 pub fn entity_ui_sprite_path(entity: &GameObject) -> Option<&str> {
@@ -709,6 +860,7 @@ fn draw_entities<B: RenderBackend>(
     backend: &mut B,
     world: &RuntimeWorld,
     textures: &BTreeMap<String, RuntimeTexture2D>,
+    normal_lighting: &RuntimeNormalLighting2D,
     origin_x: f32,
     origin_y: f32,
     tile: f32,
@@ -770,7 +922,7 @@ fn draw_entities<B: RenderBackend>(
             rotation: (entity.rotation as f32).to_radians(),
             color: entity_tint(entity),
         };
-        let options = entity_sprite_options(entity);
+        let options = entity_sprite_options(entity, textures, normal_lighting);
         if let Some((binding, uv_rect)) = binding
             .and_then(|binding| entity_source_uv(entity, binding).map(|uv_rect| (binding, uv_rect)))
         {
@@ -790,6 +942,17 @@ fn draw_entities<B: RenderBackend>(
         }
         stats.entity_quads += 1;
         stats.textured_entities += usize::from(binding.is_some());
+        stats.normal_mapped_entities +=
+            usize::from(options.normal_texture_id.is_some() && options.normal_strength > 0);
+        stats.lit_entities += usize::from(
+            options.normal_texture_id.is_some()
+                && options.normal_strength > 0
+                && options
+                    .light_color
+                    .iter()
+                    .copied()
+                    .any(|channel| channel > 0),
+        );
     }
     Ok(())
 }
@@ -2480,7 +2643,11 @@ fn entity_blend_mode(entity: &GameObject) -> SpriteBlendMode {
         .unwrap_or_default()
 }
 
-fn entity_sprite_options(entity: &GameObject) -> SpriteDrawOptions {
+fn entity_sprite_options(
+    entity: &GameObject,
+    textures: &BTreeMap<String, RuntimeTexture2D>,
+    normal_lighting: &RuntimeNormalLighting2D,
+) -> SpriteDrawOptions {
     let mut options = SpriteDrawOptions {
         blend_mode: entity_blend_mode(entity),
         ..SpriteDrawOptions::default()
@@ -2501,6 +2668,30 @@ fn entity_sprite_options(entity: &GameObject) -> SpriteDrawOptions {
             options.effect_strength = (strength * 255.0).round() as u8;
             break;
         }
+    }
+    let normal_map = entity
+        .get_component("NormalMap2D")
+        .filter(|component| component.enabled);
+    let material = entity
+        .get_component("Material2D")
+        .filter(|component| component.enabled);
+    let lighting_enabled = normal_map.is_some()
+        || material.is_some_and(|material| material.get_bool("lighting", false));
+    let normal_path = entity_normal_map_path(entity);
+    if lighting_enabled && let Some(binding) = normal_path.and_then(|path| textures.get(path)) {
+        let strength = normal_map
+            .map(|normal| normal.get_f64("strength", 1.0))
+            .or_else(|| material.map(|material| material.get_f64("normal_strength", 1.0)))
+            .unwrap_or(1.0);
+        let (light_direction, light_color, ambient_light) =
+            normal_lighting.options_for_entity(entity);
+        options.normal_texture_id = Some(binding.texture_id);
+        options.normal_strength =
+            (finite_f64_to_f32(strength).clamp(0.0, 1.0) * 255.0).round() as u8;
+        options.normal_flip_y = normal_map.is_some_and(|normal| normal.get_bool("flip_y", false));
+        options.light_direction = light_direction;
+        options.light_color = light_color;
+        options.ambient_light = ambient_light;
     }
     options
 }
@@ -2562,9 +2753,64 @@ mod tests {
         material.set("effect_strength", json!(0.5));
         entity.add_component(material);
         assert_eq!(entity_blend_mode(&entity), SpriteBlendMode::Multiply);
-        let options = entity_sprite_options(&entity);
+        let world = RuntimeWorld::new(vec![entity.clone()]);
+        let lighting = RuntimeNormalLighting2D::from_world(&world);
+        let options = entity_sprite_options(&entity, &BTreeMap::new(), &lighting);
         assert_eq!(options.material_effect, SpriteMaterialEffect::Sepia);
         assert_eq!(options.effect_strength, 128);
+    }
+
+    #[test]
+    fn normal_map_component_resolves_texture_and_nearest_light_for_backend() {
+        let mut material_only = GameObject::new(0.0, 0.0, Some("Color only".to_string()));
+        let mut material = default_component("Material2D").unwrap();
+        material.set("texture", json!("assets/crate_color.png"));
+        material_only.add_component(material);
+        assert_eq!(
+            entity_normal_map_path(&material_only),
+            None,
+            "a Material2D base-color texture must never be mistaken for a normal map"
+        );
+
+        let mut sprite = GameObject::new(2.0, 1.0, Some("Lit crate".to_string()));
+        sprite.rotation = 90.0;
+        let mut normal = default_component("NormalMap2D").unwrap();
+        normal.set("normal_texture", json!("assets/crate_normal.png"));
+        normal.set("strength", json!(0.75));
+        normal.set("flip_y", json!(true));
+        sprite.add_component(normal);
+
+        let mut light = GameObject::new(4.0, 1.0, Some("Lamp".to_string()));
+        let mut light_component = default_component("Light2D").unwrap();
+        light_component.set("radius", json!(8.0));
+        light_component.set("intensity", json!(1.0));
+        light_component.set("color", json!([255, 128, 64]));
+        light.add_component(light_component);
+        let world = RuntimeWorld::new(vec![sprite.clone(), light]);
+        let lighting = RuntimeNormalLighting2D::from_world(&world);
+        let textures = BTreeMap::from([(
+            "assets/crate_normal.png".to_string(),
+            RuntimeTexture2D {
+                texture_id: 77,
+                width: 32,
+                height: 32,
+            },
+        )]);
+
+        assert_eq!(
+            entity_normal_map_path(&sprite),
+            Some("assets/crate_normal.png")
+        );
+        let options = entity_sprite_options(&sprite, &textures, &lighting);
+        assert_eq!(options.normal_texture_id, Some(77));
+        assert_eq!(options.normal_strength, 191);
+        assert!(options.normal_flip_y);
+        assert!(
+            options.light_direction[1] < -32_000,
+            "world-right light should rotate into local-up for a 90 degree sprite"
+        );
+        assert!(options.light_color[0] > options.light_color[1]);
+        assert!(options.ambient_light > 0);
     }
 
     #[test]

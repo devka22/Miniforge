@@ -1020,6 +1020,23 @@ void ViewportWidget::paintSceneOverlays(QPainter& painter)
             painter.drawPolygon(viewTransform().map(QPolygonF(entitySourceRect(entity))));
         }
 
+        if (entityHasComponent(entity, QStringLiteral("NormalMap2D"))) {
+            const QColor normalColor(105, 153, 255, selected ? 245 : 165);
+            painter.setPen(QPen(normalColor, selected ? 2.0 : 1.25));
+            painter.setBrush(QColor(92, 116, 255, selected ? 48 : 22));
+            painter.drawEllipse(center, selected ? 11 : 8, selected ? 11 : 8);
+            painter.drawLine(center, center + QPointF(7, -6));
+            painter.drawLine(center + QPointF(7, -6), center + QPointF(3, -5));
+            painter.drawLine(center + QPointF(7, -6), center + QPointF(6, -2));
+            painter.setPen(QColor(221, 230, 255, selected ? 250 : 190));
+            painter.drawText(QRectF(center + QPointF(-5, -7), QSizeF(10, 14)),
+                Qt::AlignCenter, QStringLiteral("N"));
+            if (selected) {
+                painter.drawText(QRectF(center + QPointF(15, -10), QSizeF(150, 20)),
+                    Qt::AlignLeft | Qt::AlignVCenter, tr("WGPU normal lighting"));
+            }
+        }
+
         if (entityHasComponent(entity, QStringLiteral("NavAgent"))) {
             painter.setPen(QPen(QColor(87, 219, 159, selected ? 230 : 125), 1.5, Qt::DotLine));
             painter.setBrush(Qt::NoBrush);

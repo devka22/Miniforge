@@ -3740,6 +3740,30 @@ impl EditorCore {
                     message: format!("Created physics and lighting occluder #{id}"),
                 }
             }
+            "object.create_lit_sprite2d" => {
+                let (x, y) = editor_spawn_position(game);
+                let id = game.spawn_scene_node(
+                    "LitSprite2D",
+                    &["SpriteRenderer", "Material2D", "NormalMap2D"],
+                    x,
+                    y,
+                );
+                if let Some(entity) = game.get_entity_by_id_mut(id) {
+                    if let Some(material) = entity.get_component_mut("Material2D") {
+                        material.set("lighting", json!(true));
+                    }
+                    if let Some(normal_map) = entity.get_component_mut("NormalMap2D") {
+                        normal_map.set_f64("strength", 1.0);
+                    }
+                }
+                game.sync_world();
+                CommandOutcome {
+                    changed: true,
+                    message: format!(
+                        "Created WGPU LitSprite2D #{id}; assign its color and normal textures in the Inspector"
+                    ),
+                }
+            }
             "object.create_area2d" => {
                 let id = game.spawn_scene_node("Area2D", &["Area2D"], 0.0, 0.0);
                 CommandOutcome {
@@ -5559,6 +5583,12 @@ fn default_command_descriptors() -> Vec<CommandDescriptor> {
         command(
             "object.create_shadow_occluder2d",
             "Create Shadow Occluder 2D",
+            "Lighting",
+            None,
+        ),
+        command(
+            "object.create_lit_sprite2d",
+            "Create Lit Sprite 2D",
             "Lighting",
             None,
         ),
@@ -8174,6 +8204,10 @@ mod tests {
                 "object.create_shadow_occluder2d",
                 &["StaticBody2D", "Collider2D", "ShadowCaster2D"],
             ),
+            (
+                "object.create_lit_sprite2d",
+                &["SpriteRenderer", "Material2D", "NormalMap2D"],
+            ),
             ("object.create_rigidbody2d", &["Rigidbody2D", "Collider2D"]),
             (
                 "object.create_static_body2d",
@@ -8244,6 +8278,21 @@ mod tests {
                     assert_eq!(gpu.get_usize("max_particles", 0), 8_192);
                     assert_eq!(fallback.get_usize("max_particles", 0), 8_192);
                     assert_eq!(fallback.get_f64("rate", 0.0), 128.0);
+                }
+                "object.create_lit_sprite2d" => {
+                    assert!(
+                        entity
+                            .get_component("Material2D")
+                            .unwrap()
+                            .get_bool("lighting", false)
+                    );
+                    assert_eq!(
+                        entity
+                            .get_component("NormalMap2D")
+                            .unwrap()
+                            .get_f64("strength", 0.0),
+                        1.0
+                    );
                 }
                 _ => {}
             }

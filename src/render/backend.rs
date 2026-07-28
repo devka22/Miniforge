@@ -6,6 +6,7 @@ pub use super::wgpu_backend::WgpuBackend;
 
 pub const BUILTIN_RADIAL_LIGHT_TEXTURE_ID: u64 = u64::MAX - 1;
 pub const BUILTIN_RADIAL_LIGHT_TEXTURE_SIZE: u32 = 64;
+pub const BUILTIN_FLAT_NORMAL_TEXTURE_ID: u64 = u64::MAX - 2;
 
 pub fn radial_light_texture_rgba8(size: u32) -> Vec<u8> {
     let size = size.clamp(2, 512);
@@ -165,6 +166,22 @@ pub struct SpriteDrawOptions {
     pub material_effect: SpriteMaterialEffect,
     #[serde(default = "default_effect_strength")]
     pub effect_strength: u8,
+    /// Optional tangent-space normal texture uploaded through the same texture
+    /// registry as the base sprite.
+    #[serde(default)]
+    pub normal_texture_id: Option<u64>,
+    #[serde(default)]
+    pub normal_strength: u8,
+    #[serde(default)]
+    pub normal_flip_y: bool,
+    /// Signed normalized XY direction packed into `i16` for stable serialized
+    /// backend commands.
+    #[serde(default)]
+    pub light_direction: [i16; 2],
+    #[serde(default = "default_light_color")]
+    pub light_color: [u8; 3],
+    #[serde(default = "default_ambient_light")]
+    pub ambient_light: u8,
 }
 
 impl Default for SpriteDrawOptions {
@@ -173,11 +190,25 @@ impl Default for SpriteDrawOptions {
             blend_mode: SpriteBlendMode::Alpha,
             material_effect: SpriteMaterialEffect::None,
             effect_strength: u8::MAX,
+            normal_texture_id: None,
+            normal_strength: 0,
+            normal_flip_y: false,
+            light_direction: [0, -i16::MAX],
+            light_color: [u8::MAX; 3],
+            ambient_light: u8::MAX,
         }
     }
 }
 
 fn default_effect_strength() -> u8 {
+    u8::MAX
+}
+
+fn default_light_color() -> [u8; 3] {
+    [u8::MAX; 3]
+}
+
+fn default_ambient_light() -> u8 {
     u8::MAX
 }
 

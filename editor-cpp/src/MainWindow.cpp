@@ -453,6 +453,7 @@ void MainWindow::createMenus()
         auto* lighting = menu->addMenu(QStringLiteral("Lighting & Raycast Shadows"));
         addMenuCommand(lighting, QStringLiteral("Point Light 2D"), QStringLiteral("object.create_point_light2d"));
         addMenuCommand(lighting, QStringLiteral("Spot Light 2D"), QStringLiteral("object.create_spot_light2d"));
+        addMenuCommand(lighting, QStringLiteral("Lit Sprite 2D (Normal Map)"), QStringLiteral("object.create_lit_sprite2d"));
         addMenuCommand(lighting, QStringLiteral("Shadow Occluder 2D"), QStringLiteral("object.create_shadow_occluder2d"));
 
         auto* ai = menu->addMenu(QStringLiteral("AI & Navigation"));
@@ -875,6 +876,7 @@ void MainWindow::createToolbar()
     auto* lightingMenu = addMenu->addMenu(QStringLiteral("Lighting & Raycast Shadows"));
     addCreateAction(lightingMenu, QStringLiteral("Point Light 2D"), QStringLiteral("object.create_point_light2d"));
     addCreateAction(lightingMenu, QStringLiteral("Spot Light 2D"), QStringLiteral("object.create_spot_light2d"));
+    addCreateAction(lightingMenu, QStringLiteral("Lit Sprite 2D (Normal Map)"), QStringLiteral("object.create_lit_sprite2d"));
     addCreateAction(lightingMenu, QStringLiteral("Shadow Occluder 2D"), QStringLiteral("object.create_shadow_occluder2d"));
 
     auto* aiMenu = addMenu->addMenu(QStringLiteral("AI & Navigation"));

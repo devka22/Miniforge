@@ -61,7 +61,14 @@ project rotated shadows from nearby `ShadowCaster2D` bounds under per-frame ligh
 The built-in texture is restored automatically with the rest of the GPU resources after device loss.
 `Material2D.shader` can select built-in grayscale, sepia, invert and hit-flash WGSL effects with a
 per-sprite strength. Effects travel as vertex data, so sprites with different effects still share
-the same stable texture/blend batch.
+the same stable texture/blend batch. `NormalMap2D` and lit `Material2D` sprites now bind a second
+linear texture view, select the most influential point or directional `Light2D`, rotate that light
+into sprite tangent space and apply per-pixel diffuse lighting in WGSL. Color textures retain an
+sRGB view while the same upload registry exposes normal maps without sRGB decoding. Normal texture
+changes participate in stable batching and diagnostics. The Create menu, Inspector workflow,
+viewport glyph and `lit_sprite` authoring preset provide the complete path without game code.
+`GpuParticles2D` also runs persistent storage-buffer simulation and instanced soft-particle
+rendering through WGPU compute, with a synchronized `ParticleEmitter` CPU fallback.
 Outdated and lost window surfaces are reconfigured and retried once; an occluded or
 still-unavailable surface skips the frame without poisoning the next one. A Metal surface smoke
 with the default 70×30 grid reduced 2,100 logical
@@ -73,10 +80,11 @@ mid-run and verifies that presentation resumes with `device_loss_recoveries=1`.
 The shared 2D composer now turns visible tilemap cells, atlas-backed entities, CPU particles and
 interactive UI geometry into backend-independent sprite quads with camera transforms, ordering and
 screen culling. The main exported runtime still uses Macroquad while retained-canvas hierarchy
-clipping, normal maps and higher-fidelity soft/cone shadows, render textures and custom hot-reloaded
-shader materials are completed. Projects should therefore leave `experimental_wgpu` disabled for
-exports that need the full production renderer. Project Settings keeps this migration state visible
-instead of hiding it in JSON.
+clipping and normal-mapped sprites are available in the WGPU preview; render textures,
+higher-fidelity soft/cone shadows and custom hot-reloaded shader materials remain migration work.
+Projects should therefore leave `experimental_wgpu` disabled for exports that need the full
+production renderer. Project Settings keeps this migration state visible instead of hiding it in
+JSON.
 
 ## Migration gates
 
@@ -93,12 +101,14 @@ The preview becomes playable only after these gates pass on macOS, Windows and L
    and CPU-particle quads are done. Additive point-light emission is done. Runtime inventory and
    ability grids now use clipped, virtualized rows with scriptless wheel scrolling, and ScrollBox
    text uses the same scissor path. Ambient/directional light and bounded geometric point-light
-   shadows are done; broader retained-canvas virtualization, chunk batching, normal maps,
-   higher-fidelity soft/cone shadows, GPU particles and render textures remain.
+   shadows are done. Tangent-space normal maps and persistent compute particles with CPU fallback
+   are done; broader retained-canvas virtualization, chunk batching, higher-fidelity soft/cone
+   shadows and render textures remain.
 4. WGSL materials, post-processing and hot reload with readable shader diagnostics. Four built-in
    per-sprite WGSL effects are done; custom material compilation, post-processing and hot reload
    remain.
-5. Compute paths for particles and tile visibility, each with a CPU fallback.
+5. Compute paths for particles and tile visibility, each with a CPU fallback. Persistent compute
+   particles and their synchronized CPU fallback are done; tile visibility remains.
 6. Golden-image parity tests against Macroquad plus GPU timing and repeated recovery stress.
 
 Once all gates pass, `backend: "auto"` may prefer `wgpu`; until then a playable export keeps

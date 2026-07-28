@@ -20,15 +20,16 @@ use serde::{Deserialize, Serialize};
 use crate::engine::error_handler::{MFResult, MiniForgeError};
 
 use super::backend::{
-    BUILTIN_RADIAL_LIGHT_TEXTURE_ID, BUILTIN_RADIAL_LIGHT_TEXTURE_SIZE, CameraCommand3D,
-    GraphicsApi, LightDrawCommand3D, MeshDrawCommand3D, ParticleDrawCommand, RenderBackend,
-    RenderDeviceCaps, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions, SpriteMaterialEffect,
-    SpriteRegionDrawCommand, TextDrawCommand, TextWrapMode, TilemapDrawCommand, UiDrawCommand,
-    radial_light_texture_rgba8,
+    BUILTIN_FLAT_NORMAL_TEXTURE_ID, BUILTIN_RADIAL_LIGHT_TEXTURE_ID,
+    BUILTIN_RADIAL_LIGHT_TEXTURE_SIZE, CameraCommand3D, GraphicsApi, LightDrawCommand3D,
+    MeshDrawCommand3D, ParticleDrawCommand, RenderBackend, RenderDeviceCaps, SpriteBlendMode,
+    SpriteDrawCommand, SpriteDrawOptions, SpriteMaterialEffect, SpriteRegionDrawCommand,
+    TextDrawCommand, TextWrapMode, TilemapDrawCommand, UiDrawCommand, radial_light_texture_rgba8,
 };
 
 const OFFSCREEN_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-const SPRITE_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+const SPRITE_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+const SPRITE_COLOR_VIEW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const DEFAULT_WIDTH: u32 = 1280;
 const DEFAULT_HEIGHT: u32 = 720;
 const INITIAL_VERTEX_BUFFER_BYTES: u64 = 64 * 1024;
@@ -43,10 +44,17 @@ struct VertexOut {
     @location(1) uv: vec2<f32>,
     @location(2) @interpolate(flat) material_effect: u32,
     @location(3) effect_strength: f32,
+    @location(4) normal_strength: f32,
+    @location(5) @interpolate(flat) normal_flip_y: u32,
+    @location(6) light_direction: vec2<f32>,
+    @location(7) light_color: vec3<f32>,
+    @location(8) ambient_light: f32,
 };
 
 @group(0) @binding(0) var sprite_texture: texture_2d<f32>;
 @group(0) @binding(1) var sprite_sampler: sampler;
+@group(1) @binding(0) var normal_texture: texture_2d<f32>;
+@group(1) @binding(1) var normal_sampler: sampler;
 
 @vertex
 fn vs_main(
@@ -55,6 +63,11 @@ fn vs_main(
     @location(2) uv: vec2<f32>,
     @location(3) material_effect: u32,
     @location(4) effect_strength: f32,
+    @location(5) normal_strength: f32,
+    @location(6) normal_flip_y: u32,
+    @location(7) light_direction: vec2<f32>,
+    @location(8) light_color: vec3<f32>,
+    @location(9) ambient_light: f32,
 ) -> VertexOut {
     var out: VertexOut;
     out.position = vec4<f32>(position, 0.0, 1.0);
@@ -62,7 +75,40 @@ fn vs_main(
     out.uv = uv;
     out.material_effect = material_effect;
     out.effect_strength = effect_strength;
+    out.normal_strength = normal_strength;
+    out.normal_flip_y = normal_flip_y;
+    out.light_direction = light_direction;
+    out.light_color = light_color;
+    out.ambient_light = ambient_light;
     return out;
+}
+
+fn apply_normal_lighting(sampled: vec4<f32>, in: VertexOut) -> vec4<f32> {
+    if in.normal_strength <= 0.0001 {
+        return sampled;
+    }
+    let sampled_normal = textureSample(normal_texture, normal_sampler, in.uv).xyz * 2.0 - 1.0;
+    let normal_y_sign = select(1.0, -1.0, in.normal_flip_y != 0u);
+    let tangent_normal = normalize(vec3<f32>(
+        sampled_normal.x * in.normal_strength,
+        sampled_normal.y * in.normal_strength * normal_y_sign,
+        max(sampled_normal.z, 0.02),
+    ));
+    let light_length = length(in.light_direction);
+    let normalized_light = in.light_direction / max(light_length, 0.0001);
+    let light_xy = select(
+        vec2<f32>(0.0, -1.0),
+        normalized_light,
+        light_length > 0.0001,
+    );
+    let light = normalize(vec3<f32>(light_xy, 0.72));
+    let diffuse = max(dot(tangent_normal, light), 0.0);
+    let illumination = clamp(
+        vec3<f32>(in.ambient_light) + in.light_color * diffuse,
+        vec3<f32>(0.0),
+        vec3<f32>(2.0),
+    );
+    return vec4<f32>(sampled.rgb * illumination, sampled.a);
 }
 
 fn apply_material_effect(
@@ -92,13 +138,15 @@ fn apply_material_effect(
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let sampled = textureSample(sprite_texture, sprite_sampler, in.uv) * in.color;
-    return apply_material_effect(sampled, in.material_effect, in.effect_strength);
+    let lit = apply_normal_lighting(sampled, in);
+    return apply_material_effect(lit, in.material_effect, in.effect_strength);
 }
 
 @fragment
 fn fs_premultiplied(in: VertexOut) -> @location(0) vec4<f32> {
     let sampled = textureSample(sprite_texture, sprite_sampler, in.uv) * in.color;
-    let effected = apply_material_effect(sampled, in.material_effect, in.effect_strength);
+    let lit = apply_normal_lighting(sampled, in);
+    let effected = apply_material_effect(lit, in.material_effect, in.effect_strength);
     return vec4<f32>(effected.rgb * effected.a, effected.a);
 }
 "#;
@@ -257,6 +305,11 @@ struct SpriteVertex {
     uv: [f32; 2],
     material_effect: u32,
     effect_strength: f32,
+    normal_strength: f32,
+    normal_flip_y: u32,
+    light_direction: [f32; 2],
+    light_color: [f32; 3],
+    ambient_light: f32,
 }
 
 #[repr(C)]
@@ -299,11 +352,18 @@ struct QueuedSprite {
     blend_mode: SpriteBlendMode,
     material_effect: SpriteMaterialEffect,
     effect_strength: u8,
+    normal_texture_id: u64,
+    normal_strength: u8,
+    normal_flip_y: bool,
+    light_direction: [i16; 2],
+    light_color: [u8; 3],
+    ambient_light: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SpriteBatch {
     texture_id: u64,
+    normal_texture_id: u64,
     clip_rect: [u32; 4],
     blend_mode: SpriteBlendMode,
     first_sprite: u32,
@@ -324,6 +384,8 @@ pub struct WgpuFrameDiagnostics {
     pub particle_compute_dispatches: usize,
     pub gpu_draw_calls: usize,
     pub texture_bind_changes: usize,
+    #[serde(default)]
+    pub normal_texture_bind_changes: usize,
     pub pipeline_changes: usize,
     pub vertex_bytes_uploaded: u64,
     pub vertex_buffer_capacity_bytes: u64,
@@ -334,17 +396,23 @@ pub struct WgpuFrameDiagnostics {
     pub device_loss_recoveries: u64,
 }
 
-const SPRITE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+const SPRITE_ATTRIBUTES: [wgpu::VertexAttribute; 10] = wgpu::vertex_attr_array![
     0 => Float32x2,
     1 => Float32x4,
     2 => Float32x2,
     3 => Uint32,
-    4 => Float32
+    4 => Float32,
+    5 => Float32,
+    6 => Uint32,
+    7 => Float32x2,
+    8 => Float32x3,
+    9 => Float32
 ];
 
 struct WgpuTexture {
     _texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
+    normal_bind_group: wgpu::BindGroup,
 }
 
 struct GpuParticleSystem {
@@ -388,6 +456,7 @@ struct WgpuState {
     surface: Option<wgpu::Surface<'static>>,
     surface_config: Option<wgpu::SurfaceConfiguration>,
     texture_layout: wgpu::BindGroupLayout,
+    normal_texture_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     white_texture: WgpuTexture,
     textures: HashMap<u64, WgpuTexture>,
@@ -544,7 +613,10 @@ impl WgpuBackend {
         height: u32,
         pixels: &[u8],
     ) -> MFResult<()> {
-        if matches!(texture_id, 0 | BUILTIN_RADIAL_LIGHT_TEXTURE_ID) {
+        if matches!(
+            texture_id,
+            0 | BUILTIN_RADIAL_LIGHT_TEXTURE_ID | BUILTIN_FLAT_NORMAL_TEXTURE_ID
+        ) {
             return Err(render_error(
                 "texture id is reserved for a MiniForge built-in texture",
             ));
@@ -566,6 +638,7 @@ impl WgpuBackend {
             &state.device,
             &state.queue,
             &state.texture_layout,
+            &state.normal_texture_layout,
             &state.sampler,
             width,
             height,
@@ -585,7 +658,10 @@ impl WgpuBackend {
     }
 
     pub fn remove_texture(&mut self, texture_id: u64) -> bool {
-        if texture_id == BUILTIN_RADIAL_LIGHT_TEXTURE_ID {
+        if matches!(
+            texture_id,
+            BUILTIN_RADIAL_LIGHT_TEXTURE_ID | BUILTIN_FLAT_NORMAL_TEXTURE_ID
+        ) {
             return false;
         }
         let removed_from_gpu = self
@@ -599,7 +675,12 @@ impl WgpuBackend {
     pub fn texture_count(&self) -> usize {
         self.texture_backups
             .keys()
-            .filter(|&&texture_id| texture_id != BUILTIN_RADIAL_LIGHT_TEXTURE_ID)
+            .filter(|&&texture_id| {
+                !matches!(
+                    texture_id,
+                    BUILTIN_RADIAL_LIGHT_TEXTURE_ID | BUILTIN_FLAT_NORMAL_TEXTURE_ID
+                )
+            })
             .count()
     }
 
@@ -773,6 +854,28 @@ impl WgpuBackend {
                 },
             ],
         });
+        let normal_texture_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("MiniForge linear normal texture layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("MiniForge pixel-perfect sprite sampler"),
             mag_filter: wgpu::FilterMode::Nearest,
@@ -786,6 +889,7 @@ impl WgpuBackend {
             &device,
             &queue,
             &texture_layout,
+            &normal_texture_layout,
             &sampler,
             1,
             1,
@@ -794,7 +898,7 @@ impl WgpuBackend {
         );
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("MiniForge wgpu 2D pipeline layout"),
-            bind_group_layouts: &[Some(&texture_layout)],
+            bind_group_layouts: &[Some(&texture_layout), Some(&normal_texture_layout)],
             immediate_size: 0,
         });
         let pipelines = [
@@ -952,6 +1056,7 @@ impl WgpuBackend {
                 surface,
                 surface_config,
                 texture_layout,
+                normal_texture_layout,
                 sampler,
                 white_texture,
                 textures: HashMap::new(),
@@ -1056,6 +1161,13 @@ impl WgpuBackend {
                 width: BUILTIN_RADIAL_LIGHT_TEXTURE_SIZE,
                 height: BUILTIN_RADIAL_LIGHT_TEXTURE_SIZE,
                 pixels: radial_light_texture_rgba8(BUILTIN_RADIAL_LIGHT_TEXTURE_SIZE),
+            });
+        self.texture_backups
+            .entry(BUILTIN_FLAT_NORMAL_TEXTURE_ID)
+            .or_insert_with(|| WgpuTextureBackup {
+                width: 1,
+                height: 1,
+                pixels: vec![128, 128, 255, 255],
             });
     }
 
@@ -1270,6 +1382,7 @@ impl WgpuBackend {
                         pass.set_vertex_buffer(0, state.vertex_buffer.slice(..vertex_bytes));
                         let mut bound_pipeline = None;
                         let mut bound_texture = None;
+                        let mut bound_normal_texture = None;
                         for batch in &batches {
                             if bound_pipeline != Some(batch.blend_mode) {
                                 let pipeline = state
@@ -1286,6 +1399,15 @@ impl WgpuBackend {
                                     .unwrap_or(&state.white_texture);
                                 pass.set_bind_group(0, &texture.bind_group, &[]);
                                 bound_texture = Some(batch.texture_id);
+                            }
+                            if bound_normal_texture != Some(batch.normal_texture_id) {
+                                let normal_texture = state
+                                    .textures
+                                    .get(&batch.normal_texture_id)
+                                    .or_else(|| state.textures.get(&BUILTIN_FLAT_NORMAL_TEXTURE_ID))
+                                    .unwrap_or(&state.white_texture);
+                                pass.set_bind_group(1, &normal_texture.normal_bind_group, &[]);
+                                bound_normal_texture = Some(batch.normal_texture_id);
                             }
                             let [x, y, clip_width, clip_height] = batch.clip_rect;
                             pass.set_scissor_rect(x, y, clip_width, clip_height);
@@ -1357,6 +1479,7 @@ impl WgpuBackend {
             particle_compute_dispatches,
             gpu_draw_calls: batches.len() + self.particles.len() + usize::from(has_text),
             texture_bind_changes: texture_bind_changes(&batches),
+            normal_texture_bind_changes: normal_texture_bind_changes(&batches),
             pipeline_changes: pipeline_changes(&batches)
                 + self.particles.len()
                 + usize::from(has_text),
@@ -1450,6 +1573,14 @@ impl RenderBackend for WgpuBackend {
             blend_mode: options.blend_mode,
             material_effect: options.material_effect,
             effect_strength: options.effect_strength,
+            normal_texture_id: options
+                .normal_texture_id
+                .unwrap_or(BUILTIN_FLAT_NORMAL_TEXTURE_ID),
+            normal_strength: options.normal_strength,
+            normal_flip_y: options.normal_flip_y,
+            light_direction: options.light_direction,
+            light_color: options.light_color,
+            ambient_light: options.ambient_light,
         })
     }
 
@@ -1482,6 +1613,14 @@ impl RenderBackend for WgpuBackend {
             blend_mode: options.blend_mode,
             material_effect: options.material_effect,
             effect_strength: options.effect_strength,
+            normal_texture_id: options
+                .normal_texture_id
+                .unwrap_or(BUILTIN_FLAT_NORMAL_TEXTURE_ID),
+            normal_strength: options.normal_strength,
+            normal_flip_y: options.normal_flip_y,
+            light_direction: options.light_direction,
+            light_color: options.light_color,
+            ambient_light: options.ambient_light,
         })
     }
 
@@ -1974,6 +2113,7 @@ fn restore_texture_backups(
             &state.device,
             &state.queue,
             &state.texture_layout,
+            &state.normal_texture_layout,
             &state.sampler,
             backup.width,
             backup.height,
@@ -2004,6 +2144,7 @@ fn build_sprite_batches(sprites: &[QueuedSprite], width: u32, height: u32) -> Ve
         };
         if let Some(batch) = batches.last_mut()
             && batch.texture_id == queued.sprite.texture_id
+            && batch.normal_texture_id == queued.normal_texture_id
             && batch.clip_rect == clip_rect
             && batch.blend_mode == queued.blend_mode
             && batch.first_sprite + batch.sprite_count == index as u32
@@ -2013,6 +2154,7 @@ fn build_sprite_batches(sprites: &[QueuedSprite], width: u32, height: u32) -> Ve
         }
         batches.push(SpriteBatch {
             texture_id: queued.sprite.texture_id,
+            normal_texture_id: queued.normal_texture_id,
             clip_rect,
             blend_mode: queued.blend_mode,
             first_sprite: index as u32,
@@ -2026,6 +2168,19 @@ fn texture_bind_changes(batches: &[SpriteBatch]) -> usize {
     batches
         .iter()
         .map(|batch| batch.texture_id)
+        .fold((None, 0usize), |(previous, count), texture_id| {
+            (
+                Some(texture_id),
+                count + usize::from(previous != Some(texture_id)),
+            )
+        })
+        .1
+}
+
+fn normal_texture_bind_changes(batches: &[SpriteBatch]) -> usize {
+    batches
+        .iter()
+        .map(|batch| batch.normal_texture_id)
         .fold((None, 0usize), |(previous, count), texture_id| {
             (
                 Some(texture_id),
@@ -2079,7 +2234,8 @@ fn create_target(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Textur
 fn create_sampled_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    layout: &wgpu::BindGroupLayout,
+    color_layout: &wgpu::BindGroupLayout,
+    normal_layout: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
     width: u32,
     height: u32,
@@ -2098,7 +2254,7 @@ fn create_sampled_texture(
         dimension: wgpu::TextureDimension::D2,
         format: SPRITE_TEXTURE_FORMAT,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
+        view_formats: &[SPRITE_COLOR_VIEW_FORMAT],
     });
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
@@ -2119,14 +2275,37 @@ fn create_sampled_texture(
             depth_or_array_layers: 1,
         },
     );
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let color_view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("MiniForge sRGB color texture view"),
+        format: Some(SPRITE_COLOR_VIEW_FORMAT),
+        ..Default::default()
+    });
+    let normal_view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("MiniForge linear normal texture view"),
+        format: Some(SPRITE_TEXTURE_FORMAT),
+        ..Default::default()
+    });
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(label),
-        layout,
+        layout: color_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: wgpu::BindingResource::TextureView(&view),
+                resource: wgpu::BindingResource::TextureView(&color_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    });
+    let normal_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("MiniForge linear normal texture"),
+        layout: normal_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&normal_view),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
@@ -2137,6 +2316,7 @@ fn create_sampled_texture(
     WgpuTexture {
         _texture: texture,
         bind_group,
+        normal_bind_group,
     }
 }
 
@@ -2176,6 +2356,13 @@ fn sprites_to_vertices(commands: &[QueuedSprite], width: u32, height: u32) -> Ve
             uv: uvs[index],
             material_effect: queued.material_effect as u32,
             effect_strength: f32::from(queued.effect_strength) / 255.0,
+            normal_strength: f32::from(queued.normal_strength) / 255.0,
+            normal_flip_y: u32::from(queued.normal_flip_y),
+            light_direction: queued
+                .light_direction
+                .map(|axis| f32::from(axis) / f32::from(i16::MAX)),
+            light_color: queued.light_color.map(|channel| f32::from(channel) / 255.0),
+            ambient_light: f32::from(queued.ambient_light) / 255.0,
         };
         vertices.extend([
             vertex(0),
@@ -2223,6 +2410,12 @@ mod tests {
             blend_mode: SpriteBlendMode::Alpha,
             material_effect: SpriteMaterialEffect::None,
             effect_strength: u8::MAX,
+            normal_texture_id: BUILTIN_FLAT_NORMAL_TEXTURE_ID,
+            normal_strength: 0,
+            normal_flip_y: false,
+            light_direction: [0, -i16::MAX],
+            light_color: [u8::MAX; 3],
+            ambient_light: u8::MAX,
         }
     }
 
@@ -2292,6 +2485,12 @@ mod tests {
                 blend_mode: SpriteBlendMode::Alpha,
                 material_effect: SpriteMaterialEffect::Sepia,
                 effect_strength: 128,
+                normal_texture_id: BUILTIN_FLAT_NORMAL_TEXTURE_ID,
+                normal_strength: 192,
+                normal_flip_y: true,
+                light_direction: [i16::MAX, 0],
+                light_color: [255, 128, 64],
+                ambient_light: 32,
             }],
             100,
             100,
@@ -2306,6 +2505,11 @@ mod tests {
             SpriteMaterialEffect::Sepia as u32
         );
         assert!((vertices[0].effect_strength - 128.0 / 255.0).abs() < 0.001);
+        assert!((vertices[0].normal_strength - 192.0 / 255.0).abs() < 0.001);
+        assert_eq!(vertices[0].normal_flip_y, 1);
+        assert_eq!(vertices[0].light_direction, [1.0, 0.0]);
+        assert_eq!(vertices[0].light_color, [1.0, 128.0 / 255.0, 64.0 / 255.0]);
+        assert!((vertices[0].ambient_light - 32.0 / 255.0).abs() < 0.001);
     }
 
     #[test]
@@ -2347,6 +2551,18 @@ mod tests {
                 SpriteBlendMode::Alpha,
             ]
         );
+    }
+
+    #[test]
+    fn sprite_batches_split_normal_bindings_without_reordering_color_textures() {
+        let first = queued(8, None);
+        let mut lit = queued(8, None);
+        lit.normal_texture_id = 91;
+        let batches = build_sprite_batches(&[first, lit, lit, first], 100, 100);
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[1].sprite_count, 2);
+        assert_eq!(texture_bind_changes(&batches), 1);
+        assert_eq!(normal_texture_bind_changes(&batches), 3);
     }
 
     #[test]
