@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use miniforge::render::backend::{RenderBackend, SpriteDrawCommand, WgpuBackend};
+use miniforge::render::backend::{
+    RenderBackend, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions, WgpuBackend,
+};
 use miniforge::render::runtime_scene_2d::{
     RuntimeTexture2D, draw_engine_runtime_scene_2d, entity_sprite_path,
 };
@@ -220,7 +222,7 @@ impl PreviewApp {
                 || self.frames >= target.max(1).saturating_mul(120)
         }) {
             println!(
-                "MINIFORGE_WGPU_SURFACE_{} frames={} presented={} skipped={} reconfigured={} surface_loss_recoveries={} device_loss_recoveries={} logical_draws={} gpu_draws={} binds={} vertex_bytes={} entities={} textures={} api={:?}",
+                "MINIFORGE_WGPU_SURFACE_{} frames={} presented={} skipped={} reconfigured={} surface_loss_recoveries={} device_loss_recoveries={} logical_draws={} gpu_draws={} binds={} pipelines={} vertex_bytes={} entities={} textures={} api={:?}",
                 if backend.submitted_frames >= self.autotest_frames.unwrap_or(1).max(1) {
                     "OK"
                 } else {
@@ -235,6 +237,7 @@ impl PreviewApp {
                 backend.last_frame_diagnostics().logical_draw_calls,
                 backend.last_frame_diagnostics().gpu_draw_calls,
                 backend.last_frame_diagnostics().texture_bind_changes,
+                backend.last_frame_diagnostics().pipeline_changes,
                 backend.last_frame_diagnostics().vertex_bytes_uploaded,
                 self.runtime
                     .as_ref()
@@ -324,6 +327,32 @@ fn draw_renderer_diagnostic(
             color: [1.0, 0.82, 0.28, 1.0],
         })
         .map_err(|error| error.to_string())?;
+    for (index, blend_mode) in [
+        SpriteBlendMode::Alpha,
+        SpriteBlendMode::Additive,
+        SpriteBlendMode::Multiply,
+        SpriteBlendMode::Screen,
+        SpriteBlendMode::PremultipliedAlpha,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        backend
+            .draw_sprite_with_options(
+                SpriteDrawCommand {
+                    entity_id: 1_100 + index as u64,
+                    texture_id: 0,
+                    x: width * 0.5 - 150.0 + index as f32 * 60.0,
+                    y: height - 58.0,
+                    width: 52.0,
+                    height: 38.0,
+                    rotation: 0.0,
+                    color: [0.25 + index as f32 * 0.08, 0.72, 0.95, 0.7],
+                },
+                SpriteDrawOptions { blend_mode },
+            )
+            .map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 

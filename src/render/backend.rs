@@ -74,6 +74,46 @@ pub struct SpriteRegionDrawCommand {
     pub clip_rect: Option<[u32; 4]>,
 }
 
+/// Stable, backend-independent blend modes for sprites, UI geometry and particles.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SpriteBlendMode {
+    /// Conventional straight-alpha compositing.
+    #[default]
+    Alpha,
+    /// Alpha compositing after the backend premultiplies the fragment color.
+    PremultipliedAlpha,
+    /// Adds the alpha-weighted source color to the destination.
+    Additive,
+    /// Multiplies the destination while preserving partial-alpha coverage.
+    Multiply,
+    /// Brightens the destination with a screen-style effect.
+    Screen,
+}
+
+impl SpriteBlendMode {
+    pub fn from_name(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+        match normalized.as_str() {
+            "alpha" | "normal" | "translucent" => Some(Self::Alpha),
+            "premultiplied" | "premultiplied_alpha" | "premultipliedalpha" => {
+                Some(Self::PremultipliedAlpha)
+            }
+            "add" | "additive" => Some(Self::Additive),
+            "multiply" | "multiplicative" => Some(Self::Multiply),
+            "screen" => Some(Self::Screen),
+            _ => None,
+        }
+    }
+}
+
+/// Optional sprite render state kept separate from geometry for compatibility.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SpriteDrawOptions {
+    #[serde(default)]
+    pub blend_mode: SpriteBlendMode,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TilemapDrawCommand {
     pub tilemap_id: u64,
@@ -177,8 +217,22 @@ pub trait RenderBackend {
     fn end_frame(&mut self) -> MFResult<()>;
     fn resize(&mut self, width: u32, height: u32) -> MFResult<()>;
     fn draw_sprite(&mut self, cmd: SpriteDrawCommand) -> MFResult<()>;
+    fn draw_sprite_with_options(
+        &mut self,
+        cmd: SpriteDrawCommand,
+        _options: SpriteDrawOptions,
+    ) -> MFResult<()> {
+        self.draw_sprite(cmd)
+    }
     fn draw_sprite_region(&mut self, cmd: SpriteRegionDrawCommand) -> MFResult<()> {
         self.draw_sprite(cmd.sprite)
+    }
+    fn draw_sprite_region_with_options(
+        &mut self,
+        cmd: SpriteRegionDrawCommand,
+        _options: SpriteDrawOptions,
+    ) -> MFResult<()> {
+        self.draw_sprite_region(cmd)
     }
     fn draw_tilemap(&mut self, cmd: TilemapDrawCommand) -> MFResult<()>;
     fn draw_particles(&mut self, cmd: ParticleDrawCommand) -> MFResult<()>;
@@ -386,5 +440,31 @@ impl RenderBackend for MacroquadBackend {
 
     fn draw_light_3d(&mut self, _cmd: LightDrawCommand3D) -> MFResult<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SpriteBlendMode;
+
+    #[test]
+    fn sprite_blend_mode_accepts_editor_and_asset_aliases() {
+        assert_eq!(
+            SpriteBlendMode::from_name("premultiplied-alpha"),
+            Some(SpriteBlendMode::PremultipliedAlpha)
+        );
+        assert_eq!(
+            SpriteBlendMode::from_name("add"),
+            Some(SpriteBlendMode::Additive)
+        );
+        assert_eq!(
+            SpriteBlendMode::from_name("multiplicative"),
+            Some(SpriteBlendMode::Multiply)
+        );
+        assert_eq!(
+            SpriteBlendMode::from_name("screen"),
+            Some(SpriteBlendMode::Screen)
+        );
+        assert_eq!(SpriteBlendMode::from_name("custom_shader"), None);
     }
 }

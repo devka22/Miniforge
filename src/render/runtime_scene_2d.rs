@@ -10,7 +10,9 @@ use crate::map::grid::Grid;
 use crate::runtime::engine_runtime::EngineRuntime;
 use crate::systems::particle_system::ParticleSystem;
 
-use super::backend::{RenderBackend, SpriteDrawCommand, SpriteRegionDrawCommand};
+use super::backend::{
+    RenderBackend, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions, SpriteRegionDrawCommand,
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeTexture2D {
@@ -404,19 +406,25 @@ fn draw_entities<B: RenderBackend>(
             rotation: (entity.rotation as f32).to_radians(),
             color: entity_tint(entity),
         };
+        let options = SpriteDrawOptions {
+            blend_mode: entity_blend_mode(entity),
+        };
         if let Some((binding, uv_rect)) = binding
             .and_then(|binding| entity_source_uv(entity, binding).map(|uv_rect| (binding, uv_rect)))
         {
-            backend.draw_sprite_region(SpriteRegionDrawCommand {
-                sprite: SpriteDrawCommand {
-                    texture_id: binding.texture_id,
-                    ..sprite
+            backend.draw_sprite_region_with_options(
+                SpriteRegionDrawCommand {
+                    sprite: SpriteDrawCommand {
+                        texture_id: binding.texture_id,
+                        ..sprite
+                    },
+                    uv_rect,
+                    clip_rect: None,
                 },
-                uv_rect,
-                clip_rect: None,
-            })?;
+                options,
+            )?;
         } else {
-            backend.draw_sprite(sprite)?;
+            backend.draw_sprite_with_options(sprite, options)?;
         }
         stats.entity_quads += 1;
         stats.textured_entities += usize::from(binding.is_some());
@@ -476,6 +484,12 @@ fn draw_particles<B: RenderBackend>(
         let Some(emitter) = world.entity(*emitter_id) else {
             continue;
         };
+        let blend_mode = emitter
+            .get_component("ParticleEmitter")
+            .and_then(|component| component.get("blend_mode"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(SpriteBlendMode::from_name)
+            .unwrap_or(SpriteBlendMode::Alpha);
         for (index, particle) in state.particles.iter().enumerate() {
             let size = (particle.size as f32 * zoom).max(1.0);
             let x = origin_x + emitter.x as f32 * tile + (particle.x - emitter.x) as f32 * zoom
@@ -488,7 +502,7 @@ fn draw_particles<B: RenderBackend>(
             let particle_id = 8_000_000_000u64
                 .saturating_add(emitter_id.saturating_mul(1_000_000))
                 .saturating_add(index as u64);
-            draw_quad(
+            draw_quad_with_options(
                 backend,
                 particle_id,
                 0,
@@ -497,6 +511,7 @@ fn draw_particles<B: RenderBackend>(
                 size,
                 size,
                 particle.color.map(|channel| channel as f32 / 255.0),
+                SpriteDrawOptions { blend_mode },
             )?;
             stats.particle_quads += 1;
         }
@@ -610,19 +625,47 @@ fn draw_quad<B: RenderBackend>(
     height: f32,
     color: [f32; 4],
 ) -> MFResult<()> {
-    if width <= 0.0 || height <= 0.0 {
-        return Ok(());
-    }
-    backend.draw_sprite(SpriteDrawCommand {
+    draw_quad_with_options(
+        backend,
         entity_id,
         texture_id,
         x,
         y,
         width,
         height,
-        rotation: 0.0,
         color,
-    })
+        SpriteDrawOptions::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_quad_with_options<B: RenderBackend>(
+    backend: &mut B,
+    entity_id: u64,
+    texture_id: u64,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    color: [f32; 4],
+    options: SpriteDrawOptions,
+) -> MFResult<()> {
+    if width <= 0.0 || height <= 0.0 {
+        return Ok(());
+    }
+    backend.draw_sprite_with_options(
+        SpriteDrawCommand {
+            entity_id,
+            texture_id,
+            x,
+            y,
+            width,
+            height,
+            rotation: 0.0,
+            color,
+        },
+        options,
+    )
 }
 
 fn visible_tile_bounds(
@@ -663,6 +706,19 @@ fn entity_sorting_order(entity: &GameObject) -> i64 {
         .unwrap_or(0)
 }
 
+fn entity_blend_mode(entity: &GameObject) -> SpriteBlendMode {
+    ["Material2D", "SpriteRenderer"]
+        .into_iter()
+        .filter_map(|component_type| entity.get_component(component_type))
+        .find_map(|component| {
+            component
+                .get("blend_mode")
+                .and_then(serde_json::Value::as_str)
+                .and_then(SpriteBlendMode::from_name)
+        })
+        .unwrap_or_default()
+}
+
 fn entity_tint(entity: &GameObject) -> [f32; 4] {
     let fallback = if entity.tag == "Player" {
         [0.28, 0.76, 1.0, 1.0]
@@ -700,6 +756,21 @@ mod tests {
     use crate::entities::game_object::GameObject;
     use crate::render::backend::MacroquadBackend;
     use serde_json::json;
+
+    #[test]
+    fn material_and_sprite_components_select_reusable_blend_modes() {
+        let mut entity = GameObject::new(0.0, 0.0, Some("Effect".to_string()));
+        entity
+            .get_component_mut("SpriteRenderer")
+            .unwrap()
+            .set("blend_mode", json!("screen"));
+        assert_eq!(entity_blend_mode(&entity), SpriteBlendMode::Screen);
+
+        let mut material = default_component("Material2D").unwrap();
+        material.set("blend_mode", json!("multiply"));
+        entity.add_component(material);
+        assert_eq!(entity_blend_mode(&entity), SpriteBlendMode::Multiply);
+    }
 
     #[test]
     fn runtime_scene_extraction_is_backend_agnostic_and_deterministic() {

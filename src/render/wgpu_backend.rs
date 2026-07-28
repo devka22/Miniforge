@@ -16,8 +16,8 @@ use crate::engine::error_handler::{MFResult, MiniForgeError};
 
 use super::backend::{
     CameraCommand3D, GraphicsApi, LightDrawCommand3D, MeshDrawCommand3D, ParticleDrawCommand,
-    RenderBackend, RenderDeviceCaps, SpriteDrawCommand, SpriteRegionDrawCommand,
-    TilemapDrawCommand, UiDrawCommand,
+    RenderBackend, RenderDeviceCaps, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions,
+    SpriteRegionDrawCommand, TilemapDrawCommand, UiDrawCommand,
 };
 
 const OFFSCREEN_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -53,6 +53,12 @@ fn vs_main(
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     return textureSample(sprite_texture, sprite_sampler, in.uv) * in.color;
 }
+
+@fragment
+fn fs_premultiplied(in: VertexOut) -> @location(0) vec4<f32> {
+    let sampled = textureSample(sprite_texture, sprite_sampler, in.uv) * in.color;
+    return vec4<f32>(sampled.rgb * sampled.a, sampled.a);
+}
 "#;
 
 #[repr(C)]
@@ -68,12 +74,14 @@ struct QueuedSprite {
     sprite: SpriteDrawCommand,
     uv_rect: [f32; 4],
     clip_rect: Option<[u32; 4]>,
+    blend_mode: SpriteBlendMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SpriteBatch {
     texture_id: u64,
     clip_rect: [u32; 4],
+    blend_mode: SpriteBlendMode,
     first_sprite: u32,
     sprite_count: u32,
 }
@@ -86,6 +94,7 @@ pub struct WgpuFrameDiagnostics {
     pub culled_sprites: usize,
     pub gpu_draw_calls: usize,
     pub texture_bind_changes: usize,
+    pub pipeline_changes: usize,
     pub vertex_bytes_uploaded: u64,
     pub vertex_buffer_capacity_bytes: u64,
     pub vertex_buffer_reallocations: u64,
@@ -120,7 +129,7 @@ struct WgpuState {
     device: wgpu::Device,
     device_loss_rx: mpsc::Receiver<DeviceLossNotice>,
     queue: wgpu::Queue,
-    pipeline: wgpu::RenderPipeline,
+    pipelines: HashMap<SpriteBlendMode, wgpu::RenderPipeline>,
     target: Option<wgpu::Texture>,
     surface: Option<wgpu::Surface<'static>>,
     surface_config: Option<wgpu::SurfaceConfiguration>,
@@ -512,39 +521,27 @@ impl WgpuBackend {
             bind_group_layouts: &[Some(&texture_layout)],
             immediate_size: 0,
         });
-        let vertex_layout = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<SpriteVertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &SPRITE_ATTRIBUTES,
-        };
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("MiniForge wgpu 2D sprite pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[Some(vertex_layout)],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipelines = [
+            SpriteBlendMode::Alpha,
+            SpriteBlendMode::PremultipliedAlpha,
+            SpriteBlendMode::Additive,
+            SpriteBlendMode::Multiply,
+            SpriteBlendMode::Screen,
+        ]
+        .into_iter()
+        .map(|blend_mode| {
+            (
+                blend_mode,
+                create_sprite_pipeline(
+                    &device,
+                    &shader,
+                    &pipeline_layout,
+                    target_format,
+                    blend_mode,
+                ),
+            )
+        })
+        .collect();
         let target = surface
             .is_none()
             .then(|| create_target(&device, self.width, self.height));
@@ -565,7 +562,7 @@ impl WgpuBackend {
                 device,
                 device_loss_rx,
                 queue,
-                pipeline,
+                pipelines,
                 target,
                 surface,
                 surface_config,
@@ -816,10 +813,18 @@ impl WgpuBackend {
                         ..Default::default()
                     });
                     if !batches.is_empty() {
-                        pass.set_pipeline(&state.pipeline);
                         pass.set_vertex_buffer(0, state.vertex_buffer.slice(..vertex_bytes));
+                        let mut bound_pipeline = None;
                         let mut bound_texture = None;
                         for batch in &batches {
+                            if bound_pipeline != Some(batch.blend_mode) {
+                                let pipeline = state
+                                    .pipelines
+                                    .get(&batch.blend_mode)
+                                    .expect("every sprite blend mode must have a pipeline");
+                                pass.set_pipeline(pipeline);
+                                bound_pipeline = Some(batch.blend_mode);
+                            }
                             if bound_texture != Some(batch.texture_id) {
                                 let texture = state
                                     .textures
@@ -867,6 +872,7 @@ impl WgpuBackend {
             culled_sprites: self.culled_sprites,
             gpu_draw_calls: batches.len(),
             texture_bind_changes: texture_bind_changes(&batches),
+            pipeline_changes: pipeline_changes(&batches),
             vertex_bytes_uploaded: vertex_bytes,
             vertex_buffer_capacity_bytes,
             vertex_buffer_reallocations: self.vertex_buffer_reallocations,
@@ -936,6 +942,14 @@ impl RenderBackend for WgpuBackend {
     }
 
     fn draw_sprite(&mut self, command: SpriteDrawCommand) -> MFResult<()> {
+        self.draw_sprite_with_options(command, SpriteDrawOptions::default())
+    }
+
+    fn draw_sprite_with_options(
+        &mut self,
+        command: SpriteDrawCommand,
+        options: SpriteDrawOptions,
+    ) -> MFResult<()> {
         if !self.frame_open {
             return Err(render_error("wgpu draw_sprite called outside a frame"));
         }
@@ -943,10 +957,19 @@ impl RenderBackend for WgpuBackend {
             sprite: command,
             uv_rect: [0.0, 0.0, 1.0, 1.0],
             clip_rect: None,
+            blend_mode: options.blend_mode,
         })
     }
 
     fn draw_sprite_region(&mut self, command: SpriteRegionDrawCommand) -> MFResult<()> {
+        self.draw_sprite_region_with_options(command, SpriteDrawOptions::default())
+    }
+
+    fn draw_sprite_region_with_options(
+        &mut self,
+        command: SpriteRegionDrawCommand,
+        options: SpriteDrawOptions,
+    ) -> MFResult<()> {
         if !self.frame_open {
             return Err(render_error(
                 "wgpu draw_sprite_region called outside a frame",
@@ -964,6 +987,7 @@ impl RenderBackend for WgpuBackend {
             sprite: command.sprite,
             uv_rect: command.uv_rect.map(|value| value.clamp(0.0, 1.0)),
             clip_rect: command.clip_rect,
+            blend_mode: options.blend_mode,
         })
     }
 
@@ -993,6 +1017,93 @@ impl RenderBackend for WgpuBackend {
 
     fn draw_light_3d(&mut self, _command: LightDrawCommand3D) -> MFResult<()> {
         Ok(())
+    }
+}
+
+fn create_sprite_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    target_format: wgpu::TextureFormat,
+    blend_mode: SpriteBlendMode,
+) -> wgpu::RenderPipeline {
+    let (label, fragment_entry) = match blend_mode {
+        SpriteBlendMode::Alpha => ("MiniForge sprite alpha pipeline", "fs_main"),
+        SpriteBlendMode::PremultipliedAlpha => (
+            "MiniForge sprite premultiplied pipeline",
+            "fs_premultiplied",
+        ),
+        SpriteBlendMode::Additive => ("MiniForge sprite additive pipeline", "fs_main"),
+        SpriteBlendMode::Multiply => ("MiniForge sprite multiply pipeline", "fs_premultiplied"),
+        SpriteBlendMode::Screen => ("MiniForge sprite screen pipeline", "fs_premultiplied"),
+    };
+    let vertex_layout = wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<SpriteVertex>() as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &SPRITE_ATTRIBUTES,
+    };
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[Some(vertex_layout)],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some(fragment_entry),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: target_format,
+                blend: Some(sprite_blend_state(blend_mode)),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+fn sprite_blend_state(blend_mode: SpriteBlendMode) -> wgpu::BlendState {
+    match blend_mode {
+        SpriteBlendMode::Alpha => wgpu::BlendState::ALPHA_BLENDING,
+        SpriteBlendMode::PremultipliedAlpha => wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        SpriteBlendMode::Additive => wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::SrcAlpha,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        },
+        SpriteBlendMode::Multiply => wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Dst,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent::OVER,
+        },
+        SpriteBlendMode::Screen => wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent::OVER,
+        },
     }
 }
 
@@ -1046,6 +1157,7 @@ fn build_sprite_batches(sprites: &[QueuedSprite], width: u32, height: u32) -> Ve
         if let Some(batch) = batches.last_mut()
             && batch.texture_id == queued.sprite.texture_id
             && batch.clip_rect == clip_rect
+            && batch.blend_mode == queued.blend_mode
             && batch.first_sprite + batch.sprite_count == index as u32
         {
             batch.sprite_count += 1;
@@ -1054,6 +1166,7 @@ fn build_sprite_batches(sprites: &[QueuedSprite], width: u32, height: u32) -> Ve
         batches.push(SpriteBatch {
             texture_id: queued.sprite.texture_id,
             clip_rect,
+            blend_mode: queued.blend_mode,
             first_sprite: index as u32,
             sprite_count: 1,
         });
@@ -1069,6 +1182,19 @@ fn texture_bind_changes(batches: &[SpriteBatch]) -> usize {
             (
                 Some(texture_id),
                 count + usize::from(previous != Some(texture_id)),
+            )
+        })
+        .1
+}
+
+fn pipeline_changes(batches: &[SpriteBatch]) -> usize {
+    batches
+        .iter()
+        .map(|batch| batch.blend_mode)
+        .fold((None, 0usize), |(previous, count), blend_mode| {
+            (
+                Some(blend_mode),
+                count + usize::from(previous != Some(blend_mode)),
             )
         })
         .1
@@ -1244,6 +1370,7 @@ mod tests {
             },
             uv_rect: [0.0, 0.0, 1.0, 1.0],
             clip_rect,
+            blend_mode: SpriteBlendMode::Alpha,
         }
     }
 
@@ -1263,6 +1390,7 @@ mod tests {
                 },
                 uv_rect: [0.25, 0.5, 0.75, 1.0],
                 clip_rect: None,
+                blend_mode: SpriteBlendMode::Alpha,
             }],
             100,
             100,
@@ -1291,6 +1419,47 @@ mod tests {
         assert_eq!(batches[2].sprite_count, 2);
         assert_eq!(batches[3].sprite_count, 1);
         assert_eq!(texture_bind_changes(&batches), 3);
+    }
+
+    #[test]
+    fn sprite_batches_preserve_blend_order_and_report_pipeline_changes() {
+        let alpha = queued(1, None);
+        let mut additive = queued(1, None);
+        additive.blend_mode = SpriteBlendMode::Additive;
+        let batches = build_sprite_batches(&[alpha, additive, additive, alpha], 100, 100);
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[1].sprite_count, 2);
+        assert_eq!(pipeline_changes(&batches), 3);
+        assert_eq!(
+            batches
+                .iter()
+                .map(|batch| batch.blend_mode)
+                .collect::<Vec<_>>(),
+            vec![
+                SpriteBlendMode::Alpha,
+                SpriteBlendMode::Additive,
+                SpriteBlendMode::Alpha,
+            ]
+        );
+    }
+
+    #[test]
+    fn sprite_blend_states_cover_alpha_and_effect_workflows() {
+        assert_eq!(
+            sprite_blend_state(SpriteBlendMode::Alpha),
+            wgpu::BlendState::ALPHA_BLENDING
+        );
+        assert_eq!(
+            sprite_blend_state(SpriteBlendMode::PremultipliedAlpha),
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING
+        );
+        let additive = sprite_blend_state(SpriteBlendMode::Additive);
+        assert_eq!(additive.color.src_factor, wgpu::BlendFactor::SrcAlpha);
+        assert_eq!(additive.color.dst_factor, wgpu::BlendFactor::One);
+        let multiply = sprite_blend_state(SpriteBlendMode::Multiply);
+        assert_eq!(multiply.color.src_factor, wgpu::BlendFactor::Dst);
+        let screen = sprite_blend_state(SpriteBlendMode::Screen);
+        assert_eq!(screen.color.dst_factor, wgpu::BlendFactor::OneMinusSrc);
     }
 
     #[test]

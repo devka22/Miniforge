@@ -1,5 +1,6 @@
 use miniforge::render::backend::{
-    RenderBackend, SpriteDrawCommand, SpriteRegionDrawCommand, WgpuBackend,
+    RenderBackend, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions, SpriteRegionDrawCommand,
+    WgpuBackend,
 };
 
 #[test]
@@ -41,6 +42,44 @@ fn physical_wgpu_backend_renders_and_reads_pixels() {
             clip_rect: Some([52, 0, 12, 16]),
         })
         .unwrap();
+    for (index, blend_mode) in [
+        SpriteBlendMode::Additive,
+        SpriteBlendMode::Multiply,
+        SpriteBlendMode::Screen,
+        SpriteBlendMode::PremultipliedAlpha,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let x = index as f32 * 16.0;
+        backend
+            .draw_sprite(SpriteDrawCommand {
+                entity_id: 10 + index as u64 * 2,
+                texture_id: 0,
+                x,
+                y: 48.0,
+                width: 16.0,
+                height: 16.0,
+                rotation: 0.0,
+                color: [0.35, 0.35, 0.35, 1.0],
+            })
+            .unwrap();
+        backend
+            .draw_sprite_with_options(
+                SpriteDrawCommand {
+                    entity_id: 11 + index as u64 * 2,
+                    texture_id: 0,
+                    x,
+                    y: 48.0,
+                    width: 16.0,
+                    height: 16.0,
+                    rotation: 0.0,
+                    color: [0.25, 0.75, 0.5, 0.65],
+                },
+                SpriteDrawOptions { blend_mode },
+            )
+            .unwrap();
+    }
     backend.end_frame().unwrap();
 
     let pixels = backend.readback_rgba8().unwrap();
@@ -60,7 +99,20 @@ fn physical_wgpu_backend_renders_and_reads_pixels() {
         pixels[textured + 2] > 240,
         "uploaded atlas region should sample the blue texel"
     );
+    for x in [8usize, 24, 40, 56] {
+        let blended = (56 * 64 + x) * 4;
+        assert!(
+            pixels[blended..blended + 3]
+                .iter()
+                .any(|channel| *channel > 32),
+            "every blend pipeline should write visible color"
+        );
+    }
     assert_eq!(backend.submitted_frames, 1);
     assert!(backend.is_using_physical_device());
     assert_eq!(backend.texture_count(), 1);
+    assert!(
+        backend.last_frame_diagnostics().pipeline_changes >= 8,
+        "alpha/effect alternation should switch pipelines without reordering"
+    );
 }
