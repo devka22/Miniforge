@@ -14,7 +14,8 @@ use crate::systems::particle_system::ParticleSystem;
 
 use super::backend::{
     BUILTIN_RADIAL_LIGHT_TEXTURE_ID, RenderBackend, SpriteBlendMode, SpriteDrawCommand,
-    SpriteDrawOptions, SpriteRegionDrawCommand, TextDrawCommand, TextWrapMode,
+    SpriteDrawOptions, SpriteMaterialEffect, SpriteRegionDrawCommand, TextDrawCommand,
+    TextWrapMode,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -428,6 +429,7 @@ fn draw_runtime_lights<B: RenderBackend>(
             },
             SpriteDrawOptions {
                 blend_mode: SpriteBlendMode::Additive,
+                ..SpriteDrawOptions::default()
             },
         )?;
         stats.light_quads += 1;
@@ -523,9 +525,7 @@ fn draw_entities<B: RenderBackend>(
             rotation: (entity.rotation as f32).to_radians(),
             color: entity_tint(entity),
         };
-        let options = SpriteDrawOptions {
-            blend_mode: entity_blend_mode(entity),
-        };
+        let options = entity_sprite_options(entity);
         if let Some((binding, uv_rect)) = binding
             .and_then(|binding| entity_source_uv(entity, binding).map(|uv_rect| (binding, uv_rect)))
         {
@@ -628,7 +628,10 @@ fn draw_particles<B: RenderBackend>(
                 size,
                 size,
                 particle.color.map(|channel| channel as f32 / 255.0),
-                SpriteDrawOptions { blend_mode },
+                SpriteDrawOptions {
+                    blend_mode,
+                    ..SpriteDrawOptions::default()
+                },
             )?;
             stats.particle_quads += 1;
         }
@@ -1555,6 +1558,31 @@ fn entity_blend_mode(entity: &GameObject) -> SpriteBlendMode {
         .unwrap_or_default()
 }
 
+fn entity_sprite_options(entity: &GameObject) -> SpriteDrawOptions {
+    let mut options = SpriteDrawOptions {
+        blend_mode: entity_blend_mode(entity),
+        ..SpriteDrawOptions::default()
+    };
+    for component_type in ["Material2D", "SpriteRenderer"] {
+        let Some(component) = entity.get_component(component_type) else {
+            continue;
+        };
+        let effect = ["material_effect", "shader"].into_iter().find_map(|key| {
+            component
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .and_then(SpriteMaterialEffect::from_name)
+        });
+        if let Some(effect) = effect {
+            options.material_effect = effect;
+            let strength = component.get_f64("effect_strength", 1.0).clamp(0.0, 1.0);
+            options.effect_strength = (strength * 255.0).round() as u8;
+            break;
+        }
+    }
+    options
+}
+
 fn entity_tint(entity: &GameObject) -> [f32; 4] {
     let fallback = if entity.tag == "Player" {
         [0.28, 0.76, 1.0, 1.0]
@@ -1605,8 +1633,13 @@ mod tests {
 
         let mut material = default_component("Material2D").unwrap();
         material.set("blend_mode", json!("multiply"));
+        material.set("shader", json!("sprite_sepia"));
+        material.set("effect_strength", json!(0.5));
         entity.add_component(material);
         assert_eq!(entity_blend_mode(&entity), SpriteBlendMode::Multiply);
+        let options = entity_sprite_options(&entity);
+        assert_eq!(options.material_effect, SpriteMaterialEffect::Sepia);
+        assert_eq!(options.effect_strength, 128);
     }
 
     #[test]

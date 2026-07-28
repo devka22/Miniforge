@@ -370,7 +370,10 @@ fn draw_renderer_diagnostic(
                     rotation: 0.0,
                     color: [0.25 + index as f32 * 0.08, 0.72, 0.95, 0.7],
                 },
-                SpriteDrawOptions { blend_mode },
+                SpriteDrawOptions {
+                    blend_mode,
+                    ..SpriteDrawOptions::default()
+                },
             )
             .map_err(|error| error.to_string())?;
     }

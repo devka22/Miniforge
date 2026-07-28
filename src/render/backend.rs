@@ -128,11 +128,57 @@ impl SpriteBlendMode {
     }
 }
 
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SpriteMaterialEffect {
+    #[default]
+    None = 0,
+    Grayscale = 1,
+    Sepia = 2,
+    Invert = 3,
+    Flash = 4,
+}
+
+impl SpriteMaterialEffect {
+    pub fn from_name(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+        match normalized.as_str() {
+            "none" | "default" | "sprite_default" | "unlit" => Some(Self::None),
+            "gray" | "grey" | "grayscale" | "greyscale" | "sprite_grayscale" => {
+                Some(Self::Grayscale)
+            }
+            "sepia" | "sprite_sepia" => Some(Self::Sepia),
+            "invert" | "inverted" | "sprite_invert" => Some(Self::Invert),
+            "flash" | "hit_flash" | "sprite_flash" => Some(Self::Flash),
+            _ => None,
+        }
+    }
+}
+
 /// Optional sprite render state kept separate from geometry for compatibility.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SpriteDrawOptions {
     #[serde(default)]
     pub blend_mode: SpriteBlendMode,
+    #[serde(default)]
+    pub material_effect: SpriteMaterialEffect,
+    #[serde(default = "default_effect_strength")]
+    pub effect_strength: u8,
+}
+
+impl Default for SpriteDrawOptions {
+    fn default() -> Self {
+        Self {
+            blend_mode: SpriteBlendMode::Alpha,
+            material_effect: SpriteMaterialEffect::None,
+            effect_strength: u8::MAX,
+        }
+    }
+}
+
+fn default_effect_strength() -> u8 {
+    u8::MAX
 }
 
 /// Line breaking policy for backend-independent text.
@@ -501,7 +547,7 @@ impl RenderBackend for MacroquadBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::{SpriteBlendMode, radial_light_texture_rgba8};
+    use super::{SpriteBlendMode, SpriteMaterialEffect, radial_light_texture_rgba8};
 
     #[test]
     fn sprite_blend_mode_accepts_editor_and_asset_aliases() {
@@ -532,5 +578,18 @@ mod tests {
         let alpha = |x: usize, y: usize| pixels[(y * size as usize + x) * 4 + 3];
         assert!(alpha(3, 3) > alpha(1, 1));
         assert_eq!(alpha(0, 0), 0);
+    }
+
+    #[test]
+    fn sprite_material_effect_accepts_editor_shader_aliases() {
+        assert_eq!(
+            SpriteMaterialEffect::from_name("sprite-grayscale"),
+            Some(SpriteMaterialEffect::Grayscale)
+        );
+        assert_eq!(
+            SpriteMaterialEffect::from_name("hit_flash"),
+            Some(SpriteMaterialEffect::Flash)
+        );
+        assert_eq!(SpriteMaterialEffect::from_name("custom_wgsl"), None);
     }
 }

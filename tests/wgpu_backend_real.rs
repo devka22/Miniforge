@@ -1,6 +1,7 @@
 use miniforge::render::backend::{
     BUILTIN_RADIAL_LIGHT_TEXTURE_ID, RenderBackend, SpriteBlendMode, SpriteDrawCommand,
-    SpriteDrawOptions, SpriteRegionDrawCommand, TextDrawCommand, TextWrapMode, WgpuBackend,
+    SpriteDrawOptions, SpriteMaterialEffect, SpriteRegionDrawCommand, TextDrawCommand,
+    TextWrapMode, WgpuBackend,
 };
 
 #[test]
@@ -56,6 +57,7 @@ fn physical_wgpu_backend_renders_and_reads_pixels() {
             },
             SpriteDrawOptions {
                 blend_mode: SpriteBlendMode::Additive,
+                ..SpriteDrawOptions::default()
             },
         )
         .unwrap();
@@ -93,10 +95,31 @@ fn physical_wgpu_backend_renders_and_reads_pixels() {
                     rotation: 0.0,
                     color: [0.25, 0.75, 0.5, 0.65],
                 },
-                SpriteDrawOptions { blend_mode },
+                SpriteDrawOptions {
+                    blend_mode,
+                    ..SpriteDrawOptions::default()
+                },
             )
             .unwrap();
     }
+    backend
+        .draw_sprite_with_options(
+            SpriteDrawCommand {
+                entity_id: 30,
+                texture_id: 0,
+                x: 48.0,
+                y: 16.0,
+                width: 16.0,
+                height: 16.0,
+                rotation: 0.0,
+                color: [1.0, 0.0, 0.0, 1.0],
+            },
+            SpriteDrawOptions {
+                material_effect: SpriteMaterialEffect::Grayscale,
+                ..SpriteDrawOptions::default()
+            },
+        )
+        .unwrap();
     backend
         .draw_text(TextDrawCommand {
             text_id: 99,
@@ -122,6 +145,7 @@ fn physical_wgpu_backend_renders_and_reads_pixels() {
     let textured = (8 * 64 + 56) * 4;
     let light_center = (8 * 64 + 40) * 4;
     let light_edge = 32 * 4;
+    let grayscale = (24 * 64 + 56) * 4;
     assert!(pixels[center] > 240, "center should be rendered red");
     assert!(pixels[center + 1] < 16);
     assert!(pixels[center + 2] < 16);
@@ -137,6 +161,11 @@ fn physical_wgpu_backend_renders_and_reads_pixels() {
     assert!(
         pixels[light_center] > pixels[light_edge] + 64,
         "built-in light texture should produce a soft radial falloff"
+    );
+    assert!(
+        pixels[grayscale].abs_diff(pixels[grayscale + 1]) < 3
+            && pixels[grayscale + 1].abs_diff(pixels[grayscale + 2]) < 3,
+        "grayscale material should transform the sprite in WGSL"
     );
     for x in [8usize, 24, 40, 56] {
         let blended = (56 * 64 + x) * 4;

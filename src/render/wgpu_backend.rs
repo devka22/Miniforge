@@ -22,7 +22,7 @@ use crate::engine::error_handler::{MFResult, MiniForgeError};
 use super::backend::{
     BUILTIN_RADIAL_LIGHT_TEXTURE_ID, BUILTIN_RADIAL_LIGHT_TEXTURE_SIZE, CameraCommand3D,
     GraphicsApi, LightDrawCommand3D, MeshDrawCommand3D, ParticleDrawCommand, RenderBackend,
-    RenderDeviceCaps, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions,
+    RenderDeviceCaps, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions, SpriteMaterialEffect,
     SpriteRegionDrawCommand, TextDrawCommand, TextWrapMode, TilemapDrawCommand, UiDrawCommand,
     radial_light_texture_rgba8,
 };
@@ -39,6 +39,8 @@ struct VertexOut {
     @builtin(position) position: vec4<f32>,
     @location(0) color: vec4<f32>,
     @location(1) uv: vec2<f32>,
+    @location(2) @interpolate(flat) material_effect: u32,
+    @location(3) effect_strength: f32,
 };
 
 @group(0) @binding(0) var sprite_texture: texture_2d<f32>;
@@ -49,23 +51,53 @@ fn vs_main(
     @location(0) position: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) uv: vec2<f32>,
+    @location(3) material_effect: u32,
+    @location(4) effect_strength: f32,
 ) -> VertexOut {
     var out: VertexOut;
     out.position = vec4<f32>(position, 0.0, 1.0);
     out.color = color;
     out.uv = uv;
+    out.material_effect = material_effect;
+    out.effect_strength = effect_strength;
     return out;
+}
+
+fn apply_material_effect(
+    sampled: vec4<f32>,
+    material_effect: u32,
+    strength: f32,
+) -> vec4<f32> {
+    var effected = sampled.rgb;
+    if material_effect == 1u {
+        let luminance = dot(sampled.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+        effected = vec3<f32>(luminance);
+    } else if material_effect == 2u {
+        effected = vec3<f32>(
+            dot(sampled.rgb, vec3<f32>(0.393, 0.769, 0.189)),
+            dot(sampled.rgb, vec3<f32>(0.349, 0.686, 0.168)),
+            dot(sampled.rgb, vec3<f32>(0.272, 0.534, 0.131)),
+        );
+    } else if material_effect == 3u {
+        effected = vec3<f32>(1.0) - sampled.rgb;
+    } else if material_effect == 4u {
+        effected = vec3<f32>(1.0);
+    }
+    let mixed = mix(sampled.rgb, clamp(effected, vec3<f32>(0.0), vec3<f32>(1.0)), strength);
+    return vec4<f32>(mixed, sampled.a);
 }
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    return textureSample(sprite_texture, sprite_sampler, in.uv) * in.color;
+    let sampled = textureSample(sprite_texture, sprite_sampler, in.uv) * in.color;
+    return apply_material_effect(sampled, in.material_effect, in.effect_strength);
 }
 
 @fragment
 fn fs_premultiplied(in: VertexOut) -> @location(0) vec4<f32> {
     let sampled = textureSample(sprite_texture, sprite_sampler, in.uv) * in.color;
-    return vec4<f32>(sampled.rgb * sampled.a, sampled.a);
+    let effected = apply_material_effect(sampled, in.material_effect, in.effect_strength);
+    return vec4<f32>(effected.rgb * effected.a, effected.a);
 }
 "#;
 
@@ -75,6 +107,8 @@ struct SpriteVertex {
     position: [f32; 2],
     color: [f32; 4],
     uv: [f32; 2],
+    material_effect: u32,
+    effect_strength: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -83,6 +117,8 @@ struct QueuedSprite {
     uv_rect: [f32; 4],
     clip_rect: Option<[u32; 4]>,
     blend_mode: SpriteBlendMode,
+    material_effect: SpriteMaterialEffect,
+    effect_strength: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,8 +150,13 @@ pub struct WgpuFrameDiagnostics {
     pub device_loss_recoveries: u64,
 }
 
-const SPRITE_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
-    wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4, 2 => Float32x2];
+const SPRITE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+    0 => Float32x2,
+    1 => Float32x4,
+    2 => Float32x2,
+    3 => Uint32,
+    4 => Float32
+];
 
 struct WgpuTexture {
     _texture: wgpu::Texture,
@@ -1038,6 +1079,8 @@ impl RenderBackend for WgpuBackend {
             uv_rect: [0.0, 0.0, 1.0, 1.0],
             clip_rect: None,
             blend_mode: options.blend_mode,
+            material_effect: options.material_effect,
+            effect_strength: options.effect_strength,
         })
     }
 
@@ -1068,6 +1111,8 @@ impl RenderBackend for WgpuBackend {
             uv_rect: command.uv_rect.map(|value| value.clamp(0.0, 1.0)),
             clip_rect: command.clip_rect,
             blend_mode: options.blend_mode,
+            material_effect: options.material_effect,
+            effect_strength: options.effect_strength,
         })
     }
 
@@ -1552,6 +1597,8 @@ fn sprites_to_vertices(commands: &[QueuedSprite], width: u32, height: u32) -> Ve
             position: corners[index],
             color: command.color,
             uv: uvs[index],
+            material_effect: queued.material_effect as u32,
+            effect_strength: f32::from(queued.effect_strength) / 255.0,
         };
         vertices.extend([
             vertex(0),
@@ -1597,6 +1644,8 @@ mod tests {
             uv_rect: [0.0, 0.0, 1.0, 1.0],
             clip_rect,
             blend_mode: SpriteBlendMode::Alpha,
+            material_effect: SpriteMaterialEffect::None,
+            effect_strength: u8::MAX,
         }
     }
 
@@ -1634,6 +1683,8 @@ mod tests {
                 uv_rect: [0.25, 0.5, 0.75, 1.0],
                 clip_rect: None,
                 blend_mode: SpriteBlendMode::Alpha,
+                material_effect: SpriteMaterialEffect::Sepia,
+                effect_strength: 128,
             }],
             100,
             100,
@@ -1643,6 +1694,11 @@ mod tests {
         assert_eq!(vertices[2].position, [0.0, 0.5]);
         assert_eq!(vertices[0].uv, [0.25, 0.5]);
         assert_eq!(vertices[2].uv, [0.75, 1.0]);
+        assert_eq!(
+            vertices[0].material_effect,
+            SpriteMaterialEffect::Sepia as u32
+        );
+        assert!((vertices[0].effect_strength - 128.0 / 255.0).abs() < 0.001);
     }
 
     #[test]
