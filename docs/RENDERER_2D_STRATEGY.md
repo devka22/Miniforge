@@ -53,7 +53,10 @@ slots, text-input placeholders and focused carets. Their built-in interaction up
 checked state, dropdown selection, focused inputs and selected inventory slots without a game
 script. Scene-level responsive UI Canvas data now renders panels, buttons, labels and image
 textures, and `UIElement` supports both plain images and nine-slice frames. The preview discovers
-and uploads these UI textures automatically.
+and uploads these UI textures automatically. The runtime minimap centers on the player, draws nearby
+road tiles and priority-sorted objectives, threats, NPCs, resources and vehicles under bounded tile
+and marker budgets. Point `Light2D` components use a built-in radial texture and additive blending;
+the texture is restored automatically with the rest of the GPU resources after device loss.
 Outdated and lost window surfaces are reconfigured and retried once; an occluded or
 still-unavailable surface skips the frame without poisoning the next one. A Metal surface smoke
 with the default 70×30 grid reduced 2,100 logical
@@ -65,9 +68,9 @@ mid-run and verifies that presentation resumes with `device_loss_recoveries=1`.
 The shared 2D composer now turns visible tilemap cells, atlas-backed entities, CPU particles and
 basic and interactive UI geometry into backend-independent sprite quads with camera transforms,
 ordering and screen culling. The main exported runtime still uses Macroquad while scroll containers,
-minimaps, lighting, render textures and shader materials are completed. Projects should therefore
-leave `experimental_wgpu` disabled for exports that need the full production renderer. Project
-Settings keeps this migration state visible instead of hiding it in JSON.
+ambient/directional light and shadows, render textures and shader materials are completed. Projects
+should therefore leave `experimental_wgpu` disabled for exports that need the full production
+renderer. Project Settings keeps this migration state visible instead of hiding it in JSON.
 
 ## Migration gates
 
@@ -80,8 +83,9 @@ The preview becomes playable only after these gates pass on macOS, Windows and L
    persistent vertex uploads, five blend modes and stable contiguous batching are done.
 3. Chunked tilemaps, UI draw lists, text, particles and render textures. Layered tile cells,
    Unicode text, responsive Canvas panels/buttons/labels/images, nine-slice frames, sliders,
-   checkbox/toggle controls, inventory/ability slots, text-input feedback and CPU-particle quads are
-   done; scrolling/virtualization, chunk batching, GPU particles and render textures remain.
+   checkbox/toggle controls, inventory/ability slots, text-input feedback, a bounded runtime minimap
+   and CPU-particle quads are done. Additive point-light emission is done; scrolling/virtualization,
+   chunk batching, shadowed lighting, GPU particles and render textures remain.
 4. WGSL materials, post-processing and hot reload with readable shader diagnostics.
 5. Compute paths for particles and tile visibility, each with a CPU fallback.
 6. Golden-image parity tests against Macroquad plus GPU timing and repeated recovery stress.

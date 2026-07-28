@@ -4,6 +4,27 @@ use crate::engine::error_handler::MFResult;
 
 pub use super::wgpu_backend::WgpuBackend;
 
+pub const BUILTIN_RADIAL_LIGHT_TEXTURE_ID: u64 = u64::MAX - 1;
+pub const BUILTIN_RADIAL_LIGHT_TEXTURE_SIZE: u32 = 64;
+
+pub fn radial_light_texture_rgba8(size: u32) -> Vec<u8> {
+    let size = size.clamp(2, 512);
+    let mut pixels = Vec::with_capacity(size as usize * size as usize * 4);
+    let center = (size as f32 - 1.0) * 0.5;
+    let radius = center.max(1.0);
+    for y in 0..size {
+        for x in 0..size {
+            let dx = (x as f32 - center) / radius;
+            let dy = (y as f32 - center) / radius;
+            let distance = (dx * dx + dy * dy).sqrt();
+            let coverage = (1.0 - distance).clamp(0.0, 1.0);
+            let alpha = (coverage * coverage * 255.0).round() as u8;
+            pixels.extend_from_slice(&[255, 255, 255, alpha]);
+        }
+    }
+    pixels
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum GraphicsApi {
     Macroquad,
@@ -480,7 +501,7 @@ impl RenderBackend for MacroquadBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::SpriteBlendMode;
+    use super::{SpriteBlendMode, radial_light_texture_rgba8};
 
     #[test]
     fn sprite_blend_mode_accepts_editor_and_asset_aliases() {
@@ -501,5 +522,15 @@ mod tests {
             Some(SpriteBlendMode::Screen)
         );
         assert_eq!(SpriteBlendMode::from_name("custom_shader"), None);
+    }
+
+    #[test]
+    fn builtin_radial_light_texture_has_a_soft_bounded_falloff() {
+        let size = 8;
+        let pixels = radial_light_texture_rgba8(size);
+        assert_eq!(pixels.len(), size as usize * size as usize * 4);
+        let alpha = |x: usize, y: usize| pixels[(y * size as usize + x) * 4 + 3];
+        assert!(alpha(3, 3) > alpha(1, 1));
+        assert_eq!(alpha(0, 0), 0);
     }
 }

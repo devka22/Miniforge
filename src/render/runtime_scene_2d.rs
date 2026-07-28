@@ -13,8 +13,8 @@ use crate::runtime::engine_runtime::EngineRuntime;
 use crate::systems::particle_system::ParticleSystem;
 
 use super::backend::{
-    RenderBackend, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions, SpriteRegionDrawCommand,
-    TextDrawCommand, TextWrapMode,
+    BUILTIN_RADIAL_LIGHT_TEXTURE_ID, RenderBackend, SpriteBlendMode, SpriteDrawCommand,
+    SpriteDrawOptions, SpriteRegionDrawCommand, TextDrawCommand, TextWrapMode,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -30,11 +30,13 @@ pub struct RuntimeScene2DStats {
     pub tile_layer_quads: usize,
     pub entity_quads: usize,
     pub particle_quads: usize,
+    pub light_quads: usize,
     pub ui_quads: usize,
     pub ui_text_areas: usize,
     pub ui_canvas_quads: usize,
     pub ui_canvas_text_areas: usize,
     pub textured_ui_images: usize,
+    pub minimap_quads: usize,
     pub textured_entities: usize,
 }
 
@@ -125,9 +127,20 @@ pub fn draw_engine_runtime_scene_2d<B: RenderBackend>(
         true,
         &mut stats,
     )?;
+    draw_runtime_lights(
+        backend,
+        &runtime.runtime_world,
+        origin_x,
+        origin_y,
+        tile,
+        width,
+        height,
+        &mut stats,
+    )?;
     draw_runtime_ui(
         backend,
         &runtime.runtime_world,
+        &runtime.tilemap_layers,
         textures,
         width,
         height,
@@ -360,6 +373,68 @@ fn draw_tile_layers<B: RenderBackend>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn draw_runtime_lights<B: RenderBackend>(
+    backend: &mut B,
+    world: &RuntimeWorld,
+    origin_x: f32,
+    origin_y: f32,
+    tile: f32,
+    screen_width: f32,
+    screen_height: f32,
+    stats: &mut RuntimeScene2DStats,
+) -> MFResult<()> {
+    let mut lights = world
+        .units
+        .iter()
+        .filter(|entity| entity.enabled && entity.visible)
+        .filter_map(|entity| {
+            let light = entity
+                .get_component("Light2D")
+                .filter(|light| light.enabled)?;
+            let intensity = finite_f64_to_f32(light.get_f64("intensity", 1.0)).clamp(0.0, 8.0);
+            let radius = finite_f64_to_f32(light.get_f64("radius", 5.0)).clamp(0.1, 1_024.0);
+            (intensity > f32::EPSILON).then_some((entity, light, intensity, radius))
+        })
+        .collect::<Vec<_>>();
+    lights.sort_by(|left, right| {
+        right
+            .2
+            .total_cmp(&left.2)
+            .then_with(|| left.0.id.cmp(&right.0.id))
+    });
+    for (entity, light, intensity, radius) in lights.into_iter().take(256) {
+        let screen_radius = radius * tile;
+        let center_x = origin_x + finite_f64_to_f32(entity.x) * tile;
+        let center_y = origin_y + finite_f64_to_f32(entity.y) * tile;
+        let x = center_x - screen_radius;
+        let y = center_y - screen_radius;
+        let diameter = screen_radius * 2.0;
+        if !rect_intersects_screen(x, y, diameter, diameter, screen_width, screen_height) {
+            continue;
+        }
+        let alpha = (0.18 * intensity).clamp(0.0, 1.0);
+        let color = component_color(light.get("color"), [255, 240, 200, 255], alpha);
+        backend.draw_sprite_with_options(
+            SpriteDrawCommand {
+                entity_id: (3u64 << 60).saturating_add(entity.id),
+                texture_id: BUILTIN_RADIAL_LIGHT_TEXTURE_ID,
+                x,
+                y,
+                width: diameter,
+                height: diameter,
+                rotation: 0.0,
+                color,
+            },
+            SpriteDrawOptions {
+                blend_mode: SpriteBlendMode::Additive,
+            },
+        )?;
+        stats.light_quads += 1;
+    }
+    Ok(())
+}
+
 fn tile_color(value: i32, layer: &TileLayer, layer_index: usize) -> [f32; 4] {
     const PALETTE: [[f32; 3]; 8] = [
         [0.18, 0.32, 0.24],
@@ -564,6 +639,7 @@ fn draw_particles<B: RenderBackend>(
 fn draw_runtime_ui<B: RenderBackend>(
     backend: &mut B,
     world: &RuntimeWorld,
+    tilemap_layers: &TilemapLayers,
     textures: &BTreeMap<String, RuntimeTexture2D>,
     screen_width: f32,
     screen_height: f32,
@@ -577,7 +653,7 @@ fn draw_runtime_ui<B: RenderBackend>(
         .collect::<Vec<_>>();
     elements.sort_by_key(|(entity, ui)| (ui.get_i64("sorting_order", 0), entity.id));
     for (entity, ui) in elements {
-        let ui_base = 9_000_000_000u64.saturating_add(entity.id.saturating_mul(1_024));
+        let ui_base = (1u64 << 62).saturating_add(entity.id.saturating_mul(100_000));
         let x = ui.get_f64("x", 0.0) as f32;
         let y = ui.get_f64("y", 0.0) as f32;
         let width = ui.get_f64("width", 160.0).max(0.0) as f32;
@@ -808,6 +884,22 @@ fn draw_runtime_ui<B: RenderBackend>(
                 )?;
                 stats.ui_quads += 1;
             }
+            "Minimap" => {
+                let quads = draw_runtime_minimap(
+                    backend,
+                    ui_base.saturating_add(1_000),
+                    ui,
+                    world,
+                    tilemap_layers,
+                    x,
+                    y,
+                    width,
+                    height,
+                    opacity,
+                )?;
+                stats.ui_quads += quads;
+                stats.minimap_quads += quads;
+            }
             _ => {}
         }
 
@@ -858,6 +950,209 @@ fn draw_runtime_ui<B: RenderBackend>(
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RuntimeMinimapMarker {
+    entity_id: u64,
+    x: f32,
+    y: f32,
+    color: [f32; 4],
+    priority: u8,
+    distance_squared: f32,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_runtime_minimap<B: RenderBackend>(
+    backend: &mut B,
+    minimap_id: u64,
+    ui: &Component,
+    world: &RuntimeWorld,
+    tilemap_layers: &TilemapLayers,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    opacity: f32,
+) -> MFResult<usize> {
+    let inner_x = x + 6.0;
+    let inner_y = y + 6.0;
+    let inner_width = (width - 12.0).max(1.0);
+    let inner_height = (height - 12.0).max(1.0);
+    let center_x = inner_x + inner_width * 0.5;
+    let center_y = inner_y + inner_height * 0.5;
+    let player = world
+        .units
+        .iter()
+        .find(|entity| entity.enabled && entity.visible && entity.tag == "Player")
+        .map(|entity| (finite_f64_to_f32(entity.x), finite_f64_to_f32(entity.y)))
+        .unwrap_or((0.0, 0.0));
+    let world_radius = finite_f64_to_f32(ui.get_f64("world_radius", 17.5)).clamp(1.0, 512.0);
+    let scale = (inner_width.min(inner_height) * 0.5 / world_radius).max(0.01);
+    let mut quads = 0;
+
+    let tile_budget = ui.get_i64("tile_budget", 4_096).clamp(0, 16_384) as usize;
+    let road_layer = tilemap_layers
+        .layer("Decoration")
+        .or_else(|| tilemap_layers.layers.get(1));
+    if let Some(layer) = road_layer {
+        let min_tile_x = ((player.0 - world_radius).floor() as isize).max(0) as usize;
+        let max_tile_x = ((player.0 + world_radius).ceil() as isize)
+            .max(0)
+            .min(tilemap_layers.width as isize) as usize;
+        let min_tile_y = ((player.1 - world_radius).floor() as isize).max(0) as usize;
+        let max_tile_y = ((player.1 + world_radius).ceil() as isize)
+            .max(0)
+            .min(tilemap_layers.height as isize) as usize;
+        'tiles: for tile_y in min_tile_y..max_tile_y {
+            for tile_x in min_tile_x..max_tile_x {
+                if quads >= tile_budget {
+                    break 'tiles;
+                }
+                if layer.get(tile_x, tile_y) == 0 {
+                    continue;
+                }
+                let point_x = center_x + (tile_x as f32 + 0.5 - player.0) * scale;
+                let point_y = center_y + (tile_y as f32 + 0.5 - player.1) * scale;
+                let tile_size = scale.max(1.0);
+                if !rect_inside(
+                    point_x - tile_size * 0.5,
+                    point_y - tile_size * 0.5,
+                    tile_size,
+                    tile_size,
+                    inner_x,
+                    inner_y,
+                    inner_width,
+                    inner_height,
+                ) {
+                    continue;
+                }
+                draw_quad(
+                    backend,
+                    minimap_id.saturating_add(quads as u64),
+                    0,
+                    point_x - tile_size * 0.5,
+                    point_y - tile_size * 0.5,
+                    tile_size,
+                    tile_size,
+                    [0.55, 0.78, 0.76, opacity * 0.72],
+                )?;
+                quads += 1;
+            }
+        }
+    }
+
+    let marker_budget = ui.get_i64("marker_budget", 128).clamp(0, 2_048) as usize;
+    let mut markers = world
+        .units
+        .iter()
+        .filter(|entity| entity.enabled && entity.visible && entity.tag != "Player")
+        .filter_map(|entity| runtime_minimap_marker(entity, player, world_radius, opacity))
+        .collect::<Vec<_>>();
+    markers.sort_by(|left, right| {
+        left.priority
+            .cmp(&right.priority)
+            .then_with(|| left.distance_squared.total_cmp(&right.distance_squared))
+            .then_with(|| left.entity_id.cmp(&right.entity_id))
+    });
+    for marker in markers.into_iter().take(marker_budget) {
+        let marker_x = center_x + (marker.x - player.0) * scale;
+        let marker_y = center_y + (marker.y - player.1) * scale;
+        let marker_size = 5.0;
+        if !rect_inside(
+            marker_x - marker_size * 0.5,
+            marker_y - marker_size * 0.5,
+            marker_size,
+            marker_size,
+            inner_x,
+            inner_y,
+            inner_width,
+            inner_height,
+        ) {
+            continue;
+        }
+        draw_quad(
+            backend,
+            minimap_id.saturating_add(20_000 + quads as u64),
+            0,
+            marker_x - marker_size * 0.5,
+            marker_y - marker_size * 0.5,
+            marker_size,
+            marker_size,
+            marker.color,
+        )?;
+        quads += 1;
+    }
+
+    backend.draw_sprite(SpriteDrawCommand {
+        entity_id: minimap_id.saturating_add(90_000),
+        texture_id: 0,
+        x: center_x - 4.0,
+        y: center_y - 4.0,
+        width: 8.0,
+        height: 8.0,
+        rotation: std::f32::consts::FRAC_PI_4,
+        color: [1.0, 0.3, 0.74, opacity],
+    })?;
+    Ok(quads + 1)
+}
+
+fn runtime_minimap_marker(
+    entity: &GameObject,
+    player: (f32, f32),
+    world_radius: f32,
+    opacity: f32,
+) -> Option<RuntimeMinimapMarker> {
+    let (color, priority) = if entity.get_component("ObjectiveMarker").is_some() {
+        ([0.35, 0.94, 1.0, opacity], 0)
+    } else {
+        match entity.tag.as_str() {
+            "Police" => ([0.32, 0.61, 1.0, opacity], 1),
+            "Enemy" | "Zombie" => ([1.0, 0.28, 0.32, opacity], 2),
+            "Contact" | "NPC" => ([0.77, 0.49, 1.0, opacity], 3),
+            "Collectible" | "Resource" => ([0.35, 1.0, 0.76, opacity], 4),
+            "Vehicle" => ([1.0, 0.8, 0.43, opacity], 5),
+            _ => return None,
+        }
+    };
+    let x = finite_f64_to_f32(entity.x);
+    let y = finite_f64_to_f32(entity.y);
+    let dx = x - player.0;
+    let dy = y - player.1;
+    let distance_squared = dx * dx + dy * dy;
+    (distance_squared <= world_radius * world_radius).then_some(RuntimeMinimapMarker {
+        entity_id: entity.id,
+        x,
+        y,
+        color,
+        priority,
+        distance_squared,
+    })
+}
+
+fn finite_f64_to_f32(value: f64) -> f32 {
+    if value.is_finite() {
+        value.clamp(f64::from(f32::MIN), f64::from(f32::MAX)) as f32
+    } else {
+        0.0
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rect_inside(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    bounds_x: f32,
+    bounds_y: f32,
+    bounds_width: f32,
+    bounds_height: f32,
+) -> bool {
+    x >= bounds_x
+        && y >= bounds_y
+        && x + width <= bounds_x + bounds_width
+        && y + height <= bounds_y + bounds_height
 }
 
 fn ui_component_sprite_path(ui: &Component) -> Option<&str> {
@@ -955,7 +1250,7 @@ fn draw_scene_ui_canvases<B: RenderBackend>(
             if !rect_intersects_screen(x, y, width, height, screen_width, screen_height) {
                 continue;
             }
-            let element_base = 9_500_000_000u64
+            let element_base = (1u64 << 63)
                 .saturating_add((canvas_index as u64).saturating_mul(1_000_000))
                 .saturating_add((element_index as u64).saturating_mul(4));
             match element {
@@ -1356,9 +1651,10 @@ mod tests {
         .unwrap();
         let mut runtime = EngineRuntime::new(&root).unwrap();
         runtime.tilemap_layers.layers[0].set(1, 1, 2);
-        runtime.tilemap_layers.layers[3].set(2, 1, 5);
+        runtime.tilemap_layers.layers[1].set(2, 1, 5);
 
         let mut actor = GameObject::new(1.5, 1.0, Some("Actor".to_string()));
+        actor.tag = "Player".to_string();
         actor
             .get_component_mut("SpriteRenderer")
             .unwrap()
@@ -1367,8 +1663,11 @@ mod tests {
             "_source_rect",
             json!({"x": 8, "y": 0, "width": 8, "height": 8}),
         );
+        actor.add_component(default_component("Light2D").unwrap());
         let mut emitter = GameObject::new(2.0, 1.0, Some("Emitter".to_string()));
         emitter.add_component(default_component("ParticleEmitter").unwrap());
+        let mut police = GameObject::new(3.0, 1.0, Some("Police".to_string()));
+        police.tag = "Police".to_string();
         let mut ui = GameObject::new(0.0, 0.0, Some("Health".to_string()));
         let mut ui_component = default_component("UIElement").unwrap();
         ui_component.set("element_type", json!("ProgressBar"));
@@ -1411,8 +1710,16 @@ mod tests {
         nine_slice_component.set("slice_top", json!(6.0));
         nine_slice_component.set("slice_bottom", json!(6.0));
         nine_slice.add_component(nine_slice_component);
+        let mut minimap = GameObject::new(0.0, 0.0, Some("Minimap".to_string()));
+        let mut minimap_component = default_component("UIElement").unwrap();
+        minimap_component.set("element_type", json!("Minimap"));
+        minimap_component.set("text", json!(""));
+        minimap_component.set("width", json!(100.0));
+        minimap_component.set("height", json!(100.0));
+        minimap_component.set("world_radius", json!(20.0));
+        minimap.add_component(minimap_component);
         runtime.runtime_world.replace_entities(vec![
-            actor, emitter, ui, slider, checkbox, inventory, nine_slice,
+            actor, emitter, police, ui, slider, checkbox, inventory, nine_slice, minimap,
         ]);
         runtime
             .particle_system
@@ -1444,17 +1751,20 @@ mod tests {
         backend.end_frame().unwrap();
 
         assert_eq!(stats.tile_layer_quads, 2);
-        assert_eq!(stats.entity_quads, 2);
+        assert_eq!(stats.entity_quads, 3);
         assert_eq!(stats.textured_entities, 1);
         assert!(stats.particle_quads >= 8);
-        assert_eq!(stats.ui_quads, 42);
+        assert_eq!(stats.light_quads, 1);
+        assert_eq!(stats.ui_quads, 50);
         assert_eq!(stats.ui_text_areas, 2);
         assert_eq!(stats.textured_ui_images, 1);
+        assert_eq!(stats.minimap_quads, 3);
         assert_eq!(
             backend.draw_calls,
             stats.tile_quads
                 + stats.entity_quads
                 + stats.particle_quads
+                + stats.light_quads
                 + stats.ui_quads
                 + stats.ui_text_areas
         );

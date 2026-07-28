@@ -20,9 +20,11 @@ use serde::{Deserialize, Serialize};
 use crate::engine::error_handler::{MFResult, MiniForgeError};
 
 use super::backend::{
-    CameraCommand3D, GraphicsApi, LightDrawCommand3D, MeshDrawCommand3D, ParticleDrawCommand,
-    RenderBackend, RenderDeviceCaps, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions,
+    BUILTIN_RADIAL_LIGHT_TEXTURE_ID, BUILTIN_RADIAL_LIGHT_TEXTURE_SIZE, CameraCommand3D,
+    GraphicsApi, LightDrawCommand3D, MeshDrawCommand3D, ParticleDrawCommand, RenderBackend,
+    RenderDeviceCaps, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions,
     SpriteRegionDrawCommand, TextDrawCommand, TextWrapMode, TilemapDrawCommand, UiDrawCommand,
+    radial_light_texture_rgba8,
 };
 
 const OFFSCREEN_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -291,9 +293,9 @@ impl WgpuBackend {
         height: u32,
         pixels: &[u8],
     ) -> MFResult<()> {
-        if texture_id == 0 {
+        if matches!(texture_id, 0 | BUILTIN_RADIAL_LIGHT_TEXTURE_ID) {
             return Err(render_error(
-                "texture id 0 is reserved for the white texture",
+                "texture id is reserved for a MiniForge built-in texture",
             ));
         }
         let width = width.max(1);
@@ -332,6 +334,9 @@ impl WgpuBackend {
     }
 
     pub fn remove_texture(&mut self, texture_id: u64) -> bool {
+        if texture_id == BUILTIN_RADIAL_LIGHT_TEXTURE_ID {
+            return false;
+        }
         let removed_from_gpu = self
             .state
             .as_mut()
@@ -341,7 +346,10 @@ impl WgpuBackend {
     }
 
     pub fn texture_count(&self) -> usize {
-        self.texture_backups.len()
+        self.texture_backups
+            .keys()
+            .filter(|&&texture_id| texture_id != BUILTIN_RADIAL_LIGHT_TEXTURE_ID)
+            .count()
     }
 
     pub fn last_frame_diagnostics(&self) -> &WgpuFrameDiagnostics {
@@ -621,6 +629,7 @@ impl WgpuBackend {
         instance: &wgpu::Instance,
         surface: Option<wgpu::Surface<'static>>,
     ) -> MFResult<()> {
+        self.ensure_builtin_texture_backups();
         match self.create_state(instance, surface) {
             Ok((mut state, caps)) => {
                 restore_texture_backups(&mut state, &self.texture_backups);
@@ -663,6 +672,7 @@ impl WgpuBackend {
         } else {
             format!("{} · {}", notice.reason, notice.message)
         };
+        self.ensure_builtin_texture_backups();
         match self.create_state(&instance, surface) {
             Ok((mut state, caps)) => {
                 restore_texture_backups(&mut state, &self.texture_backups);
@@ -683,6 +693,16 @@ impl WgpuBackend {
                 Err(error)
             }
         }
+    }
+
+    fn ensure_builtin_texture_backups(&mut self) {
+        self.texture_backups
+            .entry(BUILTIN_RADIAL_LIGHT_TEXTURE_ID)
+            .or_insert_with(|| WgpuTextureBackup {
+                width: BUILTIN_RADIAL_LIGHT_TEXTURE_SIZE,
+                height: BUILTIN_RADIAL_LIGHT_TEXTURE_SIZE,
+                pixels: radial_light_texture_rgba8(BUILTIN_RADIAL_LIGHT_TEXTURE_SIZE),
+            });
     }
 
     #[doc(hidden)]

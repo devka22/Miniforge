@@ -1,6 +1,6 @@
 use miniforge::render::backend::{
-    RenderBackend, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions, SpriteRegionDrawCommand,
-    TextDrawCommand, TextWrapMode, WgpuBackend,
+    BUILTIN_RADIAL_LIGHT_TEXTURE_ID, RenderBackend, SpriteBlendMode, SpriteDrawCommand,
+    SpriteDrawOptions, SpriteRegionDrawCommand, TextDrawCommand, TextWrapMode, WgpuBackend,
 };
 
 #[test]
@@ -41,6 +41,23 @@ fn physical_wgpu_backend_renders_and_reads_pixels() {
             uv_rect: [0.5, 0.0, 1.0, 1.0],
             clip_rect: Some([52, 0, 12, 16]),
         })
+        .unwrap();
+    backend
+        .draw_sprite_with_options(
+            SpriteDrawCommand {
+                entity_id: 3,
+                texture_id: BUILTIN_RADIAL_LIGHT_TEXTURE_ID,
+                x: 32.0,
+                y: 0.0,
+                width: 16.0,
+                height: 16.0,
+                rotation: 0.0,
+                color: [1.0, 0.8, 0.45, 1.0],
+            },
+            SpriteDrawOptions {
+                blend_mode: SpriteBlendMode::Additive,
+            },
+        )
         .unwrap();
     for (index, blend_mode) in [
         SpriteBlendMode::Additive,
@@ -103,6 +120,8 @@ fn physical_wgpu_backend_renders_and_reads_pixels() {
     let corner = (2 * 64 + 2) * 4;
     let clipped_out = (8 * 64 + 50) * 4;
     let textured = (8 * 64 + 56) * 4;
+    let light_center = (8 * 64 + 40) * 4;
+    let light_edge = 32 * 4;
     assert!(pixels[center] > 240, "center should be rendered red");
     assert!(pixels[center + 1] < 16);
     assert!(pixels[center + 2] < 16);
@@ -114,6 +133,10 @@ fn physical_wgpu_backend_renders_and_reads_pixels() {
     assert!(
         pixels[textured + 2] > 240,
         "uploaded atlas region should sample the blue texel"
+    );
+    assert!(
+        pixels[light_center] > pixels[light_edge] + 64,
+        "built-in light texture should produce a soft radial falloff"
     );
     for x in [8usize, 24, 40, 56] {
         let blended = (56 * 64 + x) * 4;
