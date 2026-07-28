@@ -9,7 +9,8 @@ use miniforge::render::backend::{
     TextWrapMode, WgpuBackend,
 };
 use miniforge::render::runtime_scene_2d::{
-    RuntimeTexture2D, draw_engine_runtime_scene_2d, entity_sprite_path,
+    RuntimeTexture2D, draw_engine_runtime_scene_2d, entity_sprite_path, entity_ui_sprite_path,
+    scene_ui_sprite_paths,
 };
 use miniforge::runtime::engine_runtime::EngineRuntime;
 use winit::application::ApplicationHandler;
@@ -137,13 +138,16 @@ impl PreviewApp {
         let Some(runtime) = self.runtime.as_ref() else {
             return Ok(());
         };
-        let paths = runtime
+        let mut paths = runtime
             .runtime_world
             .units
             .iter()
-            .filter_map(entity_sprite_path)
+            .filter_map(|entity| {
+                entity_sprite_path(entity).or_else(|| entity_ui_sprite_path(entity))
+            })
             .map(ToString::to_string)
             .collect::<std::collections::BTreeSet<_>>();
+        paths.extend(scene_ui_sprite_paths(&runtime.ui_canvases));
         for relative_path in paths {
             let path = if Path::new(&relative_path).is_absolute() {
                 PathBuf::from(&relative_path)

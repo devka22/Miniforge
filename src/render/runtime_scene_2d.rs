@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::engine::component::Component;
 use crate::engine::error_handler::MFResult;
 use crate::engine::tilemap_layers::{TileLayer, TilemapLayers};
+use crate::engine::ui_canvas::{UiCanvasElement, layout_element_pixels, ui_canvases_from_value};
 use crate::engine::world::RuntimeWorld;
 use crate::entities::game_object::GameObject;
 use crate::map::grid::Grid;
@@ -31,6 +32,9 @@ pub struct RuntimeScene2DStats {
     pub particle_quads: usize,
     pub ui_quads: usize,
     pub ui_text_areas: usize,
+    pub ui_canvas_quads: usize,
+    pub ui_canvas_text_areas: usize,
+    pub textured_ui_images: usize,
     pub textured_entities: usize,
 }
 
@@ -121,8 +125,39 @@ pub fn draw_engine_runtime_scene_2d<B: RenderBackend>(
         true,
         &mut stats,
     )?;
-    draw_runtime_ui(backend, &runtime.runtime_world, width, height, &mut stats)?;
+    draw_runtime_ui(
+        backend,
+        &runtime.runtime_world,
+        textures,
+        width,
+        height,
+        &mut stats,
+    )?;
+    draw_scene_ui_canvases(
+        backend,
+        &runtime.ui_canvases,
+        textures,
+        width,
+        height,
+        &mut stats,
+    )?;
     Ok(stats)
+}
+
+pub fn scene_ui_sprite_paths(ui_canvases: &serde_json::Value) -> Vec<String> {
+    let mut paths = ui_canvases_from_value(ui_canvases)
+        .into_iter()
+        .flat_map(|canvas| canvas.elements)
+        .filter_map(|element| match element {
+            UiCanvasElement::Image { sprite_path, .. } if !sprite_path.trim().is_empty() => {
+                Some(sprite_path)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 pub fn entity_sprite_path(entity: &GameObject) -> Option<&str> {
@@ -136,6 +171,10 @@ pub fn entity_sprite_path(entity: &GameObject) -> Option<&str> {
     .into_iter()
     .find_map(|key| sprite.get(key).and_then(serde_json::Value::as_str))
     .filter(|path| !path.trim().is_empty())
+}
+
+pub fn entity_ui_sprite_path(entity: &GameObject) -> Option<&str> {
+    ui_component_sprite_path(entity.get_component("UIElement")?)
 }
 
 pub fn draw_runtime_scene_2d<B: RenderBackend>(
@@ -525,6 +564,7 @@ fn draw_particles<B: RenderBackend>(
 fn draw_runtime_ui<B: RenderBackend>(
     backend: &mut B,
     world: &RuntimeWorld,
+    textures: &BTreeMap<String, RuntimeTexture2D>,
     screen_width: f32,
     screen_height: f32,
     stats: &mut RuntimeScene2DStats,
@@ -548,34 +588,64 @@ fn draw_runtime_ui<B: RenderBackend>(
         {
             continue;
         }
+        let kind = ui.get_string("element_type", "Label");
+        let image_binding = if matches!(kind.as_str(), "Image" | "NineSlice") {
+            ui_component_sprite_path(ui).and_then(|path| textures.get(path))
+        } else {
+            None
+        };
         let background = component_color(ui.get("color"), [24, 28, 36, 255], opacity);
-        draw_quad(backend, ui_base, 0, x, y, width, height, background)?;
-        stats.ui_quads += 1;
-
-        let border = component_color(ui.get("border_color"), [92, 112, 142, 255], opacity);
-        for (index, (bx, by, bw, bh)) in [
-            (x, y, width, 1.0),
-            (x, y + (height - 1.0).max(0.0), width, 1.0),
-            (x, y, 1.0, height),
-            (x + (width - 1.0).max(0.0), y, 1.0, height),
-        ]
-        .into_iter()
-        .enumerate()
+        if kind == "NineSlice"
+            && let Some(texture) = image_binding
         {
+            let slice_quads =
+                draw_nine_slice(backend, ui_base, ui, texture, x, y, width, height, opacity)?;
+            stats.ui_quads += slice_quads;
+            stats.textured_ui_images += 1;
+        } else {
             draw_quad(
                 backend,
-                ui_base.saturating_add(index as u64 + 1),
-                0,
-                bx,
-                by,
-                bw,
-                bh,
-                border,
+                ui_base,
+                image_binding.map_or(0, |texture| texture.texture_id),
+                x,
+                y,
+                width,
+                height,
+                if image_binding.is_some() {
+                    [1.0, 1.0, 1.0, opacity]
+                } else {
+                    background
+                },
             )?;
             stats.ui_quads += 1;
+            stats.textured_ui_images += usize::from(image_binding.is_some());
+
+            if !matches!(kind.as_str(), "Image" | "NineSlice") || image_binding.is_none() {
+                let border = component_color(ui.get("border_color"), [92, 112, 142, 255], opacity);
+                for (index, (bx, by, bw, bh)) in [
+                    (x, y, width, 1.0),
+                    (x, y + (height - 1.0).max(0.0), width, 1.0),
+                    (x, y, 1.0, height),
+                    (x + (width - 1.0).max(0.0), y, 1.0, height),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    draw_quad(
+                        backend,
+                        ui_base.saturating_add(index as u64 + 1),
+                        0,
+                        bx,
+                        by,
+                        bw,
+                        bh,
+                        border,
+                    )?;
+                    stats.ui_quads += 1;
+                }
+            }
         }
 
-        let kind = ui.get_string("element_type", "Label");
         if matches!(kind.as_str(), "ProgressBar" | "StatBar") {
             let max = ui.get_f64("max_progress", 1.0).max(0.0001);
             let progress = (ui.get_f64("progress", 0.0) / max).clamp(0.0, 1.0) as f32;
@@ -790,6 +860,250 @@ fn draw_runtime_ui<B: RenderBackend>(
     Ok(())
 }
 
+fn ui_component_sprite_path(ui: &Component) -> Option<&str> {
+    [
+        "texture_path",
+        "sprite_path",
+        "image_path",
+        "image_name",
+        "source_asset",
+    ]
+    .into_iter()
+    .find_map(|key| ui.get(key).and_then(serde_json::Value::as_str))
+    .filter(|path| !path.trim().is_empty())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_nine_slice<B: RenderBackend>(
+    backend: &mut B,
+    element_id: u64,
+    ui: &Component,
+    texture: &RuntimeTexture2D,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    opacity: f32,
+) -> MFResult<usize> {
+    let texture_width = texture.width.max(1) as f32;
+    let texture_height = texture.height.max(1) as f32;
+    let left_source = (ui.get_f64("slice_left", 8.0) as f32).clamp(0.0, texture_width * 0.5);
+    let right_source = (ui.get_f64("slice_right", 8.0) as f32).clamp(0.0, texture_width * 0.5);
+    let top_source = (ui.get_f64("slice_top", 8.0) as f32).clamp(0.0, texture_height * 0.5);
+    let bottom_source = (ui.get_f64("slice_bottom", 8.0) as f32).clamp(0.0, texture_height * 0.5);
+    let left = left_source.min(width * 0.5);
+    let right = right_source.min(width * 0.5);
+    let top = top_source.min(height * 0.5);
+    let bottom = bottom_source.min(height * 0.5);
+    let xs = [x, x + left, x + width - right, x + width];
+    let ys = [y, y + top, y + height - bottom, y + height];
+    let us = [
+        0.0,
+        left_source / texture_width,
+        1.0 - right_source / texture_width,
+        1.0,
+    ];
+    let vs = [
+        0.0,
+        top_source / texture_height,
+        1.0 - bottom_source / texture_height,
+        1.0,
+    ];
+    let mut quads = 0;
+    for row in 0..3 {
+        for column in 0..3 {
+            let slice_width = xs[column + 1] - xs[column];
+            let slice_height = ys[row + 1] - ys[row];
+            if slice_width <= 0.0 || slice_height <= 0.0 {
+                continue;
+            }
+            backend.draw_sprite_region(SpriteRegionDrawCommand {
+                sprite: SpriteDrawCommand {
+                    entity_id: element_id.saturating_add((row * 3 + column) as u64),
+                    texture_id: texture.texture_id,
+                    x: xs[column],
+                    y: ys[row],
+                    width: slice_width,
+                    height: slice_height,
+                    rotation: 0.0,
+                    color: [1.0, 1.0, 1.0, opacity],
+                },
+                uv_rect: [us[column], vs[row], us[column + 1], vs[row + 1]],
+                clip_rect: None,
+            })?;
+            quads += 1;
+        }
+    }
+    Ok(quads)
+}
+
+fn draw_scene_ui_canvases<B: RenderBackend>(
+    backend: &mut B,
+    ui_canvases: &serde_json::Value,
+    textures: &BTreeMap<String, RuntimeTexture2D>,
+    screen_width: f32,
+    screen_height: f32,
+    stats: &mut RuntimeScene2DStats,
+) -> MFResult<()> {
+    for (canvas_index, canvas) in ui_canvases_from_value(ui_canvases).iter().enumerate() {
+        for (element_index, element) in canvas.elements.iter().enumerate() {
+            let Some((x, y, width, height)) =
+                finite_ui_canvas_rect(canvas, element, screen_width, screen_height)
+            else {
+                continue;
+            };
+            if !rect_intersects_screen(x, y, width, height, screen_width, screen_height) {
+                continue;
+            }
+            let element_base = 9_500_000_000u64
+                .saturating_add((canvas_index as u64).saturating_mul(1_000_000))
+                .saturating_add((element_index as u64).saturating_mul(4));
+            match element {
+                UiCanvasElement::Panel { color, .. } => {
+                    draw_quad(
+                        backend,
+                        element_base,
+                        0,
+                        x,
+                        y,
+                        width,
+                        height,
+                        rgba8_to_float(*color),
+                    )?;
+                    stats.ui_quads += 1;
+                    stats.ui_canvas_quads += 1;
+                }
+                UiCanvasElement::Button { label, .. } => {
+                    draw_quad(
+                        backend,
+                        element_base,
+                        0,
+                        x,
+                        y,
+                        width,
+                        height,
+                        [0.12, 0.16, 0.22, 0.96],
+                    )?;
+                    stats.ui_quads += 1;
+                    stats.ui_canvas_quads += 1;
+                    if !label.trim().is_empty() {
+                        draw_canvas_text(
+                            backend,
+                            element_base.saturating_add(1),
+                            label,
+                            x,
+                            y,
+                            width,
+                            height,
+                            18.0,
+                        )?;
+                        stats.ui_text_areas += 1;
+                        stats.ui_canvas_text_areas += 1;
+                    }
+                }
+                UiCanvasElement::Label {
+                    text, font_size, ..
+                } => {
+                    if !text.trim().is_empty() {
+                        draw_canvas_text(
+                            backend,
+                            element_base,
+                            text,
+                            x,
+                            y,
+                            width,
+                            height,
+                            sanitize_canvas_font_size(*font_size),
+                        )?;
+                        stats.ui_text_areas += 1;
+                        stats.ui_canvas_text_areas += 1;
+                    }
+                }
+                UiCanvasElement::Image { sprite_path, .. } => {
+                    let texture_id = textures
+                        .get(sprite_path)
+                        .map_or(0, |texture| texture.texture_id);
+                    draw_quad(
+                        backend,
+                        element_base,
+                        texture_id,
+                        x,
+                        y,
+                        width,
+                        height,
+                        [1.0; 4],
+                    )?;
+                    stats.ui_quads += 1;
+                    stats.ui_canvas_quads += 1;
+                    stats.textured_ui_images += usize::from(texture_id != 0);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn finite_ui_canvas_rect(
+    canvas: &crate::engine::ui_canvas::UiCanvasRoot,
+    element: &UiCanvasElement,
+    screen_width: f32,
+    screen_height: f32,
+) -> Option<(f32, f32, f32, f32)> {
+    let rect = layout_element_pixels(
+        canvas,
+        element.rect(),
+        screen_width.max(1.0),
+        screen_height.max(1.0),
+    );
+    (rect.0.is_finite()
+        && rect.1.is_finite()
+        && rect.2.is_finite()
+        && rect.3.is_finite()
+        && rect.2 > 0.0
+        && rect.3 > 0.0)
+        .then_some(rect)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_canvas_text<B: RenderBackend>(
+    backend: &mut B,
+    text_id: u64,
+    text: &str,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    font_size: f32,
+) -> MFResult<()> {
+    let line_height = font_size * 1.25;
+    backend.draw_text(TextDrawCommand {
+        text_id,
+        text: text.to_string(),
+        font_family: String::new(),
+        x: x + 6.0,
+        y: y + ((height - line_height) * 0.5).max(2.0),
+        width: (width - 12.0).max(1.0),
+        height: (height - 4.0).max(1.0),
+        font_size,
+        line_height,
+        color: [235, 240, 248, 255],
+        wrap: TextWrapMode::Word,
+        clip_rect: None,
+    })
+}
+
+fn sanitize_canvas_font_size(font_size: f32) -> f32 {
+    if font_size.is_finite() && font_size > 0.0 {
+        font_size.clamp(1.0, 512.0)
+    } else {
+        18.0
+    }
+}
+
+fn rgba8_to_float(color: [u8; 4]) -> [f32; 4] {
+    color.map(|channel| f32::from(channel) / 255.0)
+}
+
 fn resolved_ui_text_metrics(ui: &Component) -> (f32, f32) {
     let authored_font_size = ui.get_f64("font_size", 0.0);
     let font_size = if authored_font_size.is_finite() && authored_font_size > 0.0 {
@@ -980,6 +1294,7 @@ fn normalized_color_channel(channel: Option<f64>) -> f32 {
 mod tests {
     use super::*;
     use crate::engine::component::default_component;
+    use crate::engine::ui_canvas::{UiAnchor, UiCanvasRoot, UiRect};
     use crate::entities::game_object::GameObject;
     use crate::render::backend::MacroquadBackend;
     use serde_json::json;
@@ -1084,21 +1399,43 @@ mod tests {
         inventory_component.set("slot_size", json!(24.0));
         inventory_component.set("items", json!([{"id": "water"}, null]));
         inventory.add_component(inventory_component);
-        runtime
-            .runtime_world
-            .replace_entities(vec![actor, emitter, ui, slider, checkbox, inventory]);
+        let mut nine_slice = GameObject::new(0.0, 0.0, Some("Frame".to_string()));
+        let mut nine_slice_component = default_component("UIElement").unwrap();
+        nine_slice_component.set("element_type", json!("NineSlice"));
+        nine_slice_component.set("text", json!(""));
+        nine_slice_component.set("image_name", json!("assets/ui/frame.png"));
+        nine_slice_component.set("width", json!(96.0));
+        nine_slice_component.set("height", json!(64.0));
+        nine_slice_component.set("slice_left", json!(6.0));
+        nine_slice_component.set("slice_right", json!(6.0));
+        nine_slice_component.set("slice_top", json!(6.0));
+        nine_slice_component.set("slice_bottom", json!(6.0));
+        nine_slice.add_component(nine_slice_component);
+        runtime.runtime_world.replace_entities(vec![
+            actor, emitter, ui, slider, checkbox, inventory, nine_slice,
+        ]);
         runtime
             .particle_system
             .update_previews(&runtime.runtime_world.units, 0.0);
 
-        let textures = BTreeMap::from([(
-            "assets/actor.png".to_string(),
-            RuntimeTexture2D {
-                texture_id: 7,
-                width: 16,
-                height: 8,
-            },
-        )]);
+        let textures = BTreeMap::from([
+            (
+                "assets/actor.png".to_string(),
+                RuntimeTexture2D {
+                    texture_id: 7,
+                    width: 16,
+                    height: 8,
+                },
+            ),
+            (
+                "assets/ui/frame.png".to_string(),
+                RuntimeTexture2D {
+                    texture_id: 8,
+                    width: 24,
+                    height: 24,
+                },
+            ),
+        ]);
         let mut backend = MacroquadBackend::default();
         backend.init().unwrap();
         backend.begin_frame().unwrap();
@@ -1110,8 +1447,9 @@ mod tests {
         assert_eq!(stats.entity_quads, 2);
         assert_eq!(stats.textured_entities, 1);
         assert!(stats.particle_quads >= 8);
-        assert_eq!(stats.ui_quads, 33);
+        assert_eq!(stats.ui_quads, 42);
         assert_eq!(stats.ui_text_areas, 2);
+        assert_eq!(stats.textured_ui_images, 1);
         assert_eq!(
             backend.draw_calls,
             stats.tile_quads
@@ -1145,5 +1483,81 @@ mod tests {
 
         ui.set("value", json!(f64::NAN));
         assert_eq!(normalized_ui_slider(&ui), 0.0);
+    }
+
+    #[test]
+    fn responsive_scene_canvas_draws_panels_buttons_labels_and_images() {
+        let rect = |x: f32, y: f32, width: f32, height: f32| UiRect {
+            anchor: UiAnchor {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 0.0,
+                max_y: 0.0,
+            },
+            pivot_x: 0.0,
+            pivot_y: 0.0,
+            offset_x: x,
+            offset_y: y,
+            width,
+            height,
+        };
+        let canvas = UiCanvasRoot {
+            id: "hud".to_string(),
+            name: "HUD".to_string(),
+            reference_width: 320.0,
+            reference_height: 180.0,
+            elements: vec![
+                UiCanvasElement::Panel {
+                    id: "panel".to_string(),
+                    name: "Panel".to_string(),
+                    rect: rect(8.0, 8.0, 120.0, 60.0),
+                    color: [24, 28, 36, 220],
+                },
+                UiCanvasElement::Button {
+                    id: "button".to_string(),
+                    label: "Continue".to_string(),
+                    rect: rect(12.0, 16.0, 96.0, 32.0),
+                },
+                UiCanvasElement::Label {
+                    id: "label".to_string(),
+                    text: "Unicode: agua • frío".to_string(),
+                    rect: rect(12.0, 72.0, 180.0, 28.0),
+                    font_size: 18.0,
+                },
+                UiCanvasElement::Image {
+                    id: "portrait".to_string(),
+                    sprite_path: "assets/ui/portrait.png".to_string(),
+                    rect: rect(240.0, 8.0, 64.0, 64.0),
+                },
+            ],
+        };
+        let canvases = json!([canvas]);
+        let textures = BTreeMap::from([(
+            "assets/ui/portrait.png".to_string(),
+            RuntimeTexture2D {
+                texture_id: 41,
+                width: 32,
+                height: 32,
+            },
+        )]);
+        let mut backend = MacroquadBackend::default();
+        backend.init().unwrap();
+        backend.begin_frame().unwrap();
+        let mut stats = RuntimeScene2DStats::default();
+
+        draw_scene_ui_canvases(&mut backend, &canvases, &textures, 640.0, 360.0, &mut stats)
+            .unwrap();
+        backend.end_frame().unwrap();
+
+        assert_eq!(stats.ui_canvas_quads, 3);
+        assert_eq!(stats.ui_canvas_text_areas, 2);
+        assert_eq!(stats.textured_ui_images, 1);
+        assert_eq!(stats.ui_quads, 3);
+        assert_eq!(stats.ui_text_areas, 2);
+        assert_eq!(backend.draw_calls, 5);
+        assert_eq!(
+            scene_ui_sprite_paths(&canvases),
+            vec!["assets/ui/portrait.png".to_string()]
+        );
     }
 }
