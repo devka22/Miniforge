@@ -40,6 +40,15 @@ int main(int argc, char** argv)
     expect(argc >= 2, "expected a project path argument");
 
     MfBridge bridge;
+    QString lastOperationMessage;
+    bool lastOperationSucceeded = false;
+    QObject::connect(
+        &bridge,
+        &MfBridge::operationCompleted,
+        [&](const QString& message, bool success) {
+            lastOperationMessage = message;
+            lastOperationSucceeded = success;
+        });
     EntityModel entities(&bridge);
     InspectorModel inspector(&bridge);
     AssetModel assets(&bridge);
@@ -98,6 +107,20 @@ int main(int argc, char** argv)
     expect(selectableEntity != 0, "smoke project should contain a selectable entity");
     expect(bridge.updateSelection(selectableEntity, QStringLiteral("replace")), "replace selection should succeed");
     expect(bridge.selectedEntityCount() == 1, "replace selection should select one entity");
+    expect(
+        bridge.performSelectedEntityAction(
+            QStringLiteral("add_component_bundle"),
+            QStringLiteral("{\"bundle\":\"survival_actor\"}")),
+        "guided authoring should add the survival systems");
+    expect(lastOperationSucceeded, "guided authoring completion should report success");
+    expect(
+        lastOperationMessage.contains(QStringLiteral("component(s)")),
+        "guided authoring completion should count components");
+    expect(
+        !lastOperationMessage.contains(QStringLiteral("object(s)")),
+        "guided authoring completion should not mislabel components as objects");
+    expect(bridge.executeCommand(QStringLiteral("edit.undo")), "guided authoring should undo as one command");
+    expect(bridge.updateSelection(selectableEntity, QStringLiteral("replace")), "selection should restore after guided authoring undo");
     expect(inspector.entityId() == selectableEntity && inspector.rowCount() > 0, "selection should feed Inspector fields");
     const int inspectorFieldCount = inspector.rowCount();
     inspector.setFilter(QStringLiteral("__missing_property__"));

@@ -644,8 +644,14 @@ bool MfBridge::performSelectedEntityAction(const QString& action, const QString&
     emit selectionChanged(selectedEntityId());
     emit sceneStateChanged();
     emit dataChanged();
+    const QString changedKind = action == QStringLiteral("add_component_bundle")
+        ? QStringLiteral("component(s)")
+        : QStringLiteral("object(s)");
     emit operationCompleted(
-        QStringLiteral("Selection action complete · %1 · %2 object(s)").arg(action).arg(changed),
+        QStringLiteral("Selection action complete · %1 · %2 %3")
+            .arg(action)
+            .arg(changed)
+            .arg(changedKind),
         true);
     return true;
 }
