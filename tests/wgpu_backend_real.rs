@@ -276,3 +276,86 @@ fn physical_wgpu_runtime_composes_ambient_directional_and_shadow_lighting() {
     assert!(backend.is_using_physical_device());
     std::fs::remove_dir_all(root).ok();
 }
+
+#[test]
+#[ignore = "requires a physical or software wgpu adapter"]
+fn physical_wgpu_runtime_loads_and_clips_retained_ui_documents() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("miniforge-wgpu-retained-ui-{unique}"));
+    std::fs::create_dir_all(root.join("assets/scenes")).unwrap();
+    std::fs::create_dir_all(root.join("assets/ui")).unwrap();
+    std::fs::create_dir_all(root.join("settings")).unwrap();
+    std::fs::write(
+        root.join("project.mforge"),
+        r#"{"name":"Retained UI Test","start_scene":"assets/scenes/main.scene.json"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("assets/scenes/main.scene.json"),
+        r#"{"entities":[],"grid":{"width":4,"height":4,"tile_size":16,"chunk_size":2}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("assets/ui/hud.ui2d.json"),
+        r#"{
+            "name":"HUD",
+            "viewport_width":64.0,
+            "viewport_height":64.0,
+            "theme":{"name":"Test","styles":{}},
+            "widgets":[{
+                "id":"clip",
+                "widget_type":"ScrollBox",
+                "rect":{"x":8.0,"y":8.0,"width":24.0,"height":16.0},
+                "anchors":{"min_x":0.0,"min_y":0.0,"max_x":0.0,"max_y":0.0},
+                "properties":{"content_height":40.0,"show_scrollbar":false},
+                "style":{"background":[0,0,0,0]},
+                "children":[{
+                    "id":"red_panel",
+                    "widget_type":"Panel",
+                    "rect":{"x":4.0,"y":8.0,"width":16.0,"height":20.0},
+                    "anchors":{"min_x":0.0,"min_y":0.0,"max_x":0.0,"max_y":0.0},
+                    "style":{"background":[255,0,0,255]}
+                }]
+            }]
+        }"#,
+    )
+    .unwrap();
+    let mut runtime = EngineRuntime::new(&root).unwrap();
+    let mut canvas_entity = GameObject::new(0.0, 0.0, Some("HUD".to_string()));
+    let mut canvas_component = default_component("WidgetCanvas2D").unwrap();
+    canvas_component.set("canvas", json!("assets/ui/hud.ui2d.json"));
+    canvas_entity.add_component(canvas_component);
+    runtime.runtime_world.replace_entities(vec![canvas_entity]);
+    let report = runtime.reload_ui_documents();
+    assert_eq!(report.loaded, 1);
+    assert!(report.errors.is_empty());
+
+    let mut backend = WgpuBackend::new(true, cfg!(target_os = "macos"));
+    backend.resize(64, 64).unwrap();
+    backend.set_clear_color([0.0, 0.0, 0.0, 1.0]);
+    backend.init().unwrap();
+    backend.begin_frame().unwrap();
+    let stats =
+        draw_engine_runtime_scene_2d(&mut backend, &runtime, &BTreeMap::new(), 64.0, 64.0).unwrap();
+    backend.end_frame().unwrap();
+
+    let pixels = backend.readback_rgba8().unwrap();
+    let inside = (20 * 64 + 16) * 4;
+    let clipped_out = (28 * 64 + 16) * 4;
+    assert_eq!(stats.retained_ui_widgets, 2);
+    assert_eq!(stats.retained_ui_quads, 1);
+    assert_eq!(stats.retained_ui_clipped_quads, 1);
+    assert!(
+        pixels[inside] > 240 && pixels[inside + 1] < 16,
+        "retained panel should render inside the ScrollBox clip"
+    );
+    assert!(
+        pixels[clipped_out] < 80,
+        "retained panel must not leak below the ScrollBox clip"
+    );
+    assert!(backend.is_using_physical_device());
+    std::fs::remove_dir_all(root).ok();
+}

@@ -1,15 +1,19 @@
 use std::collections::BTreeMap;
+use std::path::{Component as PathComponent, Path};
 
 use serde::{Deserialize, Serialize};
 
 use crate::engine::component::Component;
 use crate::engine::error_handler::MFResult;
+use crate::engine::miniforge_2d::ui_framework::{
+    UiCanvas2D, UiRect2D, UiResolvedWidget2D, UiStyle2D, UiWidget2D,
+};
 use crate::engine::tilemap_layers::{TileLayer, TilemapLayers};
 use crate::engine::ui_canvas::{UiCanvasElement, layout_element_pixels, ui_canvases_from_value};
 use crate::engine::world::RuntimeWorld;
 use crate::entities::game_object::GameObject;
 use crate::map::grid::Grid;
-use crate::runtime::engine_runtime::EngineRuntime;
+use crate::runtime::engine_runtime::{EngineRuntime, RuntimeUiDocument2D};
 use crate::systems::particle_system::ParticleSystem;
 
 use super::backend::{
@@ -36,6 +40,10 @@ pub struct RuntimeScene2DStats {
     pub ui_text_areas: usize,
     pub ui_canvas_quads: usize,
     pub ui_canvas_text_areas: usize,
+    pub retained_ui_widgets: usize,
+    pub retained_ui_quads: usize,
+    pub retained_ui_text_areas: usize,
+    pub retained_ui_clipped_quads: usize,
     pub textured_ui_images: usize,
     pub minimap_quads: usize,
     pub textured_entities: usize,
@@ -160,6 +168,14 @@ pub fn draw_engine_runtime_scene_2d<B: RenderBackend>(
         height,
         &mut stats,
     )?;
+    draw_runtime_ui_documents(
+        backend,
+        &runtime.ui_documents,
+        textures,
+        width,
+        height,
+        &mut stats,
+    )?;
     Ok(stats)
 }
 
@@ -173,6 +189,19 @@ pub fn scene_ui_sprite_paths(ui_canvases: &serde_json::Value) -> Vec<String> {
             }
             _ => None,
         })
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+pub fn ui_document_sprite_paths(documents: &[RuntimeUiDocument2D]) -> Vec<String> {
+    let mut paths = documents
+        .iter()
+        .flat_map(|document| document.canvas.flatten_widgets())
+        .filter_map(ui_widget_sprite_path)
+        .filter(|path| is_safe_project_relative_asset_path(path))
+        .map(ToString::to_string)
         .collect::<Vec<_>>();
     paths.sort();
     paths.dedup();
@@ -1618,6 +1647,491 @@ fn draw_scene_ui_canvases<B: RenderBackend>(
     Ok(())
 }
 
+fn draw_runtime_ui_documents<B: RenderBackend>(
+    backend: &mut B,
+    documents: &[RuntimeUiDocument2D],
+    textures: &BTreeMap<String, RuntimeTexture2D>,
+    screen_width: f32,
+    screen_height: f32,
+    stats: &mut RuntimeScene2DStats,
+) -> MFResult<()> {
+    for (document_index, document) in documents.iter().enumerate() {
+        let canvas = &document.canvas;
+        let screen = (screen_width.max(1.0), screen_height.max(1.0));
+        let layout_viewport = document.layout_viewport(screen);
+        let layout_scale = document.layout_scale(screen);
+        let ui_scale = layout_scale.0.min(layout_scale.1);
+        let widgets = canvas
+            .flatten_widgets()
+            .into_iter()
+            .map(|widget| (widget.id.as_str(), widget))
+            .collect::<BTreeMap<_, _>>();
+        let resolved_widgets = canvas
+            .resolve_layout(layout_viewport)
+            .into_iter()
+            .map(|resolved| scale_resolved_widget(resolved, layout_scale))
+            .collect::<Vec<_>>();
+        for (widget_index, resolved) in resolved_widgets.iter().enumerate() {
+            let Some(widget) = widgets.get(resolved.id.as_str()).copied() else {
+                continue;
+            };
+            let rect = resolved.rect;
+            if !rect_intersects_screen(
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height,
+                screen_width,
+                screen_height,
+            ) {
+                continue;
+            }
+            let Some(clip_rect) = retained_widget_clip_rect(resolved, screen_width, screen_height)
+            else {
+                continue;
+            };
+            let element_base = (3u64 << 61)
+                .saturating_add((document_index as u64).saturating_mul(1_000_000))
+                .saturating_add((widget_index as u64).saturating_mul(512));
+            let style = resolved_widget_style(canvas, widget);
+            let widget_type = widget.widget_type.as_str();
+            let partially_clipped = resolved.clip_rect.is_some_and(|clip| clip != resolved.rect);
+            stats.retained_ui_widgets += 1;
+
+            let background = style
+                .background
+                .or_else(|| retained_widget_default_background(widget_type));
+            if let Some(color) = background.filter(|color| color[3] > 0) {
+                draw_quad_clipped(
+                    backend,
+                    element_base,
+                    0,
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                    rgba8_to_float(color),
+                    Some(clip_rect),
+                )?;
+                record_retained_quad(stats, partially_clipped);
+            }
+
+            match widget_type {
+                "Image" | "NineSlice" | "IconButton" => {
+                    if let Some(path) = ui_widget_sprite_path(widget) {
+                        let texture_id = textures.get(path).map_or(0, |texture| texture.texture_id);
+                        draw_quad_clipped(
+                            backend,
+                            element_base.saturating_add(1),
+                            texture_id,
+                            rect.x,
+                            rect.y,
+                            rect.width,
+                            rect.height,
+                            style.foreground.map(rgba8_to_float).unwrap_or([1.0; 4]),
+                            Some(clip_rect),
+                        )?;
+                        record_retained_quad(stats, partially_clipped);
+                        stats.textured_ui_images += usize::from(texture_id != 0);
+                    }
+                }
+                "ProgressBar" | "Slider" => {
+                    let progress = retained_widget_progress(widget);
+                    if progress > 0.0 {
+                        let padding =
+                            scaled_ui_padding(style.padding.unwrap_or([3.0; 4]), ui_scale);
+                        let fill_x = rect.x + padding[0].max(0.0);
+                        let fill_y = rect.y + padding[1].max(0.0);
+                        let fill_width =
+                            ((rect.width - padding[0] - padding[2]).max(0.0) * progress).max(0.0);
+                        let fill_height = (rect.height - padding[1] - padding[3]).max(0.0);
+                        if fill_width > 0.0 && fill_height > 0.0 {
+                            draw_quad_clipped(
+                                backend,
+                                element_base.saturating_add(1),
+                                0,
+                                fill_x,
+                                fill_y,
+                                fill_width,
+                                fill_height,
+                                style
+                                    .foreground
+                                    .map(rgba8_to_float)
+                                    .unwrap_or([0.24, 0.78, 0.52, 1.0]),
+                                Some(clip_rect),
+                            )?;
+                            record_retained_quad(stats, partially_clipped);
+                        }
+                    }
+                }
+                "Checkbox" | "Toggle" => {
+                    let check_size = (rect.height - 8.0).clamp(4.0, 32.0);
+                    if retained_widget_bool(widget, "checked", false) {
+                        draw_quad_clipped(
+                            backend,
+                            element_base.saturating_add(1),
+                            0,
+                            rect.x + 4.0,
+                            rect.y + (rect.height - check_size) * 0.5,
+                            check_size,
+                            check_size,
+                            style
+                                .foreground
+                                .map(rgba8_to_float)
+                                .unwrap_or([0.34, 0.82, 0.58, 1.0]),
+                            Some(clip_rect),
+                        )?;
+                        record_retained_quad(stats, partially_clipped);
+                    }
+                }
+                "InventoryGrid" | "AbilityBar" => {
+                    draw_retained_slots(
+                        backend,
+                        widget,
+                        resolved,
+                        element_base.saturating_add(1),
+                        clip_rect,
+                        ui_scale,
+                        stats,
+                    )?;
+                }
+                "ScrollBox" => {
+                    draw_retained_scrollbar(
+                        backend,
+                        widget,
+                        resolved,
+                        element_base.saturating_add(500),
+                        clip_rect,
+                        ui_scale,
+                        stats,
+                    )?;
+                }
+                _ => {}
+            }
+
+            if let Some(text) = retained_widget_text(widget).filter(|text| !text.trim().is_empty())
+            {
+                let padding =
+                    scaled_ui_padding(style.padding.unwrap_or([6.0, 4.0, 6.0, 4.0]), ui_scale);
+                let checkbox_offset = if matches!(widget_type, "Checkbox" | "Toggle") {
+                    (rect.height - 8.0).clamp(4.0, 32.0) + 6.0
+                } else {
+                    0.0
+                };
+                let text_x = rect.x + padding[0].max(0.0) + checkbox_offset;
+                let text_y = rect.y + padding[1].max(0.0);
+                let text_width = (rect.width - padding[0] - padding[2] - checkbox_offset).max(1.0);
+                let text_height = (rect.height - padding[1] - padding[3]).max(1.0);
+                let font_size =
+                    sanitize_canvas_font_size(style.font_size.unwrap_or(16.0) * ui_scale);
+                backend.draw_text(TextDrawCommand {
+                    text_id: element_base.saturating_add(510),
+                    text: text.to_string(),
+                    font_family: widget
+                        .properties
+                        .get("font_family")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    x: text_x,
+                    y: text_y,
+                    width: text_width,
+                    height: text_height,
+                    font_size,
+                    line_height: font_size * 1.25,
+                    color: style.foreground.unwrap_or([235, 240, 248, 255]),
+                    wrap: TextWrapMode::Word,
+                    clip_rect: Some(clip_rect),
+                })?;
+                stats.ui_text_areas += 1;
+                stats.retained_ui_text_areas += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn record_retained_quad(stats: &mut RuntimeScene2DStats, partially_clipped: bool) {
+    stats.ui_quads += 1;
+    stats.retained_ui_quads += 1;
+    stats.retained_ui_clipped_quads += usize::from(partially_clipped);
+}
+
+fn scale_resolved_widget(
+    mut resolved: UiResolvedWidget2D,
+    scale: (f32, f32),
+) -> UiResolvedWidget2D {
+    resolved.rect = scale_ui_rect(resolved.rect, scale);
+    resolved.clip_rect = resolved.clip_rect.map(|clip| scale_ui_rect(clip, scale));
+    resolved
+}
+
+fn scale_ui_rect(rect: UiRect2D, scale: (f32, f32)) -> UiRect2D {
+    UiRect2D {
+        x: rect.x * scale.0,
+        y: rect.y * scale.1,
+        width: rect.width * scale.0,
+        height: rect.height * scale.1,
+    }
+}
+
+fn scaled_ui_padding(mut padding: [f32; 4], scale: f32) -> [f32; 4] {
+    for value in &mut padding {
+        *value *= scale;
+    }
+    padding
+}
+
+fn resolved_widget_style(canvas: &UiCanvas2D, widget: &UiWidget2D) -> UiStyle2D {
+    let mut style = widget
+        .style
+        .style_id
+        .as_deref()
+        .and_then(|style_id| canvas.theme.styles.get(style_id))
+        .cloned()
+        .unwrap_or_default();
+    if widget.style.background.is_some() {
+        style.background = widget.style.background;
+    }
+    if widget.style.foreground.is_some() {
+        style.foreground = widget.style.foreground;
+    }
+    if widget.style.font_size.is_some() {
+        style.font_size = widget.style.font_size;
+    }
+    if widget.style.padding.is_some() {
+        style.padding = widget.style.padding;
+    }
+    if widget.style.radius.is_some() {
+        style.radius = widget.style.radius;
+    }
+    style.style_id = widget.style.style_id.clone();
+    style
+}
+
+fn retained_widget_default_background(widget_type: &str) -> Option<[u8; 4]> {
+    match widget_type {
+        "Panel" | "Border" | "ScrollBox" | "TabView" | "DialogueBox" | "Tooltip"
+        | "InventoryGrid" | "AbilityBar" => Some([20, 24, 32, 230]),
+        "Button" | "MenuButton" | "IconButton" | "Dropdown" => Some([36, 48, 66, 255]),
+        "TextInput" | "InputField" => Some([12, 16, 23, 242]),
+        "ProgressBar" | "Slider" => Some([16, 20, 28, 230]),
+        "Checkbox" | "Toggle" => Some([28, 36, 48, 230]),
+        _ => None,
+    }
+}
+
+fn retained_widget_clip_rect(
+    resolved: &UiResolvedWidget2D,
+    screen_width: f32,
+    screen_height: f32,
+) -> Option<[u32; 4]> {
+    let rect = resolved.clip_rect.unwrap_or(resolved.rect);
+    pixel_clip_rect(
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+        screen_width,
+        screen_height,
+    )
+}
+
+fn ui_widget_sprite_path(widget: &UiWidget2D) -> Option<&str> {
+    [
+        "sprite_path",
+        "texture_path",
+        "image_path",
+        "image",
+        "texture",
+        "source_asset",
+        "source",
+    ]
+    .into_iter()
+    .find_map(|key| {
+        widget
+            .properties
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+    })
+    .filter(|path| !path.trim().is_empty())
+}
+
+fn is_safe_project_relative_asset_path(path: &str) -> bool {
+    let trimmed = path.trim();
+    let path = Path::new(trimmed);
+    !trimmed.is_empty()
+        && !trimmed.contains('\\')
+        && !path.is_absolute()
+        && !path.components().any(|component| {
+            matches!(
+                component,
+                PathComponent::ParentDir | PathComponent::RootDir | PathComponent::Prefix(_)
+            )
+        })
+}
+
+fn retained_widget_text(widget: &UiWidget2D) -> Option<&str> {
+    ["text", "label", "title", "placeholder"]
+        .into_iter()
+        .find_map(|key| {
+            widget
+                .properties
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+        })
+}
+
+fn retained_widget_progress(widget: &UiWidget2D) -> f32 {
+    let number = |key: &str| {
+        widget
+            .properties
+            .get(key)
+            .and_then(serde_json::Value::as_f64)
+            .filter(|value| value.is_finite())
+    };
+    let min = number("min").unwrap_or(0.0);
+    let max = number("max")
+        .or_else(|| number("max_progress"))
+        .filter(|max| *max > min)
+        .unwrap_or(min + 1.0);
+    let value = number("value")
+        .or_else(|| number("progress"))
+        .unwrap_or(min);
+    ((value - min) / (max - min)).clamp(0.0, 1.0) as f32
+}
+
+fn retained_widget_bool(widget: &UiWidget2D, key: &str, fallback: bool) -> bool {
+    widget
+        .properties
+        .get(key)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(fallback)
+}
+
+fn retained_widget_number(widget: &UiWidget2D, key: &str, fallback: f32) -> f32 {
+    widget
+        .properties
+        .get(key)
+        .and_then(serde_json::Value::as_f64)
+        .filter(|value| value.is_finite())
+        .map_or(fallback, |value| value as f32)
+}
+
+fn retained_widget_usize(
+    widget: &UiWidget2D,
+    keys: &[&str],
+    fallback: usize,
+    maximum: usize,
+) -> usize {
+    keys.iter()
+        .find_map(|key| {
+            widget
+                .properties
+                .get(*key)
+                .and_then(serde_json::Value::as_u64)
+        })
+        .map_or(fallback, |value| value.min(maximum as u64) as usize)
+}
+
+fn draw_retained_slots<B: RenderBackend>(
+    backend: &mut B,
+    widget: &UiWidget2D,
+    resolved: &UiResolvedWidget2D,
+    element_base: u64,
+    clip_rect: [u32; 4],
+    ui_scale: f32,
+    stats: &mut RuntimeScene2DStats,
+) -> MFResult<()> {
+    let columns = retained_widget_usize(widget, &["columns"], 4, 16).max(1);
+    let slot_count = retained_widget_usize(widget, &["slot_count", "slots"], columns, 256).max(1);
+    let gap = 2.0 * ui_scale;
+    let max_slot_width =
+        ((resolved.rect.width - 8.0 * ui_scale - gap * columns.saturating_sub(1) as f32)
+            / columns as f32)
+            .max(ui_scale);
+    let slot_size = (retained_widget_number(widget, "slot_size", 32.0).clamp(8.0, 128.0)
+        * ui_scale)
+        .min(max_slot_width);
+    let selected = retained_widget_usize(widget, &["selected_slot"], usize::MAX, 256);
+    let scroll_y = retained_widget_number(widget, "scroll_y", 0.0).max(0.0) * ui_scale;
+    let top = resolved.rect.y;
+    let bottom = resolved.rect.y + resolved.rect.height;
+    for slot in 0..slot_count {
+        let row = slot / columns;
+        let column = slot % columns;
+        let x = resolved.rect.x + 4.0 * ui_scale + column as f32 * (slot_size + gap);
+        let y = resolved.rect.y + 4.0 * ui_scale + row as f32 * (slot_size + gap) - scroll_y;
+        if y + slot_size <= top || y >= bottom {
+            continue;
+        }
+        draw_quad_clipped(
+            backend,
+            element_base.saturating_add(slot as u64),
+            0,
+            x,
+            y,
+            slot_size,
+            slot_size,
+            if slot == selected {
+                [0.28, 0.72, 1.0, 0.95]
+            } else {
+                [0.12, 0.16, 0.22, 0.92]
+            },
+            Some(clip_rect),
+        )?;
+        record_retained_quad(stats, y < top || y + slot_size > bottom);
+        stats.virtualized_ui_items += 1;
+    }
+    Ok(())
+}
+
+fn draw_retained_scrollbar<B: RenderBackend>(
+    backend: &mut B,
+    widget: &UiWidget2D,
+    resolved: &UiResolvedWidget2D,
+    element_id: u64,
+    clip_rect: [u32; 4],
+    ui_scale: f32,
+    stats: &mut RuntimeScene2DStats,
+) -> MFResult<()> {
+    if !retained_widget_bool(widget, "show_scrollbar", true) {
+        return Ok(());
+    }
+    let viewport_height = resolved.rect.height.max(1.0);
+    let derived_content_height = widget
+        .children
+        .iter()
+        .map(|child| child.rect.y.max(0.0) + child.rect.height.max(0.0))
+        .fold(widget.rect.height.max(1.0), f32::max);
+    let content_height = retained_widget_number(widget, "content_height", derived_content_height)
+        .max(widget.rect.height.max(1.0))
+        * ui_scale;
+    if content_height <= viewport_height {
+        return Ok(());
+    }
+    let track_height = (viewport_height - 8.0 * ui_scale).max(4.0 * ui_scale);
+    let thumb_height =
+        (track_height * viewport_height / content_height).clamp(8.0 * ui_scale, track_height);
+    let max_scroll = content_height - viewport_height;
+    let scroll_y =
+        (retained_widget_number(widget, "scroll_y", 0.0) * ui_scale).clamp(0.0, max_scroll);
+    let travel = track_height - thumb_height;
+    draw_quad_clipped(
+        backend,
+        element_id,
+        0,
+        resolved.rect.x + resolved.rect.width - 6.0 * ui_scale,
+        resolved.rect.y + 4.0 * ui_scale + travel * scroll_y / max_scroll.max(1.0),
+        3.0 * ui_scale,
+        thumb_height,
+        [0.56, 0.68, 0.82, 0.82],
+        Some(clip_rect),
+    )?;
+    record_retained_quad(stats, false);
+    Ok(())
+}
+
 fn finite_ui_canvas_rect(
     canvas: &crate::engine::ui_canvas::UiCanvasRoot,
     element: &UiCanvasElement,
@@ -1958,6 +2472,9 @@ fn normalized_color_channel(channel: Option<f64>) -> f32 {
 mod tests {
     use super::*;
     use crate::engine::component::default_component;
+    use crate::engine::miniforge_2d::ui_framework::{
+        Anchor2D, UiNavigation2D, UiRect2D, UiStyle2D, UiTheme2D, UiWidget2D,
+    };
     use crate::engine::ui_canvas::{UiAnchor, UiCanvasRoot, UiRect};
     use crate::entities::game_object::GameObject;
     use crate::render::backend::MacroquadBackend;
@@ -2078,6 +2595,99 @@ mod tests {
         assert_eq!(stats.entity_quads, 1);
         assert_eq!(stats.textured_entities, 0);
         assert_eq!(backend.draw_calls, 13);
+    }
+
+    #[test]
+    fn retained_ui_documents_render_styles_textures_and_clipping() {
+        let mut scroll = UiWidget2D {
+            id: "inventory_scroll".to_string(),
+            widget_type: "ScrollBox".to_string(),
+            rect: UiRect2D {
+                x: 10.0,
+                y: 10.0,
+                width: 100.0,
+                height: 50.0,
+            },
+            anchors: Anchor2D::TOP_LEFT,
+            children: Vec::new(),
+            callbacks: Vec::new(),
+            properties: json!({
+                "scroll_y": 20.0,
+                "content_height": 100.0,
+                "show_scrollbar": true
+            }),
+            style: UiStyle2D::default(),
+            bindings: Vec::new(),
+            navigation: UiNavigation2D::default(),
+        };
+        scroll.children.push(UiWidget2D {
+            id: "item_icon".to_string(),
+            widget_type: "Image".to_string(),
+            rect: UiRect2D {
+                x: 8.0,
+                y: 40.0,
+                width: 40.0,
+                height: 40.0,
+            },
+            anchors: Anchor2D::TOP_LEFT,
+            children: Vec::new(),
+            callbacks: Vec::new(),
+            properties: json!({
+                "sprite_path": "assets/ui/item.png",
+                "text": "Water"
+            }),
+            style: UiStyle2D::default(),
+            bindings: Vec::new(),
+            navigation: UiNavigation2D::default(),
+        });
+        let documents = vec![RuntimeUiDocument2D {
+            entity_id: 42,
+            asset_path: "assets/ui/inventory.ui2d.json".to_string(),
+            input_enabled: true,
+            scale_mode: "constant_pixel_size".to_string(),
+            canvas: UiCanvas2D {
+                name: "Inventory".to_string(),
+                viewport_width: 200.0,
+                viewport_height: 100.0,
+                widgets: vec![scroll],
+                theme: UiTheme2D::default(),
+                animations: Vec::new(),
+            },
+        }];
+        let textures = BTreeMap::from([(
+            "assets/ui/item.png".to_string(),
+            RuntimeTexture2D {
+                texture_id: 9,
+                width: 32,
+                height: 32,
+            },
+        )]);
+        let mut backend = MacroquadBackend::default();
+        backend.init().unwrap();
+        backend.begin_frame().unwrap();
+        let mut stats = RuntimeScene2DStats::default();
+
+        draw_runtime_ui_documents(
+            &mut backend,
+            &documents,
+            &textures,
+            200.0,
+            100.0,
+            &mut stats,
+        )
+        .unwrap();
+        backend.end_frame().unwrap();
+
+        assert_eq!(stats.retained_ui_widgets, 2);
+        assert_eq!(stats.retained_ui_quads, 3);
+        assert_eq!(stats.retained_ui_clipped_quads, 1);
+        assert_eq!(stats.retained_ui_text_areas, 1);
+        assert_eq!(stats.textured_ui_images, 1);
+        assert_eq!(
+            ui_document_sprite_paths(&documents),
+            vec!["assets/ui/item.png".to_string()]
+        );
+        assert_eq!(backend.draw_calls, 4);
     }
 
     #[test]

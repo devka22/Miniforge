@@ -115,6 +115,8 @@ pub struct UiResolvedWidget2D {
     pub id: String,
     pub widget_type: String,
     pub rect: UiRect2D,
+    #[serde(default)]
+    pub clip_rect: Option<UiRect2D>,
     pub interactive: bool,
     pub depth: usize,
 }
@@ -403,6 +405,12 @@ impl UiCanvas2D {
             .find_map(|widget| find_widget(widget, id))
     }
 
+    pub fn find_widget_mut(&mut self, id: &str) -> Option<&mut UiWidget2D> {
+        self.widgets
+            .iter_mut()
+            .find_map(|widget| find_widget_mut(widget, id))
+    }
+
     pub fn flatten_widgets(&self) -> Vec<&UiWidget2D> {
         let mut widgets = Vec::new();
         for widget in &self.widgets {
@@ -420,7 +428,7 @@ impl UiCanvas2D {
         };
         let mut resolved = Vec::new();
         for widget in &self.widgets {
-            resolve_widget_layout(widget, root_rect, 0, &mut resolved);
+            resolve_widget_layout(widget, root_rect, None, 0, &mut resolved);
         }
         resolved
     }
@@ -1575,6 +1583,16 @@ fn find_widget<'a>(widget: &'a UiWidget2D, id: &str) -> Option<&'a UiWidget2D> {
         .find_map(|child| find_widget(child, id))
 }
 
+fn find_widget_mut<'a>(widget: &'a mut UiWidget2D, id: &str) -> Option<&'a mut UiWidget2D> {
+    if widget.id == id {
+        return Some(widget);
+    }
+    widget
+        .children
+        .iter_mut()
+        .find_map(|child| find_widget_mut(child, id))
+}
+
 fn flatten_widget<'a>(widget: &'a UiWidget2D, widgets: &mut Vec<&'a UiWidget2D>) {
     widgets.push(widget);
     for child in &widget.children {
@@ -1585,9 +1603,13 @@ fn flatten_widget<'a>(widget: &'a UiWidget2D, widgets: &mut Vec<&'a UiWidget2D>)
 fn resolve_widget_layout(
     widget: &UiWidget2D,
     parent: UiRect2D,
+    inherited_clip: Option<UiRect2D>,
     depth: usize,
     resolved: &mut Vec<UiResolvedWidget2D>,
 ) {
+    if widget.properties.get("visible").and_then(Value::as_bool) == Some(false) {
+        return;
+    }
     let anchor_x = parent.x + parent.width * widget.anchors.min_x;
     let anchor_y = parent.y + parent.height * widget.anchors.min_y;
     let stretch_w = parent.width * (widget.anchors.max_x - widget.anchors.min_x);
@@ -1617,18 +1639,197 @@ fn resolve_widget_layout(
             widget.rect.height
         },
     };
+    if !ui_rect_is_finite(rect) || rect.width <= 0.0 || rect.height <= 0.0 {
+        return;
+    }
+    let clip_rect = inherited_clip.and_then(|clip| intersect_ui_rect(clip, rect));
+    if inherited_clip.is_some() && clip_rect.is_none() {
+        return;
+    }
     resolved.push(UiResolvedWidget2D {
         id: widget.id.clone(),
         widget_type: widget.widget_type.clone(),
         rect,
+        clip_rect,
         interactive: is_interactive_widget_type(&widget.widget_type)
-            || widget
-                .callbacks
-                .iter()
-                .any(|callback| matches!(callback.event.as_str(), "click" | "OnClick")),
+            || widget.callbacks.iter().any(|callback| {
+                callback.event.eq_ignore_ascii_case("click")
+                    || callback.event.eq_ignore_ascii_case("OnClick")
+                    || callback.event.eq_ignore_ascii_case("OnPressed")
+            }),
         depth,
     });
+    let clips_children = widget.widget_type.eq_ignore_ascii_case("ScrollBox")
+        || widget
+            .properties
+            .get("clip_children")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    let child_clip = if clips_children {
+        match inherited_clip {
+            Some(clip) => intersect_ui_rect(clip, rect),
+            None => Some(rect),
+        }
+    } else {
+        inherited_clip
+    };
+    let scroll_x = finite_property_f32(&widget.properties, "scroll_x").max(0.0);
+    let scroll_y = finite_property_f32(&widget.properties, "scroll_y").max(0.0);
+    let child_parent = UiRect2D {
+        x: rect.x - scroll_x,
+        y: rect.y - scroll_y,
+        ..rect
+    };
     for child in &widget.children {
-        resolve_widget_layout(child, rect, depth + 1, resolved);
+        resolve_widget_layout(child, child_parent, child_clip, depth + 1, resolved);
+    }
+}
+
+fn finite_property_f32(properties: &Value, key: &str) -> f32 {
+    properties
+        .get(key)
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .unwrap_or(0.0) as f32
+}
+
+fn ui_rect_is_finite(rect: UiRect2D) -> bool {
+    [rect.x, rect.y, rect.width, rect.height]
+        .into_iter()
+        .all(f32::is_finite)
+}
+
+fn intersect_ui_rect(left: UiRect2D, right: UiRect2D) -> Option<UiRect2D> {
+    let x = left.x.max(right.x);
+    let y = left.y.max(right.y);
+    let right_edge = (left.x + left.width).min(right.x + right.width);
+    let bottom_edge = (left.y + left.height).min(right.y + right.height);
+    (right_edge > x && bottom_edge > y).then_some(UiRect2D {
+        x,
+        y,
+        width: right_edge - x,
+        height: bottom_edge - y,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn widget(id: &str, widget_type: &str, rect: UiRect2D) -> UiWidget2D {
+        UiWidget2D {
+            id: id.to_string(),
+            widget_type: widget_type.to_string(),
+            rect,
+            anchors: Anchor2D::TOP_LEFT,
+            children: Vec::new(),
+            callbacks: Vec::new(),
+            properties: json!({}),
+            style: UiStyle2D::default(),
+            bindings: Vec::new(),
+            navigation: UiNavigation2D::default(),
+        }
+    }
+
+    #[test]
+    fn scroll_layout_offsets_and_clips_children() {
+        let mut scroll = widget(
+            "feed",
+            "ScrollBox",
+            UiRect2D {
+                x: 10.0,
+                y: 20.0,
+                width: 100.0,
+                height: 60.0,
+            },
+        );
+        scroll.properties = json!({"scroll_y": 40.0});
+        scroll.children.push(widget(
+            "entry",
+            "Button",
+            UiRect2D {
+                x: 5.0,
+                y: 70.0,
+                width: 90.0,
+                height: 40.0,
+            },
+        ));
+        scroll.children.push(widget(
+            "hidden",
+            "Label",
+            UiRect2D {
+                x: 5.0,
+                y: 140.0,
+                width: 90.0,
+                height: 20.0,
+            },
+        ));
+        let canvas = UiCanvas2D {
+            name: "Scroll".to_string(),
+            viewport_width: 320.0,
+            viewport_height: 180.0,
+            widgets: vec![scroll],
+            theme: UiTheme2D::default(),
+            animations: Vec::new(),
+        };
+
+        let layout = canvas.resolve_layout((320.0, 180.0));
+        assert_eq!(layout.len(), 2);
+        assert_eq!(layout[1].id, "entry");
+        assert_eq!(layout[1].rect.y, 50.0);
+        assert_eq!(
+            layout[1].clip_rect,
+            Some(UiRect2D {
+                x: 15.0,
+                y: 50.0,
+                width: 90.0,
+                height: 30.0,
+            })
+        );
+    }
+
+    #[test]
+    fn invisible_and_invalid_widgets_are_not_resolved() {
+        let mut hidden = widget(
+            "hidden",
+            "Panel",
+            UiRect2D {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            },
+        );
+        hidden.properties = json!({"visible": false});
+        hidden.children.push(widget(
+            "hidden_child",
+            "Button",
+            UiRect2D {
+                x: 0.0,
+                y: 0.0,
+                width: 40.0,
+                height: 20.0,
+            },
+        ));
+        let invalid = widget(
+            "invalid",
+            "Label",
+            UiRect2D {
+                x: f32::NAN,
+                y: 0.0,
+                width: 40.0,
+                height: 20.0,
+            },
+        );
+        let canvas = UiCanvas2D {
+            name: "Visibility".to_string(),
+            viewport_width: 320.0,
+            viewport_height: 180.0,
+            widgets: vec![hidden, invalid],
+            theme: UiTheme2D::default(),
+            animations: Vec::new(),
+        };
+
+        assert!(canvas.resolve_layout((320.0, 180.0)).is_empty());
     }
 }

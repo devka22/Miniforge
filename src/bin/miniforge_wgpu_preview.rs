@@ -10,8 +10,8 @@ use miniforge::render::backend::{
     TextWrapMode, WgpuBackend,
 };
 use miniforge::render::runtime_scene_2d::{
-    RuntimeTexture2D, draw_engine_runtime_scene_2d, entity_sprite_path, entity_ui_sprite_path,
-    scene_ui_sprite_paths,
+    RuntimeScene2DStats, RuntimeTexture2D, draw_engine_runtime_scene_2d, entity_sprite_path,
+    entity_ui_sprite_path, scene_ui_sprite_paths, ui_document_sprite_paths,
 };
 use miniforge::runtime::engine_runtime::EngineRuntime;
 use winit::application::ApplicationHandler;
@@ -37,6 +37,7 @@ struct PreviewApp {
     runtime: Option<EngineRuntime>,
     project_path: Option<PathBuf>,
     texture_ids: BTreeMap<String, RuntimeTexture2D>,
+    last_scene_stats: RuntimeScene2DStats,
     previous_frame_at: Instant,
     input_left: bool,
     input_right: bool,
@@ -68,6 +69,7 @@ impl PreviewApp {
             runtime,
             project_path,
             texture_ids: BTreeMap::new(),
+            last_scene_stats: RuntimeScene2DStats::default(),
             previous_frame_at: now,
             input_left: false,
             input_right: false,
@@ -153,6 +155,7 @@ impl PreviewApp {
             .map(ToString::to_string)
             .collect::<std::collections::BTreeSet<_>>();
         paths.extend(scene_ui_sprite_paths(&runtime.ui_canvases));
+        paths.extend(ui_document_sprite_paths(&runtime.ui_documents));
         for relative_path in paths {
             let path = if Path::new(&relative_path).is_absolute() {
                 PathBuf::from(&relative_path)
@@ -219,8 +222,9 @@ impl PreviewApp {
                 false,
             );
             runtime.run_headless_once(dt);
-            draw_engine_runtime_scene_2d(backend, runtime, &self.texture_ids, width, height)
-                .map_err(|error| error.to_string())?;
+            self.last_scene_stats =
+                draw_engine_runtime_scene_2d(backend, runtime, &self.texture_ids, width, height)
+                    .map_err(|error| error.to_string())?;
         } else {
             draw_renderer_diagnostic(backend, width, height, elapsed)?;
         }
@@ -232,7 +236,7 @@ impl PreviewApp {
                 || self.frames >= target.max(1).saturating_mul(120)
         }) {
             println!(
-                "MINIFORGE_WGPU_SURFACE_{} frames={} presented={} skipped={} reconfigured={} surface_loss_recoveries={} device_loss_recoveries={} logical_draws={} gpu_draws={} binds={} pipelines={} vertex_bytes={} entities={} textures={} api={:?}",
+                "MINIFORGE_WGPU_SURFACE_{} frames={} presented={} skipped={} reconfigured={} surface_loss_recoveries={} device_loss_recoveries={} logical_draws={} gpu_draws={} binds={} pipelines={} vertex_bytes={} entities={} textures={} ui_documents={} retained_ui_widgets={} retained_ui_quads={} api={:?}",
                 if backend.submitted_frames >= self.autotest_frames.unwrap_or(1).max(1) {
                     "OK"
                 } else {
@@ -254,6 +258,12 @@ impl PreviewApp {
                     .map(|runtime| runtime.runtime_world.units.len())
                     .unwrap_or(0),
                 self.texture_ids.len(),
+                self.runtime
+                    .as_ref()
+                    .map(|runtime| runtime.ui_documents.len())
+                    .unwrap_or(0),
+                self.last_scene_stats.retained_ui_widgets,
+                self.last_scene_stats.retained_ui_quads,
                 backend.caps.as_ref().map(|caps| caps.api)
             );
             event_loop.exit();
@@ -261,6 +271,92 @@ impl PreviewApp {
             window.request_redraw();
         }
         Ok(())
+    }
+
+    fn handle_ui_click(&mut self, pointer: (f64, f64)) {
+        let viewport = self
+            .window
+            .as_ref()
+            .map(|window| window.inner_size())
+            .map(|size| (size.width.max(1) as f32, size.height.max(1) as f32))
+            .unwrap_or((INITIAL_WIDTH as f32, INITIAL_HEIGHT as f32));
+        let pointer_f32 = (pointer.0 as f32, pointer.1 as f32);
+        let Some(runtime) = self.runtime.as_mut() else {
+            return;
+        };
+        let mut handled = false;
+        for document in runtime
+            .ui_documents
+            .iter_mut()
+            .rev()
+            .filter(|document| document.input_enabled)
+        {
+            let layout_viewport = document.layout_viewport(viewport);
+            let layout_pointer = document.screen_to_layout(viewport, pointer_f32);
+            let events = self.ui_runtime.update_miniforge_canvas_interaction(
+                &document.canvas,
+                layout_viewport,
+                Some(layout_pointer),
+                true,
+            );
+            let clicked = events
+                .into_iter()
+                .find(|event| event.kind == miniforge::engine::ui_runtime::UiEventKind::Click);
+            if let Some(event) = clicked {
+                self.ui_runtime.activate_miniforge_widget(
+                    &mut document.canvas,
+                    &event.element_id,
+                    layout_viewport,
+                    layout_pointer,
+                );
+                handled = true;
+                break;
+            }
+        }
+        if !handled {
+            self.ui_runtime.update_entity_interaction(
+                &mut runtime.runtime_world.units,
+                pointer,
+                true,
+            );
+        }
+    }
+
+    fn handle_ui_wheel(&mut self, pointer: (f64, f64), wheel_lines: f64) {
+        let viewport = self
+            .window
+            .as_ref()
+            .map(|window| window.inner_size())
+            .map(|size| (size.width.max(1) as f32, size.height.max(1) as f32))
+            .unwrap_or((INITIAL_WIDTH as f32, INITIAL_HEIGHT as f32));
+        let Some(runtime) = self.runtime.as_mut() else {
+            return;
+        };
+        let handled = runtime
+            .ui_documents
+            .iter_mut()
+            .rev()
+            .filter(|document| document.input_enabled)
+            .any(|document| {
+                let layout_viewport = document.layout_viewport(viewport);
+                let layout_pointer =
+                    document.screen_to_layout(viewport, (pointer.0 as f32, pointer.1 as f32));
+                self.ui_runtime
+                    .scroll_miniforge_canvas_under_pointer(
+                        &mut document.canvas,
+                        layout_viewport,
+                        layout_pointer,
+                        wheel_lines as f32,
+                    )
+                    .is_some()
+            });
+        if !handled {
+            self.ui_runtime.scroll_entity_under_pointer(
+                &mut runtime.runtime_world.units,
+                pointer,
+                wheel_lines,
+            );
+        }
     }
 
     fn update_movement_key(&mut self, key: &Key, pressed: bool) {
@@ -438,14 +534,8 @@ impl ApplicationHandler for PreviewApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                if let (Some(runtime), Some(pointer)) =
-                    (self.runtime.as_mut(), self.cursor_position)
-                {
-                    self.ui_runtime.update_entity_interaction(
-                        &mut runtime.runtime_world.units,
-                        pointer,
-                        true,
-                    );
+                if let Some(pointer) = self.cursor_position {
+                    self.handle_ui_click(pointer);
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -453,14 +543,8 @@ impl ApplicationHandler for PreviewApp {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(y),
                     MouseScrollDelta::PixelDelta(position) => position.y / 32.0,
                 };
-                if let (Some(runtime), Some(pointer)) =
-                    (self.runtime.as_mut(), self.cursor_position)
-                {
-                    self.ui_runtime.scroll_entity_under_pointer(
-                        &mut runtime.runtime_world.units,
-                        pointer,
-                        wheel_lines,
-                    );
+                if let Some(pointer) = self.cursor_position {
+                    self.handle_ui_wheel(pointer, wheel_lines);
                 }
             }
             WindowEvent::RedrawRequested => {
