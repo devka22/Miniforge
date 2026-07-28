@@ -12,6 +12,7 @@ use crate::systems::particle_system::ParticleSystem;
 
 use super::backend::{
     RenderBackend, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions, SpriteRegionDrawCommand,
+    TextDrawCommand, TextWrapMode,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -28,6 +29,7 @@ pub struct RuntimeScene2DStats {
     pub entity_quads: usize,
     pub particle_quads: usize,
     pub ui_quads: usize,
+    pub ui_text_areas: usize,
     pub textured_entities: usize,
 }
 
@@ -593,6 +595,34 @@ fn draw_runtime_ui<B: RenderBackend>(
             )?;
             stats.ui_quads += 1;
         }
+        let text = ui.get_string("text", "");
+        if !text.trim().is_empty() {
+            let font_size = ui.get_f64("font_size", 16.0).clamp(1.0, 512.0) as f32;
+            let line_height = ui
+                .get_f64("line_height", f64::from(font_size) * 1.25)
+                .clamp(f64::from(font_size), 1024.0) as f32;
+            let text_color = component_color(ui.get("text_color"), [235, 240, 248, 255], opacity)
+                .map(|channel| (channel * 255.0).round().clamp(0.0, 255.0) as u8);
+            backend.draw_text(TextDrawCommand {
+                text_id: ui_base.saturating_add(6),
+                text,
+                font_family: ui.get_string("font_family", ""),
+                x: x + 6.0,
+                y: y + ((height - line_height) * 0.5).max(2.0),
+                width: (width - 12.0).max(1.0),
+                height: (height - 4.0).max(1.0),
+                font_size,
+                line_height,
+                color: text_color,
+                wrap: match ui.get_string("wrap", "word").as_str() {
+                    "none" | "no_wrap" => TextWrapMode::None,
+                    "glyph" | "character" => TextWrapMode::Glyph,
+                    _ => TextWrapMode::Word,
+                },
+                clip_rect: None,
+            })?;
+            stats.ui_text_areas += 1;
+        }
     }
     Ok(())
 }
@@ -830,6 +860,7 @@ mod tests {
         let mut ui = GameObject::new(0.0, 0.0, Some("Health".to_string()));
         let mut ui_component = default_component("UIElement").unwrap();
         ui_component.set("element_type", json!("ProgressBar"));
+        ui_component.set("text", json!("Health"));
         ui.add_component(ui_component);
         runtime
             .runtime_world
@@ -858,9 +889,14 @@ mod tests {
         assert_eq!(stats.textured_entities, 1);
         assert!(stats.particle_quads >= 8);
         assert_eq!(stats.ui_quads, 6);
+        assert_eq!(stats.ui_text_areas, 1);
         assert_eq!(
             backend.draw_calls,
-            stats.tile_quads + stats.entity_quads + stats.particle_quads + stats.ui_quads
+            stats.tile_quads
+                + stats.entity_quads
+                + stats.particle_quads
+                + stats.ui_quads
+                + stats.ui_text_areas
         );
         std::fs::remove_dir_all(root).ok();
     }

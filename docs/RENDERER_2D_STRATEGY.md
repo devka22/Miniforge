@@ -45,6 +45,9 @@ screen pipelines are selected through backend-independent `SpriteDrawOptions`; r
 read the mode from `Material2D`/`SpriteRenderer`, and CPU particle emitters use the same path.
 `WgpuFrameDiagnostics` reports logical calls, culled sprites, GPU draws, texture bindings, pipeline
 changes, uploaded bytes, buffer capacity/reallocations, presentation and surface recovery.
+Backend-independent `TextDrawCommand` areas now use `glyphon`/`cosmic-text` for Unicode shaping,
+system-font fallback, word/glyph wrapping, clipping and a persistent GPU glyph atlas. Runtime
+`UIElement` labels submit through this path, so HUD text is no longer a preview-only placeholder.
 Outdated and lost window surfaces are reconfigured and retried once; an occluded or
 still-unavailable surface skips the frame without poisoning the next one. A Metal surface smoke
 with the default 70×30 grid reduced 2,100 logical
@@ -69,9 +72,9 @@ The preview becomes playable only after these gates pass on macOS, Windows and L
 2. Sprite atlas regions, camera transforms, clipping, blend modes and stable batching. Atlas
    regions, clipping, full-texture uploads, pixel-space transforms, conservative culling,
    persistent vertex uploads, five blend modes and stable contiguous batching are done.
-3. Chunked tilemaps, UI draw lists, text, particles and render textures. Layered tile cells, basic
-   panels/progress bars and CPU-particle quads are done; text, advanced widgets, chunk batching,
-   GPU particles and render textures remain.
+3. Chunked tilemaps, UI draw lists, text, particles and render textures. Layered tile cells,
+   Unicode text, basic panels/progress bars and CPU-particle quads are done; advanced widgets,
+   chunk batching, GPU particles and render textures remain.
 4. WGSL materials, post-processing and hot reload with readable shader diagnostics.
 5. Compute paths for particles and tile visibility, each with a CPU fallback.
 6. Golden-image parity tests against Macroquad plus GPU timing and repeated recovery stress.

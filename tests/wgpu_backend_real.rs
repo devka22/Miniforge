@@ -1,6 +1,6 @@
 use miniforge::render::backend::{
     RenderBackend, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions, SpriteRegionDrawCommand,
-    WgpuBackend,
+    TextDrawCommand, TextWrapMode, WgpuBackend,
 };
 
 #[test]
@@ -80,6 +80,22 @@ fn physical_wgpu_backend_renders_and_reads_pixels() {
             )
             .unwrap();
     }
+    backend
+        .draw_text(TextDrawCommand {
+            text_id: 99,
+            text: "GPU".to_string(),
+            font_family: String::new(),
+            x: 0.0,
+            y: 32.0,
+            width: 16.0,
+            height: 16.0,
+            font_size: 12.0,
+            line_height: 14.0,
+            color: [255, 255, 255, 255],
+            wrap: TextWrapMode::None,
+            clip_rect: Some([0, 32, 16, 16]),
+        })
+        .unwrap();
     backend.end_frame().unwrap();
 
     let pixels = backend.readback_rgba8().unwrap();
@@ -108,9 +124,19 @@ fn physical_wgpu_backend_renders_and_reads_pixels() {
             "every blend pipeline should write visible color"
         );
     }
+    assert!(
+        (32usize..48).any(|y| {
+            (0usize..16).any(|x| {
+                let pixel = (y * 64 + x) * 4;
+                pixels[pixel..pixel + 3].iter().any(|channel| *channel > 32)
+            })
+        }),
+        "glyph atlas should render clipped UI text"
+    );
     assert_eq!(backend.submitted_frames, 1);
     assert!(backend.is_using_physical_device());
     assert_eq!(backend.texture_count(), 1);
+    assert_eq!(backend.last_frame_diagnostics().queued_text_areas, 1);
     assert!(
         backend.last_frame_diagnostics().pipeline_changes >= 8,
         "alpha/effect alternation should switch pipelines without reordering"

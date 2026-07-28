@@ -5,7 +5,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use miniforge::render::backend::{
-    RenderBackend, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions, WgpuBackend,
+    RenderBackend, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions, TextDrawCommand,
+    TextWrapMode, WgpuBackend,
 };
 use miniforge::render::runtime_scene_2d::{
     RuntimeTexture2D, draw_engine_runtime_scene_2d, entity_sprite_path,
@@ -303,6 +304,22 @@ fn draw_renderer_diagnostic(
         }
     }
     let pulse = 0.85 + elapsed.sin() * 0.1;
+    backend
+        .draw_text(TextDrawCommand {
+            text_id: 900,
+            text: "MiniForge wgpu · alpha + additive + multiply + screen".to_string(),
+            font_family: String::new(),
+            x: 20.0,
+            y: 18.0,
+            width: (width - 40.0).max(1.0),
+            height: 44.0,
+            font_size: 22.0,
+            line_height: 28.0,
+            color: [230, 242, 255, 255],
+            wrap: TextWrapMode::Word,
+            clip_rect: None,
+        })
+        .map_err(|error| error.to_string())?;
     backend
         .draw_sprite(SpriteDrawCommand {
             entity_id: 1_000,

@@ -114,6 +114,35 @@ pub struct SpriteDrawOptions {
     pub blend_mode: SpriteBlendMode,
 }
 
+/// Line breaking policy for backend-independent text.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TextWrapMode {
+    None,
+    #[default]
+    Word,
+    Glyph,
+}
+
+/// A shaped text area submitted in physical screen pixels.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TextDrawCommand {
+    pub text_id: u64,
+    pub text: String,
+    #[serde(default)]
+    pub font_family: String,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub font_size: f32,
+    pub line_height: f32,
+    pub color: [u8; 4],
+    #[serde(default)]
+    pub wrap: TextWrapMode,
+    pub clip_rect: Option<[u32; 4]>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TilemapDrawCommand {
     pub tilemap_id: u64,
@@ -234,6 +263,7 @@ pub trait RenderBackend {
     ) -> MFResult<()> {
         self.draw_sprite_region(cmd)
     }
+    fn draw_text(&mut self, cmd: TextDrawCommand) -> MFResult<()>;
     fn draw_tilemap(&mut self, cmd: TilemapDrawCommand) -> MFResult<()>;
     fn draw_particles(&mut self, cmd: ParticleDrawCommand) -> MFResult<()>;
     fn draw_ui(&mut self, cmd: UiDrawCommand) -> MFResult<()>;
@@ -410,6 +440,11 @@ impl RenderBackend for MacroquadBackend {
     }
 
     fn draw_sprite(&mut self, _cmd: SpriteDrawCommand) -> MFResult<()> {
+        self.draw_calls += 1;
+        Ok(())
+    }
+
+    fn draw_text(&mut self, _cmd: TextDrawCommand) -> MFResult<()> {
         self.draw_calls += 1;
         Ok(())
     }

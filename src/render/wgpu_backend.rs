@@ -10,6 +10,11 @@ use std::fmt;
 use std::sync::mpsc;
 
 use bytemuck::{Pod, Zeroable};
+use glyphon::{
+    Attrs, Buffer as TextBuffer, Cache as TextCache, Color as TextColor, Family, FontSystem,
+    Metrics, Resolution as TextResolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds,
+    TextRenderer, Viewport as TextViewport, Wrap,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::error_handler::{MFResult, MiniForgeError};
@@ -17,7 +22,7 @@ use crate::engine::error_handler::{MFResult, MiniForgeError};
 use super::backend::{
     CameraCommand3D, GraphicsApi, LightDrawCommand3D, MeshDrawCommand3D, ParticleDrawCommand,
     RenderBackend, RenderDeviceCaps, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions,
-    SpriteRegionDrawCommand, TilemapDrawCommand, UiDrawCommand,
+    SpriteRegionDrawCommand, TextDrawCommand, TextWrapMode, TilemapDrawCommand, UiDrawCommand,
 };
 
 const OFFSCREEN_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -25,6 +30,7 @@ const SPRITE_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Uno
 const DEFAULT_WIDTH: u32 = 1280;
 const DEFAULT_HEIGHT: u32 = 720;
 const INITIAL_VERTEX_BUFFER_BYTES: u64 = 64 * 1024;
+const MAX_TEXT_BYTES_PER_AREA: usize = 1024 * 1024;
 
 const SPRITE_SHADER: &str = r#"
 struct VertexOut {
@@ -92,6 +98,8 @@ pub struct WgpuFrameDiagnostics {
     pub logical_draw_calls: usize,
     pub queued_sprites: usize,
     pub culled_sprites: usize,
+    pub queued_text_areas: usize,
+    pub culled_text_areas: usize,
     pub gpu_draw_calls: usize,
     pub texture_bind_changes: usize,
     pub pipeline_changes: usize,
@@ -139,6 +147,11 @@ struct WgpuState {
     textures: HashMap<u64, WgpuTexture>,
     vertex_buffer: wgpu::Buffer,
     vertex_buffer_capacity_bytes: u64,
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+    text_atlas: TextAtlas,
+    text_renderer: TextRenderer,
+    text_viewport: TextViewport,
 }
 
 /// Concrete, renderer-agnostic 2D backend backed by a physical GPU adapter.
@@ -161,7 +174,9 @@ pub struct WgpuBackend {
     frame_open: bool,
     clear_color: [f64; 4],
     sprites: Vec<QueuedSprite>,
+    texts: Vec<TextDrawCommand>,
     culled_sprites: usize,
+    culled_text_areas: usize,
     last_frame_diagnostics: WgpuFrameDiagnostics,
     texture_backups: HashMap<u64, WgpuTextureBackup>,
     state: Option<WgpuState>,
@@ -217,7 +232,9 @@ impl Default for WgpuBackend {
             frame_open: false,
             clear_color: [0.035, 0.043, 0.059, 1.0],
             sprites: Vec::new(),
+            texts: Vec::new(),
             culled_sprites: 0,
+            culled_text_areas: 0,
             last_frame_diagnostics: WgpuFrameDiagnostics::default(),
             texture_backups: HashMap::new(),
             state: None,
@@ -542,6 +559,17 @@ impl WgpuBackend {
             )
         })
         .collect();
+        let font_system = FontSystem::new();
+        let swash_cache = SwashCache::new();
+        let text_cache = TextCache::new(&device);
+        let text_viewport = TextViewport::new(&device, &text_cache);
+        let mut text_atlas = TextAtlas::new(&device, &queue, &text_cache, target_format);
+        let text_renderer = TextRenderer::new(
+            &mut text_atlas,
+            &device,
+            wgpu::MultisampleState::default(),
+            None,
+        );
         let target = surface
             .is_none()
             .then(|| create_target(&device, self.width, self.height));
@@ -572,6 +600,11 @@ impl WgpuBackend {
                 textures: HashMap::new(),
                 vertex_buffer,
                 vertex_buffer_capacity_bytes: INITIAL_VERTEX_BUFFER_BYTES,
+                font_system,
+                swash_cache,
+                text_atlas,
+                text_renderer,
+                text_viewport,
             },
             caps,
         ))
@@ -705,6 +738,9 @@ impl WgpuBackend {
     fn render_frame(&mut self) -> MFResult<WgpuFrameDiagnostics> {
         let vertices = sprites_to_vertices(&self.sprites, self.width, self.height);
         let batches = build_sprite_batches(&self.sprites, self.width, self.height);
+        let text_commands = &self.texts;
+        let has_text = !text_commands.is_empty();
+        let mut text_buffers = Vec::with_capacity(text_commands.len());
         let vertex_bytes = std::mem::size_of_val(vertices.as_slice()) as u64;
         let clear_color = self.clear_color;
         let mut reallocated = false;
@@ -729,6 +765,15 @@ impl WgpuBackend {
                 state
                     .queue
                     .write_buffer(&state.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+            }
+            if has_text {
+                prepare_text_areas(
+                    state,
+                    text_commands,
+                    &mut text_buffers,
+                    self.width,
+                    self.height,
+                )?;
             }
 
             let mut reconfigure_after_present = false;
@@ -840,6 +885,14 @@ impl WgpuBackend {
                             pass.draw(first_vertex..first_vertex + vertex_count, 0..1);
                         }
                     }
+                    if has_text {
+                        state
+                            .text_renderer
+                            .render(&state.text_atlas, &state.text_viewport, &mut pass)
+                            .map_err(|error| {
+                                render_error(format!("wgpu text render failed: {error}"))
+                            })?;
+                    }
                 }
                 state.queue.submit([encoder.finish()]);
                 if let Some(output) = surface_output.take() {
@@ -857,6 +910,9 @@ impl WgpuBackend {
                         reconfiguration_count += 1;
                     }
                 }
+                if has_text {
+                    state.text_atlas.trim();
+                }
                 submitted = true;
             }
             vertex_buffer_capacity_bytes = state.vertex_buffer_capacity_bytes;
@@ -870,9 +926,11 @@ impl WgpuBackend {
             logical_draw_calls: self.draw_calls,
             queued_sprites: self.sprites.len(),
             culled_sprites: self.culled_sprites,
-            gpu_draw_calls: batches.len(),
+            queued_text_areas: self.texts.len(),
+            culled_text_areas: self.culled_text_areas,
+            gpu_draw_calls: batches.len() + usize::from(has_text),
             texture_bind_changes: texture_bind_changes(&batches),
-            pipeline_changes: pipeline_changes(&batches),
+            pipeline_changes: pipeline_changes(&batches) + usize::from(has_text),
             vertex_bytes_uploaded: vertex_bytes,
             vertex_buffer_capacity_bytes,
             vertex_buffer_reallocations: self.vertex_buffer_reallocations,
@@ -901,8 +959,10 @@ impl RenderBackend for WgpuBackend {
         self.recover_device_if_needed()?;
         self.state()?;
         self.sprites.clear();
+        self.texts.clear();
         self.draw_calls = 0;
         self.culled_sprites = 0;
+        self.culled_text_areas = 0;
         self.frame_open = true;
         Ok(())
     }
@@ -989,6 +1049,54 @@ impl RenderBackend for WgpuBackend {
             clip_rect: command.clip_rect,
             blend_mode: options.blend_mode,
         })
+    }
+
+    fn draw_text(&mut self, command: TextDrawCommand) -> MFResult<()> {
+        if !self.frame_open {
+            return Err(render_error("wgpu draw_text called outside a frame"));
+        }
+        if command.text.is_empty() {
+            return Ok(());
+        }
+        if command.text.len() > MAX_TEXT_BYTES_PER_AREA {
+            return Err(render_error(format!(
+                "wgpu text area {} exceeds the {} byte safety limit",
+                command.text_id, MAX_TEXT_BYTES_PER_AREA
+            )));
+        }
+        if [
+            command.x,
+            command.y,
+            command.width,
+            command.height,
+            command.font_size,
+            command.line_height,
+        ]
+        .iter()
+        .any(|value| !value.is_finite())
+            || command.width <= 0.0
+            || command.height <= 0.0
+            || command.font_size <= 0.0
+            || command.line_height <= 0.0
+        {
+            return Err(render_error(
+                "wgpu text geometry and metrics must be finite and greater than zero",
+            ));
+        }
+        self.draw_calls += 1;
+        if command.x + command.width < 0.0
+            || command.y + command.height < 0.0
+            || command.x > self.width as f32
+            || command.y > self.height as f32
+            || command
+                .clip_rect
+                .is_some_and(|clip| normalize_clip_rect(clip, self.width, self.height).is_none())
+        {
+            self.culled_text_areas += 1;
+            return Ok(());
+        }
+        self.texts.push(command);
+        Ok(())
     }
 
     fn draw_tilemap(&mut self, _command: TilemapDrawCommand) -> MFResult<()> {
@@ -1104,6 +1212,104 @@ fn sprite_blend_state(blend_mode: SpriteBlendMode) -> wgpu::BlendState {
             },
             alpha: wgpu::BlendComponent::OVER,
         },
+    }
+}
+
+fn prepare_text_areas(
+    state: &mut WgpuState,
+    commands: &[TextDrawCommand],
+    buffers: &mut Vec<TextBuffer>,
+    width: u32,
+    height: u32,
+) -> MFResult<()> {
+    let WgpuState {
+        device,
+        queue,
+        font_system,
+        swash_cache,
+        text_atlas,
+        text_renderer,
+        text_viewport,
+        ..
+    } = state;
+    text_viewport.update(queue, TextResolution { width, height });
+    for command in commands {
+        let mut buffer = TextBuffer::new(
+            font_system,
+            Metrics::new(command.font_size, command.line_height),
+        );
+        buffer.set_size(Some(command.width), Some(command.height));
+        buffer.set_wrap(match command.wrap {
+            TextWrapMode::None => Wrap::None,
+            TextWrapMode::Word => Wrap::Word,
+            TextWrapMode::Glyph => Wrap::Glyph,
+        });
+        let attrs = if command.font_family.trim().is_empty() {
+            Attrs::new().family(Family::SansSerif)
+        } else {
+            Attrs::new().family(Family::Name(&command.font_family))
+        };
+        buffer.set_text(&command.text, &attrs, Shaping::Advanced, None);
+        buffer.shape_until_scroll(font_system, false);
+        buffers.push(buffer);
+    }
+    let text_areas = commands
+        .iter()
+        .zip(buffers.iter())
+        .map(|(command, buffer)| TextArea {
+            buffer,
+            left: command.x,
+            top: command.y,
+            scale: 1.0,
+            bounds: text_bounds(command, width, height),
+            default_color: TextColor::rgba(
+                command.color[0],
+                command.color[1],
+                command.color[2],
+                command.color[3],
+            ),
+            custom_glyphs: &[],
+        });
+    text_renderer
+        .prepare(
+            device,
+            queue,
+            font_system,
+            text_atlas,
+            text_viewport,
+            text_areas,
+            swash_cache,
+        )
+        .map_err(|error| render_error(format!("wgpu text preparation failed: {error}")))
+}
+
+fn text_bounds(command: &TextDrawCommand, width: u32, height: u32) -> TextBounds {
+    let [x, y, area_width, area_height] = command
+        .clip_rect
+        .and_then(|clip| normalize_clip_rect(clip, width, height))
+        .unwrap_or_else(|| {
+            let left = command.x.max(0.0).floor().min(width as f32) as u32;
+            let top = command.y.max(0.0).floor().min(height as f32) as u32;
+            let right = (command.x + command.width)
+                .max(0.0)
+                .ceil()
+                .min(width as f32) as u32;
+            let bottom = (command.y + command.height)
+                .max(0.0)
+                .ceil()
+                .min(height as f32) as u32;
+            [
+                left,
+                top,
+                right.saturating_sub(left),
+                bottom.saturating_sub(top),
+            ]
+        });
+    TextBounds {
+        left: x as i32,
+        top: y as i32,
+        right: x.saturating_add(area_width) as i32,
+        bottom: y.saturating_add(area_height) as i32,
     }
 }
 
@@ -1374,6 +1580,23 @@ mod tests {
         }
     }
 
+    fn text_command(text: impl Into<String>) -> TextDrawCommand {
+        TextDrawCommand {
+            text_id: 1,
+            text: text.into(),
+            font_family: String::new(),
+            x: 4.0,
+            y: 4.0,
+            width: 80.0,
+            height: 24.0,
+            font_size: 14.0,
+            line_height: 18.0,
+            color: [255; 4],
+            wrap: TextWrapMode::Word,
+            clip_rect: None,
+        }
+    }
+
     #[test]
     fn sprite_vertices_cover_requested_pixel_rect() {
         let vertices = sprites_to_vertices(
@@ -1476,6 +1699,60 @@ mod tests {
     }
 
     #[test]
+    fn text_queue_validates_bounds_metrics_and_memory() {
+        let mut backend = WgpuBackend {
+            frame_open: true,
+            width: 100,
+            height: 50,
+            ..WgpuBackend::default()
+        };
+        backend.draw_text(text_command("Unicode ✓")).unwrap();
+        assert_eq!(backend.texts.len(), 1);
+
+        let mut outside = text_command("outside");
+        outside.x = 500.0;
+        backend.draw_text(outside).unwrap();
+        assert_eq!(backend.culled_text_areas, 1);
+
+        let mut invalid = text_command("invalid");
+        invalid.font_size = f32::NAN;
+        assert!(backend.draw_text(invalid).is_err());
+        assert!(
+            backend
+                .draw_text(text_command("x".repeat(MAX_TEXT_BYTES_PER_AREA + 1)))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn text_bounds_clamp_to_area_clip_and_viewport() {
+        let mut command = text_command("bounds");
+        command.x = -8.0;
+        command.y = 5.0;
+        command.width = 30.0;
+        command.height = 20.0;
+        assert_eq!(
+            text_bounds(&command, 100, 50),
+            TextBounds {
+                left: 0,
+                top: 5,
+                right: 22,
+                bottom: 25,
+            }
+        );
+        command.clip_rect = Some([90, 45, 30, 30]);
+        assert_eq!(
+            text_bounds(&command, 100, 50),
+            TextBounds {
+                left: 90,
+                top: 45,
+                right: 100,
+                bottom: 50,
+            }
+        );
+    }
+
+    #[test]
     #[ignore = "requires a physical graphics adapter"]
     fn physical_device_loss_recreates_resources_and_restores_textures() {
         let mut backend = WgpuBackend::new(true, cfg!(target_os = "macos"));
@@ -1507,8 +1784,25 @@ mod tests {
                 color: [1.0; 4],
             })
             .unwrap();
+        backend
+            .draw_text(TextDrawCommand {
+                text_id: 2,
+                text: "Recovered".to_string(),
+                font_family: String::new(),
+                x: 1.0,
+                y: 1.0,
+                width: 30.0,
+                height: 14.0,
+                font_size: 8.0,
+                line_height: 10.0,
+                color: [255; 4],
+                wrap: TextWrapMode::None,
+                clip_rect: None,
+            })
+            .unwrap();
         backend.end_frame().unwrap();
         let pixels = backend.readback_rgba8().unwrap();
         assert!(pixels.chunks_exact(4).any(|pixel| pixel[0] > 200));
+        assert_eq!(backend.last_frame_diagnostics().queued_text_areas, 1);
     }
 }
