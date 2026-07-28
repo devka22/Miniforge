@@ -48,6 +48,10 @@ changes, uploaded bytes, buffer capacity/reallocations, presentation and surface
 Backend-independent `TextDrawCommand` areas now use `glyphon`/`cosmic-text` for Unicode shaping,
 system-font fallback, word/glyph wrapping, clipping and a persistent GPU glyph atlas. Runtime
 `UIElement` labels submit through this path, so HUD text is no longer a preview-only placeholder.
+Runtime `UIElement` controls now also draw sliders, checkbox/toggle state, inventory and ability
+slots, text-input placeholders and focused carets. Their built-in interaction updates values,
+checked state, dropdown selection, focused inputs and selected inventory slots without a game
+script.
 Outdated and lost window surfaces are reconfigured and retried once; an occluded or
 still-unavailable surface skips the frame without poisoning the next one. A Metal surface smoke
 with the default 70×30 grid reduced 2,100 logical
@@ -57,11 +61,11 @@ and every uploaded texture from CPU backups. The Metal surface smoke also destro
 mid-run and verifies that presentation resumes with `device_loss_recoveries=1`.
 
 The shared 2D composer now turns visible tilemap cells, atlas-backed entities, CPU particles and
-basic UI geometry into backend-independent sprite quads with camera transforms, ordering and screen
-culling. The main exported runtime still uses Macroquad while text/minimap widgets, lighting,
-render textures, additional blend modes and shader materials are completed. Projects should therefore
-leave `experimental_wgpu` disabled for exports that need the full production renderer. Project
-Settings keeps this migration state visible instead of hiding it in JSON.
+basic and interactive UI geometry into backend-independent sprite quads with camera transforms,
+ordering and screen culling. The main exported runtime still uses Macroquad while canvas image and
+nine-slice widgets, minimaps, lighting, render textures and shader materials are completed. Projects
+should therefore leave `experimental_wgpu` disabled for exports that need the full production
+renderer. Project Settings keeps this migration state visible instead of hiding it in JSON.
 
 ## Migration gates
 
@@ -73,8 +77,9 @@ The preview becomes playable only after these gates pass on macOS, Windows and L
    regions, clipping, full-texture uploads, pixel-space transforms, conservative culling,
    persistent vertex uploads, five blend modes and stable contiguous batching are done.
 3. Chunked tilemaps, UI draw lists, text, particles and render textures. Layered tile cells,
-   Unicode text, basic panels/progress bars and CPU-particle quads are done; advanced widgets,
-   chunk batching, GPU particles and render textures remain.
+   Unicode text, panels/progress bars, sliders, checkbox/toggle controls, inventory/ability slots,
+   text-input feedback and CPU-particle quads are done; canvas images/nine-slice, chunk batching,
+   GPU particles and render textures remain.
 4. WGSL materials, post-processing and hot reload with readable shader diagnostics.
 5. Compute paths for particles and tile visibility, each with a CPU fallback.
 6. Golden-image parity tests against Macroquad plus GPU timing and repeated recovery stress.

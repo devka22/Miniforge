@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::engine::component::Component;
 use crate::engine::error_handler::MFResult;
 use crate::engine::tilemap_layers::{TileLayer, TilemapLayers};
 use crate::engine::world::RuntimeWorld;
@@ -536,7 +537,7 @@ fn draw_runtime_ui<B: RenderBackend>(
         .collect::<Vec<_>>();
     elements.sort_by_key(|(entity, ui)| (ui.get_i64("sorting_order", 0), entity.id));
     for (entity, ui) in elements {
-        let ui_base = 9_000_000_000u64.saturating_add(entity.id.saturating_mul(8));
+        let ui_base = 9_000_000_000u64.saturating_add(entity.id.saturating_mul(1_024));
         let x = ui.get_f64("x", 0.0) as f32;
         let y = ui.get_f64("y", 0.0) as f32;
         let width = ui.get_f64("width", 160.0).max(0.0) as f32;
@@ -595,21 +596,183 @@ fn draw_runtime_ui<B: RenderBackend>(
             )?;
             stats.ui_quads += 1;
         }
-        let text = ui.get_string("text", "");
+        match kind.as_str() {
+            "Slider" => {
+                let normalized = normalized_ui_slider(ui);
+                let track_x = x + 8.0;
+                let track_width = (width - 16.0).max(1.0);
+                let track_y = y + height * 0.5 - 2.0;
+                let accent = component_color(ui.get("accent_color"), [92, 186, 255, 255], opacity);
+                draw_quad(
+                    backend,
+                    ui_base.saturating_add(16),
+                    0,
+                    track_x,
+                    track_y,
+                    track_width,
+                    4.0,
+                    [0.22, 0.25, 0.31, opacity],
+                )?;
+                draw_quad(
+                    backend,
+                    ui_base.saturating_add(17),
+                    0,
+                    track_x,
+                    track_y,
+                    track_width * normalized,
+                    4.0,
+                    accent,
+                )?;
+                draw_quad(
+                    backend,
+                    ui_base.saturating_add(18),
+                    0,
+                    track_x + track_width * normalized - 5.0,
+                    y + height * 0.5 - 5.0,
+                    10.0,
+                    10.0,
+                    accent,
+                )?;
+                stats.ui_quads += 3;
+            }
+            "Checkbox" | "Toggle" => {
+                let box_size = (height - 8.0).clamp(8.0, 24.0);
+                let box_x = x + 4.0;
+                let box_y = y + (height - box_size) * 0.5;
+                let accent = component_color(ui.get("accent_color"), [92, 186, 255, 255], opacity);
+                draw_quad(
+                    backend,
+                    ui_base.saturating_add(16),
+                    0,
+                    box_x,
+                    box_y,
+                    box_size,
+                    box_size,
+                    if ui.get_bool("checked", false) {
+                        accent
+                    } else {
+                        [0.16, 0.18, 0.23, opacity]
+                    },
+                )?;
+                stats.ui_quads += 1;
+                if ui.get_bool("checked", false) {
+                    let mark = [0.96, 0.98, 1.0, opacity];
+                    draw_quad(
+                        backend,
+                        ui_base.saturating_add(17),
+                        0,
+                        box_x + box_size * 0.22,
+                        box_y + box_size * 0.52,
+                        box_size * 0.28,
+                        2.0,
+                        mark,
+                    )?;
+                    draw_quad(
+                        backend,
+                        ui_base.saturating_add(18),
+                        0,
+                        box_x + box_size * 0.43,
+                        box_y + box_size * 0.36,
+                        box_size * 0.4,
+                        2.0,
+                        mark,
+                    )?;
+                    stats.ui_quads += 2;
+                }
+            }
+            "InventoryGrid" | "AbilityBar" => {
+                let columns = ui.get_i64("columns", 4).clamp(1, 16) as usize;
+                let slot_count = ui
+                    .get("slot_count")
+                    .or_else(|| ui.get("slots"))
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(columns as i64)
+                    .clamp(1, 256) as usize;
+                let gap = 2.0;
+                let max_slot_width = ((width - 8.0 - gap * (columns.saturating_sub(1)) as f32)
+                    / columns as f32)
+                    .max(1.0);
+                let slot_size = (ui.get_f64("slot_size", 32.0) as f32)
+                    .clamp(8.0, 128.0)
+                    .min(max_slot_width);
+                let items = ui.get("items").and_then(serde_json::Value::as_array);
+                for slot in 0..slot_count {
+                    let column = slot % columns;
+                    let row = slot / columns;
+                    let slot_x = x + 4.0 + column as f32 * (slot_size + gap);
+                    let slot_y = y + 4.0 + row as f32 * (slot_size + gap);
+                    if slot_y + slot_size > y + height - 3.0 {
+                        break;
+                    }
+                    let occupied = items
+                        .and_then(|values| values.get(slot))
+                        .is_some_and(|value| !value.is_null());
+                    draw_quad(
+                        backend,
+                        ui_base.saturating_add(32 + slot as u64),
+                        0,
+                        slot_x,
+                        slot_y,
+                        slot_size,
+                        slot_size,
+                        if occupied {
+                            component_color(ui.get("accent_color"), [82, 150, 216, 255], opacity)
+                        } else {
+                            [0.12, 0.14, 0.18, opacity]
+                        },
+                    )?;
+                    stats.ui_quads += 1;
+                }
+            }
+            "InputField" | "TextInput" if ui.get_bool("focused", false) => {
+                let caret_height = (height - 12.0).clamp(8.0, 28.0);
+                draw_quad(
+                    backend,
+                    ui_base.saturating_add(16),
+                    0,
+                    x + width - 10.0,
+                    y + (height - caret_height) * 0.5,
+                    1.0,
+                    caret_height,
+                    [0.9, 0.94, 1.0, opacity],
+                )?;
+                stats.ui_quads += 1;
+            }
+            _ => {}
+        }
+
+        let authored_text = ui.get_string("text", "");
+        let placeholder = ui.get_string("placeholder", "");
+        let uses_placeholder = authored_text.trim().is_empty()
+            && matches!(kind.as_str(), "InputField" | "TextInput")
+            && !placeholder.trim().is_empty();
+        let text = if uses_placeholder {
+            placeholder
+        } else {
+            authored_text
+        };
         if !text.trim().is_empty() {
-            let font_size = ui.get_f64("font_size", 16.0).clamp(1.0, 512.0) as f32;
-            let line_height = ui
-                .get_f64("line_height", f64::from(font_size) * 1.25)
-                .clamp(f64::from(font_size), 1024.0) as f32;
-            let text_color = component_color(ui.get("text_color"), [235, 240, 248, 255], opacity)
-                .map(|channel| (channel * 255.0).round().clamp(0.0, 255.0) as u8);
+            let (font_size, line_height) = resolved_ui_text_metrics(ui);
+            let text_opacity = if uses_placeholder {
+                opacity * 0.55
+            } else {
+                opacity
+            };
+            let text_color =
+                component_color(ui.get("text_color"), [235, 240, 248, 255], text_opacity)
+                    .map(|channel| (channel * 255.0).round().clamp(0.0, 255.0) as u8);
+            let text_left = if matches!(kind.as_str(), "Checkbox" | "Toggle") {
+                (height - 8.0).clamp(8.0, 24.0) + 10.0
+            } else {
+                6.0
+            };
             backend.draw_text(TextDrawCommand {
-                text_id: ui_base.saturating_add(6),
+                text_id: ui_base.saturating_add(900),
                 text,
                 font_family: ui.get_string("font_family", ""),
-                x: x + 6.0,
+                x: x + text_left,
                 y: y + ((height - line_height) * 0.5).max(2.0),
-                width: (width - 12.0).max(1.0),
+                width: (width - text_left - 6.0).max(1.0),
                 height: (height - 4.0).max(1.0),
                 font_size,
                 line_height,
@@ -625,6 +788,40 @@ fn draw_runtime_ui<B: RenderBackend>(
         }
     }
     Ok(())
+}
+
+fn resolved_ui_text_metrics(ui: &Component) -> (f32, f32) {
+    let authored_font_size = ui.get_f64("font_size", 0.0);
+    let font_size = if authored_font_size.is_finite() && authored_font_size > 0.0 {
+        authored_font_size.clamp(1.0, 512.0) as f32
+    } else {
+        16.0
+    };
+    let authored_line_height = ui.get_f64("line_height", 0.0);
+    let line_height = if authored_line_height.is_finite() && authored_line_height > 0.0 {
+        authored_line_height.clamp(f64::from(font_size), 1024.0) as f32
+    } else {
+        font_size * 1.25
+    };
+    (font_size, line_height)
+}
+
+fn normalized_ui_slider(ui: &Component) -> f32 {
+    let min = ui.get_f64("min", 0.0);
+    let min = if min.is_finite() { min } else { 0.0 };
+    let authored_max = ui.get_f64("max", 1.0);
+    let max = if authored_max.is_finite() && authored_max > min {
+        authored_max
+    } else {
+        min + 1.0
+    };
+    let authored_value = ui.get_f64("value", min);
+    let value = if authored_value.is_finite() {
+        authored_value
+    } else {
+        min
+    };
+    ((value - min) / (max - min)).clamp(0.0, 1.0) as f32
 }
 
 fn component_color(
@@ -862,9 +1059,34 @@ mod tests {
         ui_component.set("element_type", json!("ProgressBar"));
         ui_component.set("text", json!("Health"));
         ui.add_component(ui_component);
+        let mut slider = GameObject::new(0.0, 0.0, Some("Volume".to_string()));
+        let mut slider_component = default_component("UIElement").unwrap();
+        slider_component.set("element_type", json!("Slider"));
+        slider_component.set("text", json!(""));
+        slider_component.set("min", json!(0.0));
+        slider_component.set("max", json!(100.0));
+        slider_component.set("value", json!(50.0));
+        slider.add_component(slider_component);
+        let mut checkbox = GameObject::new(0.0, 0.0, Some("Warm".to_string()));
+        let mut checkbox_component = default_component("UIElement").unwrap();
+        checkbox_component.set("element_type", json!("Checkbox"));
+        checkbox_component.set("checked", json!(true));
+        checkbox_component.set("text", json!("Warm"));
+        checkbox.add_component(checkbox_component);
+        let mut inventory = GameObject::new(0.0, 0.0, Some("Inventory".to_string()));
+        let mut inventory_component = default_component("UIElement").unwrap();
+        inventory_component.set("element_type", json!("InventoryGrid"));
+        inventory_component.set("text", json!(""));
+        inventory_component.set("width", json!(100.0));
+        inventory_component.set("height", json!(64.0));
+        inventory_component.set("columns", json!(3));
+        inventory_component.set("slot_count", json!(6));
+        inventory_component.set("slot_size", json!(24.0));
+        inventory_component.set("items", json!([{"id": "water"}, null]));
+        inventory.add_component(inventory_component);
         runtime
             .runtime_world
-            .replace_entities(vec![actor, emitter, ui]);
+            .replace_entities(vec![actor, emitter, ui, slider, checkbox, inventory]);
         runtime
             .particle_system
             .update_previews(&runtime.runtime_world.units, 0.0);
@@ -888,8 +1110,8 @@ mod tests {
         assert_eq!(stats.entity_quads, 2);
         assert_eq!(stats.textured_entities, 1);
         assert!(stats.particle_quads >= 8);
-        assert_eq!(stats.ui_quads, 6);
-        assert_eq!(stats.ui_text_areas, 1);
+        assert_eq!(stats.ui_quads, 33);
+        assert_eq!(stats.ui_text_areas, 2);
         assert_eq!(
             backend.draw_calls,
             stats.tile_quads
@@ -899,5 +1121,29 @@ mod tests {
                 + stats.ui_text_areas
         );
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn ui_text_zero_metrics_resolve_to_legible_defaults() {
+        let mut ui = default_component("UIElement").unwrap();
+        ui.set("font_size", json!(0.0));
+        ui.set("line_height", json!(0.0));
+        assert_eq!(resolved_ui_text_metrics(&ui), (16.0, 20.0));
+
+        ui.set("font_size", json!(24.0));
+        ui.set("line_height", json!(12.0));
+        assert_eq!(resolved_ui_text_metrics(&ui), (24.0, 24.0));
+    }
+
+    #[test]
+    fn slider_normalization_repairs_invalid_ranges_and_values() {
+        let mut ui = default_component("UIElement").unwrap();
+        ui.set("min", json!(10.0));
+        ui.set("max", json!(5.0));
+        ui.set("value", json!(10.5));
+        assert_eq!(normalized_ui_slider(&ui), 0.5);
+
+        ui.set("value", json!(f64::NAN));
+        assert_eq!(normalized_ui_slider(&ui), 0.0);
     }
 }
