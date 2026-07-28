@@ -1,8 +1,16 @@
+use std::collections::BTreeMap;
+
+use miniforge::engine::component::default_component;
+use miniforge::entities::game_object::GameObject;
+use miniforge::map::grid::Grid;
 use miniforge::render::backend::{
     BUILTIN_RADIAL_LIGHT_TEXTURE_ID, RenderBackend, SpriteBlendMode, SpriteDrawCommand,
     SpriteDrawOptions, SpriteMaterialEffect, SpriteRegionDrawCommand, TextDrawCommand,
     TextWrapMode, WgpuBackend,
 };
+use miniforge::render::runtime_scene_2d::draw_engine_runtime_scene_2d;
+use miniforge::runtime::engine_runtime::EngineRuntime;
+use serde_json::json;
 
 #[test]
 #[ignore = "requires a physical or software wgpu adapter"]
@@ -193,4 +201,78 @@ fn physical_wgpu_backend_renders_and_reads_pixels() {
         backend.last_frame_diagnostics().pipeline_changes >= 8,
         "alpha/effect alternation should switch pipelines without reordering"
     );
+}
+
+#[test]
+#[ignore = "requires a physical or software wgpu adapter"]
+fn physical_wgpu_runtime_composes_ambient_directional_and_shadow_lighting() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("miniforge-wgpu-lighting-{unique}"));
+    std::fs::create_dir_all(root.join("assets/scenes")).unwrap();
+    std::fs::create_dir_all(root.join("settings")).unwrap();
+    std::fs::write(
+        root.join("project.mforge"),
+        r#"{"name":"Lighting Test","start_scene":"assets/scenes/main.scene.json"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("assets/scenes/main.scene.json"),
+        r#"{"entities":[],"grid":{"width":4,"height":4,"tile_size":16,"chunk_size":2}}"#,
+    )
+    .unwrap();
+    let mut runtime = EngineRuntime::new(&root).unwrap();
+    runtime.grid = Grid::new(4, 4, 16, 2);
+
+    let light_entity =
+        |name: &str, light_type: &str, x: f64, y: f64, intensity: f64, visible: bool| {
+            let mut entity = GameObject::new(x, y, Some(name.to_string()));
+            entity.visible = visible;
+            let mut light = default_component("Light2D").unwrap();
+            light.set("light_type", json!(light_type));
+            light.set("intensity", json!(intensity));
+            light.set("radius", json!(4.0));
+            light.set("color", json!([230, 235, 255]));
+            entity.add_component(light);
+            entity
+        };
+    let ambient = light_entity("Night", "ambient", 0.0, 0.0, 0.7, false);
+    let directional = light_entity("Moon", "directional", 0.0, 0.0, 0.6, false);
+    let point = light_entity("Lamp", "point", 2.0, 2.0, 1.0, false);
+    let mut caster = GameObject::new(3.0, 2.0, Some("Wall".to_string()));
+    caster.add_component(default_component("ShadowCaster2D").unwrap());
+    runtime
+        .runtime_world
+        .replace_entities(vec![ambient, directional, point, caster]);
+
+    let mut backend = WgpuBackend::new(true, cfg!(target_os = "macos"));
+    backend.resize(64, 64).unwrap();
+    backend.set_clear_color([0.0, 0.0, 0.0, 1.0]);
+    backend.init().unwrap();
+    backend.begin_frame().unwrap();
+    let stats =
+        draw_engine_runtime_scene_2d(&mut backend, &runtime, &BTreeMap::new(), 64.0, 64.0).unwrap();
+    backend.end_frame().unwrap();
+
+    let pixels = backend.readback_rgba8().unwrap();
+    let luma = |x: usize, y: usize| {
+        let pixel = (y * 64 + x) * 4;
+        i32::from(pixels[pixel]) + i32::from(pixels[pixel + 1]) + i32::from(pixels[pixel + 2])
+    };
+    let max_pair_darkening = (24usize..40)
+        .flat_map(|y| (4usize..31).map(move |x| (x, y)))
+        .map(|(x, y)| luma(x, y) - luma(64 - x, y))
+        .max()
+        .unwrap_or_default();
+    assert_eq!(stats.ambient_light_quads, 1);
+    assert_eq!(stats.directional_light_quads, 1);
+    assert_eq!(stats.shadow_quads, 1);
+    assert!(
+        max_pair_darkening > 12,
+        "projected shadow should darken at least one symmetric framebuffer pair: max_darkening={max_pair_darkening}"
+    );
+    assert!(backend.is_using_physical_device());
+    std::fs::remove_dir_all(root).ok();
 }

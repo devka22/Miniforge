@@ -55,8 +55,10 @@ script. Scene-level responsive UI Canvas data now renders panels, buttons, label
 textures, and `UIElement` supports both plain images and nine-slice frames. The preview discovers
 and uploads these UI textures automatically. The runtime minimap centers on the player, draws nearby
 road tiles and priority-sorted objectives, threats, NPCs, resources and vehicles under bounded tile
-and marker budgets. Point `Light2D` components use a built-in radial texture and additive blending;
-the texture is restored automatically with the rest of the GPU resources after device loss.
+and marker budgets. Ambient `Light2D` applies a multiply pass, directional lights add a bounded
+screen tint, and point lights use a built-in radial texture with additive blending. Point lights can
+project rotated shadows from nearby `ShadowCaster2D` bounds under per-frame light/caster budgets.
+The built-in texture is restored automatically with the rest of the GPU resources after device loss.
 `Material2D.shader` can select built-in grayscale, sepia, invert and hit-flash WGSL effects with a
 per-sprite strength. Effects travel as vertex data, so sprites with different effects still share
 the same stable texture/blend batch.
@@ -71,10 +73,10 @@ mid-run and verifies that presentation resumes with `device_loss_recoveries=1`.
 The shared 2D composer now turns visible tilemap cells, atlas-backed entities, CPU particles and
 interactive UI geometry into backend-independent sprite quads with camera transforms, ordering and
 screen culling. The main exported runtime still uses Macroquad while retained-canvas hierarchy
-clipping, ambient/directional light and shadows, render textures and custom hot-reloaded shader
-materials are completed. Projects should therefore leave `experimental_wgpu` disabled for exports
-that need the full production renderer. Project Settings keeps this migration state visible instead
-of hiding it in JSON.
+clipping, normal maps and higher-fidelity soft/cone shadows, render textures and custom hot-reloaded
+shader materials are completed. Projects should therefore leave `experimental_wgpu` disabled for
+exports that need the full production renderer. Project Settings keeps this migration state visible
+instead of hiding it in JSON.
 
 ## Migration gates
 
@@ -90,8 +92,9 @@ The preview becomes playable only after these gates pass on macOS, Windows and L
    checkbox/toggle controls, inventory/ability slots, text-input feedback, a bounded runtime minimap
    and CPU-particle quads are done. Additive point-light emission is done. Runtime inventory and
    ability grids now use clipped, virtualized rows with scriptless wheel scrolling, and ScrollBox
-   text uses the same scissor path; broader retained-canvas virtualization,
-   chunk batching, shadowed lighting, GPU particles and render textures remain.
+   text uses the same scissor path. Ambient/directional light and bounded geometric point-light
+   shadows are done; broader retained-canvas virtualization, chunk batching, normal maps,
+   higher-fidelity soft/cone shadows, GPU particles and render textures remain.
 4. WGSL materials, post-processing and hot reload with readable shader diagnostics. Four built-in
    per-sprite WGSL effects are done; custom material compilation, post-processing and hot reload
    remain.

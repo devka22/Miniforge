@@ -41,6 +41,9 @@ pub struct RuntimeScene2DStats {
     pub textured_entities: usize,
     pub clipped_ui_quads: usize,
     pub virtualized_ui_items: usize,
+    pub ambient_light_quads: usize,
+    pub directional_light_quads: usize,
+    pub shadow_quads: usize,
 }
 
 /// Draws the currently migrated 2D passes of an exported runtime through any
@@ -387,17 +390,24 @@ fn draw_runtime_lights<B: RenderBackend>(
     screen_height: f32,
     stats: &mut RuntimeScene2DStats,
 ) -> MFResult<()> {
+    const MAX_LIGHTS: usize = 256;
+    const MAX_SHADOW_LIGHTS: usize = 16;
+    const MAX_CASTERS_PER_LIGHT: usize = 64;
     let mut lights = world
         .units
         .iter()
-        .filter(|entity| entity.enabled && entity.visible)
+        .filter(|entity| entity.enabled)
         .filter_map(|entity| {
             let light = entity
                 .get_component("Light2D")
                 .filter(|light| light.enabled)?;
             let intensity = finite_f64_to_f32(light.get_f64("intensity", 1.0)).clamp(0.0, 8.0);
             let radius = finite_f64_to_f32(light.get_f64("radius", 5.0)).clamp(0.1, 1_024.0);
-            (intensity > f32::EPSILON).then_some((entity, light, intensity, radius))
+            let kind = light
+                .get_string("light_type", "point")
+                .trim()
+                .to_ascii_lowercase();
+            (intensity > f32::EPSILON).then_some((entity, light, intensity, radius, kind))
         })
         .collect::<Vec<_>>();
     lights.sort_by(|left, right| {
@@ -406,7 +416,59 @@ fn draw_runtime_lights<B: RenderBackend>(
             .total_cmp(&left.2)
             .then_with(|| left.0.id.cmp(&right.0.id))
     });
-    for (entity, light, intensity, radius) in lights.into_iter().take(256) {
+    lights.truncate(MAX_LIGHTS);
+
+    for (entity, light, intensity, _, kind) in &lights {
+        match kind.as_str() {
+            "ambient" => {
+                let color = ambient_light_color(light, *intensity);
+                draw_quad_with_options(
+                    backend,
+                    (3u64 << 60).saturating_add(entity.id),
+                    0,
+                    0.0,
+                    0.0,
+                    screen_width,
+                    screen_height,
+                    color,
+                    SpriteDrawOptions {
+                        blend_mode: SpriteBlendMode::Multiply,
+                        ..SpriteDrawOptions::default()
+                    },
+                )?;
+                stats.light_quads += 1;
+                stats.ambient_light_quads += 1;
+            }
+            "directional" | "sun" | "moon" => {
+                let alpha = (0.045 * *intensity).clamp(0.0, 0.32);
+                let color = component_color(light.get("color"), [255, 244, 218, 255], alpha);
+                draw_quad_with_options(
+                    backend,
+                    (3u64 << 60).saturating_add(entity.id),
+                    0,
+                    0.0,
+                    0.0,
+                    screen_width,
+                    screen_height,
+                    color,
+                    SpriteDrawOptions {
+                        blend_mode: SpriteBlendMode::Additive,
+                        ..SpriteDrawOptions::default()
+                    },
+                )?;
+                stats.light_quads += 1;
+                stats.directional_light_quads += 1;
+            }
+            _ => {}
+        }
+    }
+
+    let casters = runtime_shadow_casters(world, origin_x, origin_y, tile);
+    let mut shadow_lights = 0usize;
+    for (entity, light, intensity, radius, kind) in lights {
+        if matches!(kind.as_str(), "ambient" | "directional" | "sun" | "moon") {
+            continue;
+        }
         let screen_radius = radius * tile;
         let center_x = origin_x + finite_f64_to_f32(entity.x) * tile;
         let center_y = origin_y + finite_f64_to_f32(entity.y) * tile;
@@ -435,8 +497,153 @@ fn draw_runtime_lights<B: RenderBackend>(
             },
         )?;
         stats.light_quads += 1;
+
+        if !light.get_bool("casts_shadows", true) || shadow_lights >= MAX_SHADOW_LIGHTS {
+            continue;
+        }
+        shadow_lights += 1;
+        let shadow_alpha =
+            finite_f64_to_f32(light.get_f64("shadow_opacity", 0.58)).clamp(0.0, 0.95);
+        if shadow_alpha <= f32::EPSILON {
+            continue;
+        }
+        let shadow_softness =
+            finite_f64_to_f32(light.get_f64("shadow_softness", 0.35)).clamp(0.0, 1.0);
+        let relevant_casters = casters
+            .iter()
+            .filter_map(|caster| {
+                shadow_quad_for_light(
+                    [center_x, center_y],
+                    screen_radius,
+                    *caster,
+                    shadow_softness,
+                )
+            })
+            .take(MAX_CASTERS_PER_LIGHT);
+        for (shadow_index, shadow) in relevant_casters.enumerate() {
+            backend.draw_sprite_with_options(
+                SpriteDrawCommand {
+                    entity_id: (2u64 << 60)
+                        .saturating_add(entity.id.saturating_mul(1_024))
+                        .saturating_add(shadow_index as u64),
+                    texture_id: 0,
+                    x: shadow.x,
+                    y: shadow.y,
+                    width: shadow.width,
+                    height: shadow.height,
+                    rotation: shadow.rotation,
+                    color: [0.0, 0.0, 0.0, shadow_alpha],
+                },
+                SpriteDrawOptions {
+                    blend_mode: SpriteBlendMode::Multiply,
+                    ..SpriteDrawOptions::default()
+                },
+            )?;
+            stats.shadow_quads += 1;
+        }
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RuntimeShadowCaster {
+    center: [f32; 2],
+    size: [f32; 2],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RuntimeShadowQuad {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    rotation: f32,
+}
+
+fn runtime_shadow_casters(
+    world: &RuntimeWorld,
+    origin_x: f32,
+    origin_y: f32,
+    tile: f32,
+) -> Vec<RuntimeShadowCaster> {
+    world
+        .units
+        .iter()
+        .filter(|entity| entity.enabled && entity.visible)
+        .filter(|entity| {
+            entity
+                .get_component("ShadowCaster2D")
+                .is_some_and(|caster| caster.enabled)
+        })
+        .map(|entity| RuntimeShadowCaster {
+            center: [
+                origin_x + finite_f64_to_f32(entity.x) * tile,
+                origin_y + finite_f64_to_f32(entity.y) * tile,
+            ],
+            size: [
+                (finite_f64_to_f32(entity.width).abs()
+                    * finite_f64_to_f32(entity.scale_x).abs()
+                    * tile)
+                    .max(1.0),
+                (finite_f64_to_f32(entity.height).abs()
+                    * finite_f64_to_f32(entity.scale_y).abs()
+                    * tile)
+                    .max(1.0),
+            ],
+        })
+        .collect()
+}
+
+fn shadow_quad_for_light(
+    light_center: [f32; 2],
+    radius: f32,
+    caster: RuntimeShadowCaster,
+    softness: f32,
+) -> Option<RuntimeShadowQuad> {
+    let dx = caster.center[0] - light_center[0];
+    let dy = caster.center[1] - light_center[1];
+    let distance = dx.hypot(dy);
+    let caster_radius = caster.size[0].hypot(caster.size[1]) * 0.5;
+    if !distance.is_finite()
+        || distance <= caster_radius.max(0.001)
+        || distance - caster_radius >= radius
+    {
+        return None;
+    }
+    let direction = [dx / distance, dy / distance];
+    let perpendicular = [-direction[1], direction[0]];
+    let projected_depth = caster.size[0] * direction[0].abs() + caster.size[1] * direction[1].abs();
+    let projected_width =
+        caster.size[0] * perpendicular[0].abs() + caster.size[1] * perpendicular[1].abs();
+    let start = [
+        caster.center[0] + direction[0] * projected_depth * 0.5,
+        caster.center[1] + direction[1] * projected_depth * 0.5,
+    ];
+    let height =
+        (radius - distance + caster_radius).clamp(projected_depth.max(1.0), radius.max(1.0));
+    let width = (projected_width * (1.0 + softness.clamp(0.0, 1.0) * 0.5)).max(1.0);
+    let center = [
+        start[0] + direction[0] * height * 0.5,
+        start[1] + direction[1] * height * 0.5,
+    ];
+    Some(RuntimeShadowQuad {
+        x: center[0] - width * 0.5,
+        y: center[1] - height * 0.5,
+        width,
+        height,
+        rotation: direction[1].atan2(direction[0]) - std::f32::consts::FRAC_PI_2,
+    })
+}
+
+fn ambient_light_color(light: &Component, intensity: f32) -> [f32; 4] {
+    let authored = component_color(light.get("color"), [36, 46, 64, 255], 1.0);
+    let mix = intensity.clamp(0.0, 1.0);
+    [
+        1.0 + (authored[0] - 1.0) * mix,
+        1.0 + (authored[1] - 1.0) * mix,
+        1.0 + (authored[2] - 1.0) * mix,
+        1.0,
+    ]
 }
 
 fn tile_color(value: i32, layer: &TileLayer, layer_index: usize) -> [f32; 4] {
@@ -1774,6 +1981,82 @@ mod tests {
         let options = entity_sprite_options(&entity);
         assert_eq!(options.material_effect, SpriteMaterialEffect::Sepia);
         assert_eq!(options.effect_strength, 128);
+    }
+
+    #[test]
+    fn ambient_directional_and_shadowed_lights_share_the_runtime_pass() {
+        let light_entity = |name: &str, light_type: &str, x: f64, y: f64| {
+            let mut entity = GameObject::new(x, y, Some(name.to_string()));
+            let mut light = default_component("Light2D").unwrap();
+            light.set("light_type", json!(light_type));
+            light.set("intensity", json!(0.8));
+            light.set("radius", json!(10.0));
+            entity.add_component(light);
+            entity
+        };
+        let ambient = light_entity("Night", "ambient", 0.0, 0.0);
+        let directional = light_entity("Moon", "directional", 0.0, 0.0);
+        let point = light_entity("Lamp", "point", 2.0, 2.0);
+        let mut units = vec![ambient, directional, point];
+        for index in 0..70 {
+            let mut caster = GameObject::new(
+                3.0 + (index % 5) as f64 * 0.1,
+                2.0 + (index / 5) as f64 * 0.02,
+                Some(format!("Caster {index}")),
+            );
+            caster.add_component(default_component("ShadowCaster2D").unwrap());
+            units.push(caster);
+        }
+        let world = RuntimeWorld::new(units);
+        let mut backend = MacroquadBackend::default();
+        backend.init().unwrap();
+        backend.begin_frame().unwrap();
+        let mut stats = RuntimeScene2DStats::default();
+
+        draw_runtime_lights(
+            &mut backend,
+            &world,
+            0.0,
+            0.0,
+            16.0,
+            320.0,
+            180.0,
+            &mut stats,
+        )
+        .unwrap();
+        backend.end_frame().unwrap();
+
+        assert_eq!(stats.light_quads, 3);
+        assert_eq!(stats.ambient_light_quads, 1);
+        assert_eq!(stats.directional_light_quads, 1);
+        assert_eq!(stats.shadow_quads, 64);
+        assert_eq!(backend.draw_calls, 67);
+    }
+
+    #[test]
+    fn shadow_quad_projects_away_from_the_light_and_rejects_overlap() {
+        let caster = RuntimeShadowCaster {
+            center: [20.0, 0.0],
+            size: [10.0, 8.0],
+        };
+        let shadow = shadow_quad_for_light([0.0, 0.0], 100.0, caster, 0.5).unwrap();
+        assert!(shadow.width > 8.0);
+        assert!(shadow.height > 70.0);
+        assert!((shadow.rotation + std::f32::consts::FRAC_PI_2).abs() < 0.0001);
+        assert!(shadow.x.is_finite() && shadow.y.is_finite());
+
+        assert!(
+            shadow_quad_for_light(
+                [20.0, 0.0],
+                100.0,
+                RuntimeShadowCaster {
+                    center: [20.0, 0.0],
+                    size: [10.0, 8.0],
+                },
+                0.5,
+            )
+            .is_none()
+        );
     }
 
     #[test]
