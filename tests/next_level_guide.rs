@@ -485,6 +485,13 @@ fn massive_particle_templates_bridge_to_runtime_and_gpu_planning() {
         .unwrap();
     assert!(rain.system.gpu_recommended());
     assert!(rain.system.estimate_max_particles() >= 4_096);
+    let runtime_components = rain.system.to_runtime_components();
+    assert_eq!(runtime_components[0].component_type, "GpuParticles2D");
+    assert_eq!(runtime_components[1].component_type, "ParticleEmitter");
+    assert_eq!(
+        runtime_components[0].get_usize("max_particles", 0),
+        runtime_components[1].get_usize("max_particles", 0)
+    );
 
     let explosion = templates
         .iter()

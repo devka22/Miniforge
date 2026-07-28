@@ -236,7 +236,7 @@ impl PreviewApp {
                 || self.frames >= target.max(1).saturating_mul(120)
         }) {
             println!(
-                "MINIFORGE_WGPU_SURFACE_{} frames={} presented={} skipped={} reconfigured={} surface_loss_recoveries={} device_loss_recoveries={} logical_draws={} gpu_draws={} binds={} pipelines={} vertex_bytes={} entities={} textures={} ui_documents={} retained_ui_widgets={} retained_ui_quads={} api={:?}",
+                "MINIFORGE_WGPU_SURFACE_{} frames={} presented={} skipped={} reconfigured={} surface_loss_recoveries={} device_loss_recoveries={} logical_draws={} gpu_draws={} binds={} pipelines={} vertex_bytes={} particle_emitters={} particle_capacity={} particle_spawned={} particle_dispatches={} entities={} textures={} ui_documents={} retained_ui_widgets={} retained_ui_quads={} api={:?}",
                 if backend.submitted_frames >= self.autotest_frames.unwrap_or(1).max(1) {
                     "OK"
                 } else {
@@ -253,6 +253,10 @@ impl PreviewApp {
                 backend.last_frame_diagnostics().texture_bind_changes,
                 backend.last_frame_diagnostics().pipeline_changes,
                 backend.last_frame_diagnostics().vertex_bytes_uploaded,
+                backend.last_frame_diagnostics().queued_particle_systems,
+                backend.last_frame_diagnostics().gpu_particle_capacity,
+                backend.last_frame_diagnostics().gpu_particle_spawned,
+                backend.last_frame_diagnostics().particle_compute_dispatches,
                 self.runtime
                     .as_ref()
                     .map(|runtime| runtime.runtime_world.units.len())

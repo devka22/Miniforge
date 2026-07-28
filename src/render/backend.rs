@@ -219,11 +219,57 @@ pub struct TilemapDrawCommand {
     pub tile_count: usize,
 }
 
+/// Backend-independent GPU particle emitter submitted once per rendered frame.
+///
+/// The command describes an emitter rather than uploading individual particle
+/// quads. Compute-capable backends keep persistent particle state keyed by
+/// `system_id`; compatibility backends may use `particle_count` as a bounded
+/// CPU fallback budget.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct ParticleDrawCommand {
     pub system_id: u64,
+    /// Maximum number of persistent particles owned by this emitter.
     pub particle_count: usize,
     pub texture_id: Option<u64>,
+    pub origin: [f32; 2],
+    pub velocity: [f32; 2],
+    pub gravity: [f32; 2],
+    pub spread: f32,
+    pub lifetime: f32,
+    pub drag: f32,
+    pub start_size: f32,
+    pub end_size: f32,
+    pub color: [f32; 4],
+    pub emission_rate: f32,
+    pub burst_count: u32,
+    pub delta_seconds: f32,
+    pub playing: bool,
+    pub blend_mode: SpriteBlendMode,
+}
+
+impl Default for ParticleDrawCommand {
+    fn default() -> Self {
+        Self {
+            system_id: 0,
+            particle_count: 1_024,
+            texture_id: None,
+            origin: [0.0; 2],
+            velocity: [0.0, -40.0],
+            gravity: [0.0, 20.0],
+            spread: 18.0,
+            lifetime: 1.0,
+            drag: 0.0,
+            start_size: 8.0,
+            end_size: 0.0,
+            color: [1.0, 0.82, 0.42, 0.86],
+            emission_rate: 64.0,
+            burst_count: 16,
+            delta_seconds: 1.0 / 60.0,
+            playing: true,
+            blend_mode: SpriteBlendMode::Additive,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

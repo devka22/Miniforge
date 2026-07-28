@@ -4,9 +4,9 @@ use miniforge::engine::component::default_component;
 use miniforge::entities::game_object::GameObject;
 use miniforge::map::grid::Grid;
 use miniforge::render::backend::{
-    BUILTIN_RADIAL_LIGHT_TEXTURE_ID, RenderBackend, SpriteBlendMode, SpriteDrawCommand,
-    SpriteDrawOptions, SpriteMaterialEffect, SpriteRegionDrawCommand, TextDrawCommand,
-    TextWrapMode, WgpuBackend,
+    BUILTIN_RADIAL_LIGHT_TEXTURE_ID, ParticleDrawCommand, RenderBackend, SpriteBlendMode,
+    SpriteDrawCommand, SpriteDrawOptions, SpriteMaterialEffect, SpriteRegionDrawCommand,
+    TextDrawCommand, TextWrapMode, WgpuBackend,
 };
 use miniforge::render::runtime_scene_2d::draw_engine_runtime_scene_2d;
 use miniforge::runtime::engine_runtime::EngineRuntime;
@@ -144,6 +144,24 @@ fn physical_wgpu_backend_renders_and_reads_pixels() {
             clip_rect: Some([0, 32, 16, 16]),
         })
         .unwrap();
+    backend
+        .draw_particles(ParticleDrawCommand {
+            system_id: 77,
+            particle_count: 64,
+            origin: [8.0, 8.0],
+            velocity: [0.0, 0.0],
+            gravity: [0.0, 0.0],
+            spread: 0.0,
+            lifetime: 2.0,
+            start_size: 10.0,
+            end_size: 10.0,
+            color: [0.0, 1.0, 0.0, 1.0],
+            emission_rate: 0.0,
+            burst_count: 16,
+            blend_mode: SpriteBlendMode::Alpha,
+            ..ParticleDrawCommand::default()
+        })
+        .unwrap();
     backend.end_frame().unwrap();
 
     let pixels = backend.readback_rgba8().unwrap();
@@ -154,6 +172,7 @@ fn physical_wgpu_backend_renders_and_reads_pixels() {
     let light_center = (8 * 64 + 40) * 4;
     let light_edge = 32 * 4;
     let grayscale = (24 * 64 + 56) * 4;
+    let gpu_particle = (8 * 64 + 8) * 4;
     assert!(pixels[center] > 240, "center should be rendered red");
     assert!(pixels[center + 1] < 16);
     assert!(pixels[center + 2] < 16);
@@ -174,6 +193,10 @@ fn physical_wgpu_backend_renders_and_reads_pixels() {
         pixels[grayscale].abs_diff(pixels[grayscale + 1]) < 3
             && pixels[grayscale + 1].abs_diff(pixels[grayscale + 2]) < 3,
         "grayscale material should transform the sprite in WGSL"
+    );
+    assert!(
+        pixels[gpu_particle + 1] > 200,
+        "compute particles should simulate and render through the physical GPU"
     );
     for x in [8usize, 24, 40, 56] {
         let blended = (56 * 64 + x) * 4;
@@ -197,10 +220,45 @@ fn physical_wgpu_backend_renders_and_reads_pixels() {
     assert!(backend.is_using_physical_device());
     assert_eq!(backend.texture_count(), 1);
     assert_eq!(backend.last_frame_diagnostics().queued_text_areas, 1);
+    assert_eq!(backend.last_frame_diagnostics().queued_particle_systems, 1);
+    assert_eq!(backend.last_frame_diagnostics().gpu_particle_capacity, 64);
+    assert_eq!(backend.last_frame_diagnostics().gpu_particle_spawned, 16);
+    assert_eq!(
+        backend.last_frame_diagnostics().particle_compute_dispatches,
+        1
+    );
     assert!(
         backend.last_frame_diagnostics().pipeline_changes >= 8,
         "alpha/effect alternation should switch pipelines without reordering"
     );
+
+    backend.begin_frame().unwrap();
+    backend
+        .draw_particles(ParticleDrawCommand {
+            system_id: 77,
+            particle_count: 64,
+            origin: [8.0, 8.0],
+            velocity: [0.0, 0.0],
+            gravity: [0.0, 0.0],
+            spread: 0.0,
+            lifetime: 2.0,
+            start_size: 10.0,
+            end_size: 10.0,
+            color: [0.0, 1.0, 0.0, 1.0],
+            emission_rate: 0.0,
+            burst_count: 16,
+            blend_mode: SpriteBlendMode::Alpha,
+            ..ParticleDrawCommand::default()
+        })
+        .unwrap();
+    backend.end_frame().unwrap();
+    let persisted = backend.readback_rgba8().unwrap();
+    assert!(
+        persisted[gpu_particle + 1] > 200,
+        "particle storage must remain resident across frames"
+    );
+    assert_eq!(backend.last_frame_diagnostics().gpu_particle_spawned, 0);
+    assert_eq!(backend.submitted_frames, 2);
 }
 
 #[test]

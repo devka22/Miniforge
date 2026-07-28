@@ -1035,6 +1035,23 @@ fn builtin_presets() -> Vec<AuthoringPreset2D> {
         )
         .aliases(&["audio"]),
         preset(
+            "gpu_particle_emitter",
+            "GPU Particle Emitter",
+            "Presentation",
+            AuthoringPresetKind2D::Effects,
+            "Persistent WGPU compute particles with additive rendering and an automatic CPU fallback.",
+            &["GpuParticles2D", "ParticleEmitter"],
+            &[
+                ov("GpuParticles2D", "simulation", json!("compute")),
+                ov("GpuParticles2D", "fallback", json!("cpu_emitter")),
+                ov("GpuParticles2D", "blend_mode", json!("additive")),
+                ov("ParticleEmitter", "blend_mode", json!("additive")),
+            ],
+            &["all"],
+            &["particles", "gpu", "compute", "effects"],
+        )
+        .aliases(&["gpu_particles", "compute_particles"]),
+        preset(
             "weather_system",
             "Dynamic Weather",
             "Presentation",
@@ -1652,6 +1669,44 @@ fn automatic_parameters(components: &[String]) -> Vec<PresetParameter2D> {
             &[("Inventory", "capacity")],
         ));
     }
+    if has(components, "GpuParticles2D") {
+        parameters.push(integer_parameter(
+            "particle_capacity",
+            "Particle Capacity",
+            8_192,
+            1,
+            1_000_000,
+            "Persistent particle slots reserved for this compute emitter.",
+            &[
+                ("GpuParticles2D", "max_particles"),
+                ("ParticleEmitter", "max_particles"),
+            ],
+        ));
+        parameters.push(number_parameter(
+            "emission_rate",
+            "Emission Rate",
+            128.0,
+            0.0,
+            1_000_000.0,
+            "Particles emitted per second by compute and fallback paths.",
+            &[
+                ("GpuParticles2D", "emission_rate"),
+                ("ParticleEmitter", "rate"),
+            ],
+        ));
+        parameters.push(number_parameter(
+            "particle_lifetime",
+            "Particle Lifetime",
+            1.25,
+            0.01,
+            3_600.0,
+            "Lifetime in seconds for compute and fallback particles.",
+            &[
+                ("GpuParticles2D", "lifetime"),
+                ("ParticleEmitter", "lifetime"),
+            ],
+        ));
+    }
     parameters
 }
 
@@ -1732,6 +1787,12 @@ fn automatic_requirements(components: &[String]) -> Vec<String> {
                 .to_string(),
         );
     }
+    if has(components, "GpuParticles2D") {
+        requirements.push(
+            "Enable WGPU and GPU particles in Project Settings for compute simulation; the CPU emitter remains available automatically"
+                .to_string(),
+        );
+    }
     requirements
 }
 
@@ -1754,6 +1815,12 @@ fn automatic_workflow_steps(kind: AuthoringPresetKind2D, components: &[String]) 
     }
     if has(components, "ForceField2D") {
         steps.push("Resize the force-field radius directly in the Scene view".to_string());
+    }
+    if has(components, "GpuParticles2D") {
+        steps.push(
+            "Use Render Diagnostics to verify compute dispatches, capacity and spawned particles"
+                .to_string(),
+        );
     }
     steps.push("Play the scene and inspect Runtime Health".to_string());
     steps
@@ -1804,6 +1871,7 @@ mod tests {
             "physics_ice_surface",
             "physics_distance_joint",
             "physics_wind_zone",
+            "gpu_particle_emitter",
         ] {
             assert!(catalog.resolve(expected).is_some(), "{expected}");
         }

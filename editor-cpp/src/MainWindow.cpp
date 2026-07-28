@@ -460,6 +460,7 @@ void MainWindow::createMenus()
 
         auto* effects = menu->addMenu(QStringLiteral("Effects & Audio"));
         addMenuCommand(effects, QStringLiteral("Particle Emitter 2D"), QStringLiteral("object.create_particle_emitter2d"));
+        addMenuCommand(effects, QStringLiteral("GPU Particle Emitter 2D"), QStringLiteral("object.create_gpu_particle_emitter2d"));
         addMenuCommand(effects, QStringLiteral("Spatial Audio Emitter 2D"), QStringLiteral("object.create_audio_emitter2d"));
     };
 
@@ -881,6 +882,7 @@ void MainWindow::createToolbar()
 
     auto* effectsMenu = addMenu->addMenu(QStringLiteral("Effects & Audio"));
     addCreateAction(effectsMenu, QStringLiteral("Particle Emitter 2D"), QStringLiteral("object.create_particle_emitter2d"));
+    addCreateAction(effectsMenu, QStringLiteral("GPU Particle Emitter 2D"), QStringLiteral("object.create_gpu_particle_emitter2d"));
     addCreateAction(effectsMenu, QStringLiteral("Spatial Audio Emitter 2D"), QStringLiteral("object.create_audio_emitter2d"));
 
     auto* gameplayMenu = addMenu->addMenu(QStringLiteral("Gameplay"));

@@ -2552,6 +2552,7 @@ impl EditorCore {
                 let physics_material = entity.get_component("PhysicsMaterial2D");
                 let force_field = entity.get_component("ForceField2D");
                 let joint = entity.get_component("Joint2D");
+                let gpu_particles = entity.get_component("GpuParticles2D");
                 let joint_target = joint.and_then(|joint| {
                     let target_id = joint.get("target_id").and_then(Value::as_u64);
                     let target_name = joint.get_string("target_name", "");
@@ -2612,6 +2613,15 @@ impl EditorCore {
                     "light_radius": light.map(|component| component.get_f64("radius", 5.0)).unwrap_or(0.0),
                     "light_angle": light.map(|component| component.get_f64("angle", 360.0)).unwrap_or(360.0),
                     "light_direction": light.map(|component| component.get_f64("direction", 0.0)).unwrap_or(0.0),
+                    "gpu_particle_capacity": gpu_particles
+                        .map(|component| component.get_usize("max_particles", 8_192))
+                        .unwrap_or(0),
+                    "gpu_particle_emission_rate": gpu_particles
+                        .map(|component| component.get_f64("emission_rate", 128.0))
+                        .unwrap_or(0.0),
+                    "gpu_particle_playing": gpu_particles
+                        .map(|component| component.get_bool("playing", true))
+                        .unwrap_or(false),
                     "collision_points": EditorSpatialTools2D::collision_points(entity),
                 })
             })
@@ -3840,6 +3850,36 @@ impl EditorCore {
                 CommandOutcome {
                     changed: true,
                     message: format!("Created ParticleEmitter2D #{id}"),
+                }
+            }
+            "object.create_gpu_particle_emitter2d" => {
+                let (x, y) = editor_spawn_position(game);
+                let id = game.spawn_scene_node(
+                    "GpuParticleEmitter2D",
+                    &["GpuParticles2D", "ParticleEmitter"],
+                    x,
+                    y,
+                );
+                if let Some(entity) = game.get_entity_by_id_mut(id)
+                    && let Some(fallback) = entity.get_component_mut("ParticleEmitter")
+                {
+                    fallback.set_f64("rate", 128.0);
+                    fallback.set("burst_count", json!(32));
+                    fallback.set_f64("lifetime", 1.25);
+                    fallback.set_f64("velocity_y", -44.0);
+                    fallback.set_f64("spread", 26.0);
+                    fallback.set_f64("start_size", 9.0);
+                    fallback.set_f64("end_size", 1.0);
+                    fallback.set("color", json!([125, 205, 255, 220]));
+                    fallback.set("max_particles", json!(8_192));
+                    fallback.set("blend_mode", json!("additive"));
+                }
+                game.sync_world();
+                CommandOutcome {
+                    changed: true,
+                    message: format!(
+                        "Created compute GpuParticleEmitter2D #{id} with automatic CPU fallback"
+                    ),
                 }
             }
             "object.create_audio_emitter2d" => {
@@ -5586,6 +5626,12 @@ fn default_command_descriptors() -> Vec<CommandDescriptor> {
         command(
             "object.create_particle_emitter2d",
             "Create Particle Emitter 2D",
+            "Effects",
+            None,
+        ),
+        command(
+            "object.create_gpu_particle_emitter2d",
+            "Create GPU Particle Emitter 2D",
             "Effects",
             None,
         ),
@@ -8148,6 +8194,10 @@ mod tests {
                 &["NavAgent", "Collider2D", "Selectable"],
             ),
             ("object.create_particle_emitter2d", &["ParticleEmitter"]),
+            (
+                "object.create_gpu_particle_emitter2d",
+                &["GpuParticles2D", "ParticleEmitter"],
+            ),
             ("object.create_audio_emitter2d", &["AudioSource"]),
         ];
 
@@ -8186,6 +8236,14 @@ mod tests {
                             .get_f64("spatial_blend", 0.0),
                         1.0
                     );
+                }
+                "object.create_gpu_particle_emitter2d" => {
+                    let gpu = entity.get_component("GpuParticles2D").unwrap();
+                    let fallback = entity.get_component("ParticleEmitter").unwrap();
+                    assert_eq!(gpu.get_string("simulation", ""), "compute");
+                    assert_eq!(gpu.get_usize("max_particles", 0), 8_192);
+                    assert_eq!(fallback.get_usize("max_particles", 0), 8_192);
+                    assert_eq!(fallback.get_f64("rate", 0.0), 128.0);
                 }
                 _ => {}
             }

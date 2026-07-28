@@ -1026,9 +1026,26 @@ void ViewportWidget::paintSceneOverlays(QPainter& painter)
             painter.drawEllipse(center, selected ? 20 : 12, selected ? 20 : 12);
         }
         if (entityHasComponent(entity, QStringLiteral("ParticleEmitter"))) {
-            painter.setPen(QPen(QColor(103, 203, 255, selected ? 240 : 150), 2));
-            for (int ray = 0; ray < 8; ++ray) {
-                painter.drawLine(radialPoint(center, 4, ray * 45.0), radialPoint(center, 11, ray * 45.0));
+            const bool gpu = entityHasComponent(entity, QStringLiteral("GpuParticles2D"));
+            painter.setPen(QPen(gpu ? QColor(151, 118, 255, selected ? 250 : 175)
+                                    : QColor(103, 203, 255, selected ? 240 : 150),
+                gpu ? 2.5 : 2.0));
+            for (int ray = 0; ray < (gpu ? 12 : 8); ++ray) {
+                const qreal angle = ray * (gpu ? 30.0 : 45.0);
+                painter.drawLine(radialPoint(center, 4, angle), radialPoint(center, gpu ? 14 : 11, angle));
+            }
+            if (gpu && selected) {
+                const int capacity = entity.value(QStringLiteral("gpu_particle_capacity")).toInt();
+                const qreal rate = entity.value(QStringLiteral("gpu_particle_emission_rate")).toDouble();
+                const QString state = entity.value(QStringLiteral("gpu_particle_playing")).toBool()
+                    ? tr("Compute")
+                    : tr("Paused");
+                painter.setPen(QColor(203, 189, 255, 235));
+                painter.drawText(QRectF(center + QPointF(17, -14), QSizeF(180, 24)),
+                    QStringLiteral("%1 · %2 · %3/s")
+                        .arg(state)
+                        .arg(capacity)
+                        .arg(rate, 0, 'f', 0));
             }
         }
         if (entityHasComponent(entity, QStringLiteral("AudioSource"))) {

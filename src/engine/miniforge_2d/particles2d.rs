@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::engine::component::{Component, default_component};
 use crate::systems::particle_system::ParticleEmitterConfig;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -33,6 +34,9 @@ pub enum ParticleBlendMode2D {
 pub enum ParticleSimulationTarget2D {
     CpuStable,
     GpuPreferred,
+    /// Production compute simulation on WGPU with a generated CPU fallback.
+    GpuCompute,
+    /// Legacy serialized name kept for backwards compatibility.
     GpuRequiredFuture,
 }
 
@@ -320,6 +324,70 @@ impl ParticleSystem2D {
             .find(|emitter| emitter.enabled)
             .map(ParticleEmitter2D::to_runtime_emitter_config)
     }
+
+    /// Builds the components consumed directly by the current runtime.
+    ///
+    /// GPU-ready systems receive both components so projects can switch
+    /// renderer backends without rewriting gameplay or particle assets.
+    pub fn to_runtime_components(&self) -> Vec<Component> {
+        let Some(emitter) = self.emitters.iter().find(|emitter| emitter.enabled) else {
+            return Vec::new();
+        };
+        let config = emitter.to_runtime_emitter_config();
+        let mut cpu = default_component("ParticleEmitter")
+            .expect("ParticleEmitter is a built-in runtime component");
+        cpu.set("looped", json!(config.looped));
+        cpu.set_f64("rate", config.rate);
+        cpu.set("burst_count", json!(config.burst_count));
+        cpu.set_f64("lifetime", config.lifetime);
+        cpu.set_f64("velocity_x", config.velocity_x);
+        cpu.set_f64("velocity_y", config.velocity_y);
+        cpu.set_f64("spread", config.spread);
+        cpu.set_f64("start_size", config.start_size);
+        cpu.set_f64("end_size", config.end_size);
+        cpu.set("color", json!(config.color));
+        cpu.set("max_particles", json!(config.max_particles));
+        cpu.set(
+            "blend_mode",
+            json!(particle_blend_mode_name(emitter.renderer.blend_mode)),
+        );
+
+        if !self.gpu_recommended() {
+            return vec![cpu];
+        }
+        let mut gpu = default_component("GpuParticles2D")
+            .expect("GpuParticles2D is a built-in runtime component");
+        gpu.set("template", json!(self.name));
+        gpu.set("max_particles", json!(config.max_particles));
+        gpu.set("emission_rate", json!(config.rate));
+        gpu.set("burst_count", json!(config.burst_count));
+        gpu.set("lifetime", json!(config.lifetime));
+        gpu.set("velocity_x", json!(config.velocity_x));
+        gpu.set("velocity_y", json!(config.velocity_y));
+        gpu.set("spread", json!(config.spread));
+        gpu.set("gravity_x", json!(emitter.acceleration[0]));
+        gpu.set("gravity_y", json!(emitter.acceleration[1]));
+        gpu.set("start_size", json!(config.start_size));
+        gpu.set("end_size", json!(config.end_size.max(0.25)));
+        gpu.set("color", json!(config.color));
+        gpu.set(
+            "blend_mode",
+            json!(particle_blend_mode_name(emitter.renderer.blend_mode)),
+        );
+        gpu.set("simulation", json!("compute"));
+        gpu.set("fallback", json!("cpu_emitter"));
+        gpu.set("local_space", json!(self.space == ParticleSpace2D::Local));
+        vec![gpu, cpu]
+    }
+}
+
+fn particle_blend_mode_name(mode: ParticleBlendMode2D) -> &'static str {
+    match mode {
+        ParticleBlendMode2D::Alpha => "alpha",
+        ParticleBlendMode2D::Additive => "additive",
+        ParticleBlendMode2D::Multiply => "multiply",
+        ParticleBlendMode2D::Premultiplied => "premultiplied_alpha",
+    }
 }
 
 impl ParticleEmitter2D {
@@ -384,7 +452,7 @@ pub fn particle_templates() -> Vec<ParticleTemplate2D> {
             "Burst additive explosion with sparks and smoke.",
             ParticleSystem2D {
                 name: "FX_Explosion2D".to_string(),
-                simulation_target: ParticleSimulationTarget2D::GpuPreferred,
+                simulation_target: ParticleSimulationTarget2D::GpuCompute,
                 emitters: vec![
                     emitter(EmitterSpec2D {
                         name: "CoreFlash",
@@ -456,7 +524,7 @@ pub fn particle_templates() -> Vec<ParticleTemplate2D> {
             "Orbiting aura with attractor-friendly particles.",
             ParticleSystem2D {
                 name: "FX_MagicAura2D".to_string(),
-                simulation_target: ParticleSimulationTarget2D::GpuPreferred,
+                simulation_target: ParticleSimulationTarget2D::GpuCompute,
                 emitters: vec![ParticleEmitter2D {
                     attractors: vec![ParticleAttractor2D {
                         x: 0.0,
@@ -496,7 +564,7 @@ pub fn particle_templates() -> Vec<ParticleTemplate2D> {
             ParticleSystem2D {
                 name: "FX_Rain2D".to_string(),
                 space: ParticleSpace2D::Screen,
-                simulation_target: ParticleSimulationTarget2D::GpuPreferred,
+                simulation_target: ParticleSimulationTarget2D::GpuCompute,
                 emitters: vec![ParticleEmitter2D {
                     spawn: ParticleSpawn2D {
                         shape: ParticleShape2D::Rect {

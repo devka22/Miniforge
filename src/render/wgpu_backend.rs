@@ -5,7 +5,7 @@
 //! usable by the Qt editor, headless tests and a future window surface without
 //! tying the engine renderer to a particular windowing crate.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::mpsc;
 
@@ -33,6 +33,8 @@ const DEFAULT_WIDTH: u32 = 1280;
 const DEFAULT_HEIGHT: u32 = 720;
 const INITIAL_VERTEX_BUFFER_BYTES: u64 = 64 * 1024;
 const MAX_TEXT_BYTES_PER_AREA: usize = 1024 * 1024;
+const MAX_GPU_PARTICLES_PER_SYSTEM: usize = 1_000_000;
+const GPU_PARTICLE_WORKGROUP_SIZE: u32 = 64;
 
 const SPRITE_SHADER: &str = r#"
 struct VertexOut {
@@ -101,6 +103,152 @@ fn fs_premultiplied(in: VertexOut) -> @location(0) vec4<f32> {
 }
 "#;
 
+const GPU_PARTICLE_SHADER: &str = r#"
+struct Particle {
+    position: vec2<f32>,
+    velocity: vec2<f32>,
+    age: f32,
+    lifetime: f32,
+    seed: f32,
+    alive: f32,
+};
+
+struct ParticleParams {
+    origin: vec2<f32>,
+    velocity: vec2<f32>,
+    gravity: vec2<f32>,
+    viewport: vec2<f32>,
+    color: vec4<f32>,
+    delta_seconds: f32,
+    spread: f32,
+    lifetime: f32,
+    drag: f32,
+    start_size: f32,
+    end_size: f32,
+    max_particles: u32,
+    spawn_start: u32,
+    spawn_count: u32,
+    frame_seed: u32,
+    _padding: vec2<u32>,
+};
+
+@group(0) @binding(0) var<storage, read_write> particles_rw: array<Particle>;
+@group(0) @binding(1) var<uniform> compute_params: ParticleParams;
+@group(1) @binding(0) var<storage, read> particles_ro: array<Particle>;
+@group(1) @binding(1) var<uniform> render_params: ParticleParams;
+
+fn hash(value: u32) -> f32 {
+    var state = value;
+    state = state ^ (state >> 16u);
+    state = state * 2246822519u;
+    state = state ^ (state >> 13u);
+    state = state * 3266489917u;
+    state = state ^ (state >> 16u);
+    return f32(state & 0x00ffffffu) / 16777215.0;
+}
+
+fn should_spawn(index: u32) -> bool {
+    if compute_params.spawn_count == 0u {
+        return false;
+    }
+    let end = compute_params.spawn_start + compute_params.spawn_count;
+    if end <= compute_params.max_particles {
+        return index >= compute_params.spawn_start && index < end;
+    }
+    return index >= compute_params.spawn_start || index < end - compute_params.max_particles;
+}
+
+@compute @workgroup_size(64)
+fn simulate(@builtin(global_invocation_id) id: vec3<u32>) {
+    let index = id.x;
+    if index >= compute_params.max_particles {
+        return;
+    }
+    var particle = particles_rw[index];
+    if particle.alive > 0.5 {
+        particle.age = particle.age + compute_params.delta_seconds;
+        if particle.age >= particle.lifetime {
+            particle.alive = 0.0;
+        } else {
+            particle.velocity =
+                particle.velocity + compute_params.gravity * compute_params.delta_seconds;
+            particle.velocity = particle.velocity /
+                (1.0 + max(compute_params.drag, 0.0) * compute_params.delta_seconds);
+            particle.position =
+                particle.position + particle.velocity * compute_params.delta_seconds;
+        }
+    }
+    if should_spawn(index) {
+        let random = hash(index ^ compute_params.frame_seed);
+        let jitter = random * 2.0 - 1.0;
+        particle.position = compute_params.origin;
+        particle.velocity = compute_params.velocity +
+            vec2<f32>(
+                jitter * compute_params.spread,
+                -abs(jitter) * compute_params.spread,
+            );
+        particle.age = 0.0;
+        particle.lifetime =
+            max(compute_params.lifetime * (0.75 + random * 0.5), 0.01);
+        particle.seed = random;
+        particle.alive = 1.0;
+    }
+    particles_rw[index] = particle;
+}
+
+struct ParticleVertexOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) local: vec2<f32>,
+};
+
+@vertex
+fn vs_particle(
+    @builtin(vertex_index) vertex_index: u32,
+    @builtin(instance_index) instance_index: u32,
+) -> ParticleVertexOut {
+    let corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(1.0, -1.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, 1.0),
+    );
+    let particle = particles_ro[instance_index];
+    var out: ParticleVertexOut;
+    if particle.alive < 0.5 {
+        out.position = vec4<f32>(-2.0, -2.0, 0.0, 1.0);
+        out.color = vec4<f32>(0.0);
+        out.local = vec2<f32>(2.0);
+        return out;
+    }
+    let progress = clamp(particle.age / max(particle.lifetime, 0.01), 0.0, 1.0);
+    let size =
+        max(mix(render_params.start_size, render_params.end_size, progress), 0.25);
+    let local = corners[vertex_index];
+    let pixel = particle.position + local * size * 0.5;
+    let viewport = max(render_params.viewport, vec2<f32>(1.0));
+    out.position = vec4<f32>(
+        pixel.x / viewport.x * 2.0 - 1.0,
+        1.0 - pixel.y / viewport.y * 2.0,
+        0.0,
+        1.0,
+    );
+    out.color =
+        vec4<f32>(render_params.color.rgb, render_params.color.a * (1.0 - progress));
+    out.local = local;
+    return out;
+}
+
+@fragment
+fn fs_particle(in: ParticleVertexOut) -> @location(0) vec4<f32> {
+    let distance = length(in.local);
+    let coverage = 1.0 - smoothstep(0.45, 1.0, distance);
+    return vec4<f32>(in.color.rgb, in.color.a * coverage);
+}
+"#;
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct SpriteVertex {
@@ -109,6 +257,38 @@ struct SpriteVertex {
     uv: [f32; 2],
     material_effect: u32,
     effect_strength: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct GpuParticle {
+    position: [f32; 2],
+    velocity: [f32; 2],
+    age: f32,
+    lifetime: f32,
+    seed: f32,
+    active: f32,
+}
+
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct GpuParticleParams {
+    origin: [f32; 2],
+    velocity: [f32; 2],
+    gravity: [f32; 2],
+    viewport: [f32; 2],
+    color: [f32; 4],
+    delta_seconds: f32,
+    spread: f32,
+    lifetime: f32,
+    drag: f32,
+    start_size: f32,
+    end_size: f32,
+    max_particles: u32,
+    spawn_start: u32,
+    spawn_count: u32,
+    frame_seed: u32,
+    _padding: [u32; 2],
 }
 
 #[derive(Clone, Copy)]
@@ -138,6 +318,10 @@ pub struct WgpuFrameDiagnostics {
     pub culled_sprites: usize,
     pub queued_text_areas: usize,
     pub culled_text_areas: usize,
+    pub queued_particle_systems: usize,
+    pub gpu_particle_capacity: usize,
+    pub gpu_particle_spawned: usize,
+    pub particle_compute_dispatches: usize,
     pub gpu_draw_calls: usize,
     pub texture_bind_changes: usize,
     pub pipeline_changes: usize,
@@ -161,6 +345,25 @@ const SPRITE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
 struct WgpuTexture {
     _texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
+}
+
+struct GpuParticleSystem {
+    _particle_buffer: wgpu::Buffer,
+    params_buffer: wgpu::Buffer,
+    compute_bind_group: wgpu::BindGroup,
+    render_bind_group: wgpu::BindGroup,
+    capacity: u32,
+    spawn_cursor: u32,
+    emit_accumulator: f32,
+    burst_emitted: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PreparedGpuParticleDraw {
+    system_id: u64,
+    capacity: u32,
+    spawned: u32,
+    blend_mode: SpriteBlendMode,
 }
 
 #[derive(Clone)]
@@ -190,6 +393,11 @@ struct WgpuState {
     textures: HashMap<u64, WgpuTexture>,
     vertex_buffer: wgpu::Buffer,
     vertex_buffer_capacity_bytes: u64,
+    particle_compute_bind_group_layout: wgpu::BindGroupLayout,
+    particle_render_bind_group_layout: wgpu::BindGroupLayout,
+    particle_compute_pipeline: wgpu::ComputePipeline,
+    particle_render_pipelines: HashMap<SpriteBlendMode, wgpu::RenderPipeline>,
+    particle_systems: HashMap<u64, GpuParticleSystem>,
     font_system: FontSystem,
     swash_cache: SwashCache,
     text_atlas: TextAtlas,
@@ -218,6 +426,7 @@ pub struct WgpuBackend {
     clear_color: [f64; 4],
     sprites: Vec<QueuedSprite>,
     texts: Vec<TextDrawCommand>,
+    particles: Vec<ParticleDrawCommand>,
     culled_sprites: usize,
     culled_text_areas: usize,
     last_frame_diagnostics: WgpuFrameDiagnostics,
@@ -276,6 +485,7 @@ impl Default for WgpuBackend {
             clear_color: [0.035, 0.043, 0.059, 1.0],
             sprites: Vec::new(),
             texts: Vec::new(),
+            particles: Vec::new(),
             culled_sprites: 0,
             culled_text_areas: 0,
             last_frame_diagnostics: WgpuFrameDiagnostics::default(),
@@ -608,6 +818,104 @@ impl WgpuBackend {
             )
         })
         .collect();
+        let particle_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("MiniForge GPU particle compute and render shader"),
+            source: wgpu::ShaderSource::Wgsl(GPU_PARTICLE_SHADER.into()),
+        });
+        let particle_compute_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("MiniForge GPU particle compute state layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let particle_render_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("MiniForge GPU particle render state layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let particle_compute_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("MiniForge GPU particle compute pipeline layout"),
+                bind_group_layouts: &[Some(&particle_compute_bind_group_layout)],
+                immediate_size: 0,
+            });
+        let particle_render_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("MiniForge GPU particle render pipeline layout"),
+                bind_group_layouts: &[None, Some(&particle_render_bind_group_layout)],
+                immediate_size: 0,
+            });
+        let particle_compute_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("MiniForge GPU particle simulation pipeline"),
+                layout: Some(&particle_compute_pipeline_layout),
+                module: &particle_shader,
+                entry_point: Some("simulate"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+        let particle_render_pipelines = [
+            SpriteBlendMode::Alpha,
+            SpriteBlendMode::PremultipliedAlpha,
+            SpriteBlendMode::Additive,
+            SpriteBlendMode::Multiply,
+            SpriteBlendMode::Screen,
+        ]
+        .into_iter()
+        .map(|blend_mode| {
+            (
+                blend_mode,
+                create_particle_render_pipeline(
+                    &device,
+                    &particle_shader,
+                    &particle_render_pipeline_layout,
+                    target_format,
+                    blend_mode,
+                ),
+            )
+        })
+        .collect();
         let font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
         let text_cache = TextCache::new(&device);
@@ -649,6 +957,11 @@ impl WgpuBackend {
                 textures: HashMap::new(),
                 vertex_buffer,
                 vertex_buffer_capacity_bytes: INITIAL_VERTEX_BUFFER_BYTES,
+                particle_compute_bind_group_layout,
+                particle_render_bind_group_layout,
+                particle_compute_pipeline,
+                particle_render_pipelines,
+                particle_systems: HashMap::new(),
                 font_system,
                 swash_cache,
                 text_atlas,
@@ -800,6 +1113,7 @@ impl WgpuBackend {
         let vertices = sprites_to_vertices(&self.sprites, self.width, self.height);
         let batches = build_sprite_batches(&self.sprites, self.width, self.height);
         let text_commands = &self.texts;
+        let particle_commands = &self.particles;
         let has_text = !text_commands.is_empty();
         let mut text_buffers = Vec::with_capacity(text_commands.len());
         let vertex_bytes = std::mem::size_of_val(vertices.as_slice()) as u64;
@@ -809,6 +1123,9 @@ impl WgpuBackend {
         let mut surface_loss_recovery_count = 0u64;
         let submitted;
         let vertex_buffer_capacity_bytes;
+        let gpu_particle_capacity;
+        let gpu_particle_spawned;
+        let mut particle_compute_dispatches = 0usize;
         {
             let state = self
                 .state
@@ -836,6 +1153,16 @@ impl WgpuBackend {
                     self.height,
                 )?;
             }
+            let prepared_particles =
+                prepare_gpu_particle_draws(state, particle_commands, self.width, self.height)?;
+            gpu_particle_capacity = prepared_particles
+                .iter()
+                .map(|draw| draw.capacity as usize)
+                .sum();
+            gpu_particle_spawned = prepared_particles
+                .iter()
+                .map(|draw| draw.spawned as usize)
+                .sum();
 
             let mut reconfigure_after_present = false;
             let mut surface_output = if let Some(surface) = state.surface.as_ref() {
@@ -898,6 +1225,27 @@ impl WgpuBackend {
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                             label: Some("MiniForge wgpu 2D frame encoder"),
                         });
+                if !prepared_particles.is_empty() {
+                    let mut compute_pass =
+                        encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                            label: Some("MiniForge GPU particle simulation"),
+                            timestamp_writes: None,
+                        });
+                    compute_pass.set_pipeline(&state.particle_compute_pipeline);
+                    for draw in &prepared_particles {
+                        let particle_system = state
+                            .particle_systems
+                            .get(&draw.system_id)
+                            .expect("prepared GPU particle system must remain resident");
+                        compute_pass.set_bind_group(0, &particle_system.compute_bind_group, &[]);
+                        compute_pass.dispatch_workgroups(
+                            draw.capacity.div_ceil(GPU_PARTICLE_WORKGROUP_SIZE),
+                            1,
+                            1,
+                        );
+                    }
+                    particle_compute_dispatches = prepared_particles.len();
+                }
                 {
                     let color_attachment = wgpu::RenderPassColorAttachment {
                         view: &view,
@@ -946,6 +1294,20 @@ impl WgpuBackend {
                             pass.draw(first_vertex..first_vertex + vertex_count, 0..1);
                         }
                     }
+                    for draw in &prepared_particles {
+                        let pipeline = state
+                            .particle_render_pipelines
+                            .get(&draw.blend_mode)
+                            .expect("every particle blend mode must have a pipeline");
+                        let particle_system = state
+                            .particle_systems
+                            .get(&draw.system_id)
+                            .expect("prepared GPU particle system must remain resident");
+                        pass.set_pipeline(pipeline);
+                        pass.set_bind_group(1, &particle_system.render_bind_group, &[]);
+                        pass.set_scissor_rect(0, 0, self.width.max(1), self.height.max(1));
+                        pass.draw(0..6, 0..draw.capacity);
+                    }
                     if has_text {
                         state
                             .text_renderer
@@ -989,9 +1351,15 @@ impl WgpuBackend {
             culled_sprites: self.culled_sprites,
             queued_text_areas: self.texts.len(),
             culled_text_areas: self.culled_text_areas,
-            gpu_draw_calls: batches.len() + usize::from(has_text),
+            queued_particle_systems: self.particles.len(),
+            gpu_particle_capacity,
+            gpu_particle_spawned,
+            particle_compute_dispatches,
+            gpu_draw_calls: batches.len() + self.particles.len() + usize::from(has_text),
             texture_bind_changes: texture_bind_changes(&batches),
-            pipeline_changes: pipeline_changes(&batches) + usize::from(has_text),
+            pipeline_changes: pipeline_changes(&batches)
+                + self.particles.len()
+                + usize::from(has_text),
             vertex_bytes_uploaded: vertex_bytes,
             vertex_buffer_capacity_bytes,
             vertex_buffer_reallocations: self.vertex_buffer_reallocations,
@@ -1021,6 +1389,7 @@ impl RenderBackend for WgpuBackend {
         self.state()?;
         self.sprites.clear();
         self.texts.clear();
+        self.particles.clear();
         self.draw_calls = 0;
         self.culled_sprites = 0;
         self.culled_text_areas = 0;
@@ -1169,8 +1538,45 @@ impl RenderBackend for WgpuBackend {
         Ok(())
     }
 
-    fn draw_particles(&mut self, _command: ParticleDrawCommand) -> MFResult<()> {
+    fn draw_particles(&mut self, mut command: ParticleDrawCommand) -> MFResult<()> {
+        if !self.frame_open {
+            return Err(render_error("wgpu draw_particles called outside a frame"));
+        }
+        if command.system_id == 0 {
+            return Err(render_error("wgpu particle system id must be non-zero"));
+        }
+        let finite_values = command
+            .origin
+            .iter()
+            .chain(command.velocity.iter())
+            .chain(command.gravity.iter())
+            .chain(command.color.iter())
+            .copied()
+            .chain([
+                command.spread,
+                command.lifetime,
+                command.drag,
+                command.start_size,
+                command.end_size,
+                command.emission_rate,
+                command.delta_seconds,
+            ]);
+        if finite_values.into_iter().any(|value| !value.is_finite()) {
+            return Err(render_error("wgpu particle emitter values must be finite"));
+        }
+        command.particle_count = command
+            .particle_count
+            .clamp(1, MAX_GPU_PARTICLES_PER_SYSTEM);
+        command.lifetime = command.lifetime.clamp(0.01, 3_600.0);
+        command.delta_seconds = command.delta_seconds.clamp(0.0, 0.1);
+        command.spread = command.spread.max(0.0);
+        command.drag = command.drag.max(0.0);
+        command.start_size = command.start_size.max(0.25);
+        command.end_size = command.end_size.max(0.25);
+        command.emission_rate = command.emission_rate.clamp(0.0, 1_000_000.0);
+        command.color = command.color.map(|channel| channel.clamp(0.0, 1.0));
         self.draw_calls += 1;
+        self.particles.push(command);
         Ok(())
     }
 
@@ -1243,6 +1649,177 @@ fn create_sprite_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+fn create_particle_render_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    target_format: wgpu::TextureFormat,
+    blend_mode: SpriteBlendMode,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("MiniForge GPU particle render pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_particle"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_particle"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: target_format,
+                blend: Some(sprite_blend_state(blend_mode)),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+fn prepare_gpu_particle_draws(
+    state: &mut WgpuState,
+    commands: &[ParticleDrawCommand],
+    width: u32,
+    height: u32,
+) -> MFResult<Vec<PreparedGpuParticleDraw>> {
+    let live_systems = commands
+        .iter()
+        .map(|command| command.system_id)
+        .collect::<HashSet<_>>();
+    state
+        .particle_systems
+        .retain(|system_id, _| live_systems.contains(system_id));
+
+    let mut prepared = Vec::with_capacity(commands.len());
+    for command in commands {
+        let capacity = command
+            .particle_count
+            .clamp(1, MAX_GPU_PARTICLES_PER_SYSTEM) as u32;
+        let rebuild = state
+            .particle_systems
+            .get(&command.system_id)
+            .is_none_or(|system| system.capacity != capacity);
+        if rebuild {
+            let particle_buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("MiniForge persistent GPU particle state"),
+                size: u64::from(capacity) * std::mem::size_of::<GpuParticle>() as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let params_buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("MiniForge GPU particle emitter parameters"),
+                size: std::mem::size_of::<GpuParticleParams>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let compute_bind_group = state.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("MiniForge GPU particle compute bindings"),
+                layout: &state.particle_compute_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: particle_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: params_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+            let render_bind_group = state.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("MiniForge GPU particle render bindings"),
+                layout: &state.particle_render_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: particle_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: params_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+            state.particle_systems.insert(
+                command.system_id,
+                GpuParticleSystem {
+                    _particle_buffer: particle_buffer,
+                    params_buffer,
+                    compute_bind_group,
+                    render_bind_group,
+                    capacity,
+                    spawn_cursor: 0,
+                    emit_accumulator: 0.0,
+                    burst_emitted: false,
+                },
+            );
+        }
+
+        let system = state
+            .particle_systems
+            .get_mut(&command.system_id)
+            .expect("GPU particle system was just created");
+        let spawn_start = system.spawn_cursor;
+        let mut spawn_count = 0u32;
+        let simulation_dt = if command.playing {
+            command.delta_seconds.clamp(0.0, 0.1)
+        } else {
+            0.0
+        };
+        if command.playing {
+            system.emit_accumulator += command.emission_rate.max(0.0) * simulation_dt;
+            spawn_count = system.emit_accumulator.floor().max(0.0) as u32;
+            system.emit_accumulator -= spawn_count as f32;
+            if !system.burst_emitted {
+                spawn_count = spawn_count.saturating_add(command.burst_count);
+                system.burst_emitted = true;
+            }
+            spawn_count = spawn_count.min(capacity);
+            system.spawn_cursor = (spawn_start + spawn_count) % capacity;
+        }
+        let params = GpuParticleParams {
+            origin: command.origin,
+            velocity: command.velocity,
+            gravity: command.gravity,
+            viewport: [width.max(1) as f32, height.max(1) as f32],
+            color: command.color,
+            delta_seconds: simulation_dt,
+            spread: command.spread,
+            lifetime: command.lifetime,
+            drag: command.drag,
+            start_size: command.start_size,
+            end_size: command.end_size,
+            max_particles: capacity,
+            spawn_start,
+            spawn_count,
+            frame_seed: (command.system_id as u32)
+                .wrapping_mul(747_796_405)
+                .wrapping_add(system.spawn_cursor.wrapping_mul(2_891_336_453)),
+            _padding: [0; 2],
+        };
+        state
+            .queue
+            .write_buffer(&system.params_buffer, 0, bytemuck::bytes_of(&params));
+        prepared.push(PreparedGpuParticleDraw {
+            system_id: command.system_id,
+            capacity,
+            spawned: spawn_count,
+            blend_mode: command.blend_mode,
+        });
+    }
+    Ok(prepared)
 }
 
 fn sprite_blend_state(blend_mode: SpriteBlendMode) -> wgpu::BlendState {
@@ -1664,6 +2241,36 @@ mod tests {
             wrap: TextWrapMode::Word,
             clip_rect: None,
         }
+    }
+
+    #[test]
+    fn gpu_particle_abi_and_submission_are_bounded_before_device_work() {
+        assert_eq!(std::mem::size_of::<GpuParticle>(), 32);
+        assert_eq!(std::mem::size_of::<GpuParticleParams>(), 96);
+
+        let mut backend = WgpuBackend {
+            frame_open: true,
+            ..WgpuBackend::default()
+        };
+        backend
+            .draw_particles(ParticleDrawCommand {
+                system_id: 42,
+                particle_count: usize::MAX,
+                lifetime: f32::INFINITY,
+                ..ParticleDrawCommand::default()
+            })
+            .expect_err("non-finite particle values must be rejected");
+        backend
+            .draw_particles(ParticleDrawCommand {
+                system_id: 42,
+                particle_count: usize::MAX,
+                ..ParticleDrawCommand::default()
+            })
+            .unwrap();
+        assert_eq!(
+            backend.particles[0].particle_count,
+            MAX_GPU_PARTICLES_PER_SYSTEM
+        );
     }
 
     #[test]

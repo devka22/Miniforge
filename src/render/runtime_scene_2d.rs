@@ -17,9 +17,9 @@ use crate::runtime::engine_runtime::{EngineRuntime, RuntimeUiDocument2D};
 use crate::systems::particle_system::ParticleSystem;
 
 use super::backend::{
-    BUILTIN_RADIAL_LIGHT_TEXTURE_ID, RenderBackend, SpriteBlendMode, SpriteDrawCommand,
-    SpriteDrawOptions, SpriteMaterialEffect, SpriteRegionDrawCommand, TextDrawCommand,
-    TextWrapMode,
+    BUILTIN_RADIAL_LIGHT_TEXTURE_ID, ParticleDrawCommand, RenderBackend, SpriteBlendMode,
+    SpriteDrawCommand, SpriteDrawOptions, SpriteMaterialEffect, SpriteRegionDrawCommand,
+    TextDrawCommand, TextWrapMode,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -35,6 +35,8 @@ pub struct RuntimeScene2DStats {
     pub tile_layer_quads: usize,
     pub entity_quads: usize,
     pub particle_quads: usize,
+    pub gpu_particle_emitters: usize,
+    pub gpu_particle_capacity: usize,
     pub light_quads: usize,
     pub ui_quads: usize,
     pub ui_text_areas: usize,
@@ -126,6 +128,11 @@ pub fn draw_engine_runtime_scene_2d<B: RenderBackend>(
         origin_y,
         tile,
         zoom,
+        if runtime.clock.paused {
+            0.0
+        } else {
+            runtime.clock.fixed_delta.clamp(0.0, 0.1) as f32
+        },
         width,
         height,
         &mut stats,
@@ -831,14 +838,74 @@ fn draw_particles<B: RenderBackend>(
     origin_y: f32,
     tile: f32,
     zoom: f32,
+    delta_seconds: f32,
     screen_width: f32,
     screen_height: f32,
     stats: &mut RuntimeScene2DStats,
 ) -> MFResult<()> {
+    let use_gpu_path = backend.name() == "wgpu";
+    if use_gpu_path {
+        for emitter in world.units.iter().filter(|entity| {
+            entity.enabled
+                && entity.active
+                && entity.visible
+                && entity
+                    .get_component("GpuParticles2D")
+                    .is_some_and(|component| component.enabled)
+        }) {
+            let gpu = emitter
+                .get_component("GpuParticles2D")
+                .expect("filtered GPU particle emitter must keep its component");
+            let particle_count = gpu.get_usize("max_particles", 8_192).clamp(1, 1_000_000);
+            let blend_mode = SpriteBlendMode::from_name(&gpu.get_string("blend_mode", "additive"))
+                .unwrap_or(SpriteBlendMode::Additive);
+            backend.draw_particles(ParticleDrawCommand {
+                system_id: emitter.id,
+                particle_count,
+                texture_id: None,
+                origin: [
+                    origin_x + emitter.x as f32 * tile,
+                    origin_y + emitter.y as f32 * tile,
+                ],
+                velocity: [
+                    gpu.get_f64("velocity_x", 0.0) as f32 * zoom,
+                    gpu.get_f64("velocity_y", -44.0) as f32 * zoom,
+                ],
+                gravity: [
+                    gpu.get_f64("gravity_x", 0.0) as f32 * zoom,
+                    gpu.get_f64("gravity_y", 18.0) as f32 * zoom,
+                ],
+                spread: gpu.get_f64("spread", 26.0).max(0.0) as f32 * zoom,
+                lifetime: gpu.get_f64("lifetime", 1.25) as f32,
+                drag: gpu.get_f64("drag", 0.15) as f32,
+                start_size: gpu.get_f64("start_size", 9.0).max(0.25) as f32 * zoom,
+                end_size: gpu.get_f64("end_size", 1.0).max(0.25) as f32 * zoom,
+                color: component_color(gpu.get("color"), [125, 205, 255, 220], 1.0),
+                emission_rate: gpu.get_f64("emission_rate", 128.0) as f32,
+                burst_count: gpu
+                    .get_usize("burst_count", 32)
+                    .min(particle_count)
+                    .min(u32::MAX as usize) as u32,
+                delta_seconds,
+                playing: gpu.get_bool("playing", true) && delta_seconds > 0.0,
+                blend_mode,
+            })?;
+            stats.gpu_particle_emitters += 1;
+            stats.gpu_particle_capacity += particle_count;
+        }
+    }
+
     for (emitter_id, state) in &particles.emitters {
         let Some(emitter) = world.entity(*emitter_id) else {
             continue;
         };
+        if use_gpu_path
+            && emitter
+                .get_component("GpuParticles2D")
+                .is_some_and(|component| component.enabled)
+        {
+            continue;
+        }
         let blend_mode = emitter
             .get_component("ParticleEmitter")
             .and_then(|component| component.get("blend_mode"))
