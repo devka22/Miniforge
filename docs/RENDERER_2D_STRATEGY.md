@@ -42,13 +42,18 @@ The sprite path now keeps a persistent, geometrically growing vertex buffer inst
 one GPU buffer per frame. Contiguous quads that share texture and scissor state become one draw,
 without reordering transparent geometry. `WgpuFrameDiagnostics` reports logical calls, culled
 sprites, GPU draws, texture bindings, uploaded bytes, buffer capacity/reallocations, presentation
-and surface recovery. A Metal surface smoke with the default 70×30 grid reduced 2,100 logical
+and surface recovery. Outdated and lost window surfaces are reconfigured and retried once; an
+occluded or still-unavailable surface skips the frame without poisoning the next one. A Metal
+surface smoke with the default 70×30 grid reduced 2,100 logical
 sprite calls to one GPU draw and one texture binding while presenting three verified frames.
+The device-loss callback now rebuilds the adapter/device pipeline, surface configuration, buffers
+and every uploaded texture from CPU backups. The Metal surface smoke also destroys the device
+mid-run and verifies that presentation resumes with `device_loss_recoveries=1`.
 
 The shared 2D composer now turns visible tilemap cells, atlas-backed entities, CPU particles and
 basic UI geometry into backend-independent sprite quads with camera transforms, ordering and screen
 culling. The main exported runtime still uses Macroquad while text/minimap widgets, lighting,
-render textures, batching and full device-loss recreation are completed. Projects should therefore
+render textures, additional blend modes and shader materials are completed. Projects should therefore
 leave `experimental_wgpu` disabled for exports that need the full production renderer. Project
 Settings keeps this migration state visible instead of hiding it in JSON.
 
@@ -57,7 +62,7 @@ Settings keeps this migration state visible instead of hiding it in JSON.
 The preview becomes playable only after these gates pass on macOS, Windows and Linux:
 
 1. Window surface, presentation and device-loss lifecycle. Surface configuration, presentation,
-   resize and recoverable reconfiguration are done; complete device-loss recreation remains.
+   resize, lost/outdated surface recovery and complete GPU resource recreation are done.
 2. Sprite atlas regions, camera transforms, clipping, blend modes and stable batching. Atlas
    regions, clipping, full-texture uploads, pixel-space transforms, conservative culling,
    persistent vertex uploads and stable contiguous batching are done. Additional blend modes
@@ -67,7 +72,7 @@ The preview becomes playable only after these gates pass on macOS, Windows and L
    GPU particles and render textures remain.
 4. WGSL materials, post-processing and hot reload with readable shader diagnostics.
 5. Compute paths for particles and tile visibility, each with a CPU fallback.
-6. Golden-image parity tests against Macroquad plus GPU timing and device-loss recovery.
+6. Golden-image parity tests against Macroquad plus GPU timing and repeated recovery stress.
 
 Once all gates pass, `backend: "auto"` may prefer `wgpu`; until then a playable export keeps
 Macroquad as the deterministic fallback.

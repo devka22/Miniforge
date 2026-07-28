@@ -933,6 +933,52 @@ QString MfBridge::sdkPackPlanJson(const QString& profileId, const QString& regis
     return QString::fromUtf8(buffer.constData());
 }
 
+QString MfBridge::installSdkPackArchiveJson(
+    const QString& packId,
+    const QString& artifactJson,
+    const QString& archivePath,
+    const QString& installRoot)
+{
+    const QByteArray packBytes = utf8(packId);
+    const QByteArray artifactBytes = utf8(artifactJson);
+    const QByteArray archiveBytes = utf8(archivePath);
+    const QByteArray rootBytes = utf8(installRoot);
+    MfError error {};
+    size_t required = 0;
+    const MfStatus probeStatus = mf_editor_sdk_pack_install_archive_json(
+        m_handle,
+        packBytes.constData(),
+        artifactBytes.constData(),
+        archiveBytes.constData(),
+        rootBytes.constData(),
+        nullptr,
+        0,
+        &required,
+        &error);
+    if (probeStatus != MF_STATUS_BUFFER_TOO_SMALL || required == 0) {
+        setError(error, QStringLiteral("Failed to verify SDK pack archive"));
+        return {};
+    }
+    QByteArray buffer(static_cast<qsizetype>(required), '\0');
+    const MfStatus status = mf_editor_sdk_pack_install_archive_json(
+        m_handle,
+        packBytes.constData(),
+        artifactBytes.constData(),
+        archiveBytes.constData(),
+        rootBytes.constData(),
+        buffer.data(),
+        static_cast<size_t>(buffer.size()),
+        &required,
+        &error);
+    if (!ensureOk(status, error, QStringLiteral("Failed to install SDK pack archive"))) {
+        emit operationCompleted(QStringLiteral("SDK pack installation failed · %1").arg(m_lastError), false);
+        return {};
+    }
+    emit dataChanged();
+    emit operationCompleted(QStringLiteral("SDK pack verified and installed"), true);
+    return QString::fromUtf8(buffer.constData());
+}
+
 QString MfBridge::toolStateJson(const QString& tool)
 {
     const QByteArray toolBytes = utf8(tool);

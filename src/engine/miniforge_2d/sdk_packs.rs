@@ -457,9 +457,9 @@ fn pack(
             "windows-x86_64".to_string(),
         ],
         capabilities: capabilities.iter().map(ToString::to_string).collect(),
-        archive_format: "tar.zst".to_string(),
+        archive_format: "zip".to_string(),
         checksum_policy: "sha256-release-manifest-required".to_string(),
-        source_path: format!("packs/0.9.3.4/{id}-{{platform}}.tar.zst"),
+        source_path: format!("packs/0.9.3.4/{id}-{{platform}}.zip"),
     }
 }
 

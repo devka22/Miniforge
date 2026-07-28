@@ -28,6 +28,7 @@ struct PreviewApp {
     started_at: Instant,
     frames: u64,
     autotest_frames: Option<u64>,
+    simulate_device_loss_frame: Option<u64>,
     runtime: Option<EngineRuntime>,
     project_path: Option<PathBuf>,
     texture_ids: BTreeMap<String, RuntimeTexture2D>,
@@ -52,6 +53,9 @@ impl PreviewApp {
             started_at: now,
             frames: 0,
             autotest_frames: std::env::var("MINIFORGE_WGPU_AUTOTEST_FRAMES")
+                .ok()
+                .and_then(|value| value.parse().ok()),
+            simulate_device_loss_frame: std::env::var("MINIFORGE_WGPU_SIMULATE_DEVICE_LOSS_FRAME")
                 .ok()
                 .and_then(|value| value.parse().ok()),
             runtime,
@@ -181,6 +185,13 @@ impl PreviewApp {
             .clamp(0.0, 0.05);
         self.previous_frame_at = now;
 
+        if self.simulate_device_loss_frame == Some(self.frames)
+            && backend.device_loss_recoveries == 0
+        {
+            backend
+                .force_device_loss_for_testing()
+                .map_err(|error| error.to_string())?;
+        }
         backend.begin_frame().map_err(|error| error.to_string())?;
         if let Some(runtime) = self.runtime.as_mut() {
             let movement = (
@@ -209,7 +220,7 @@ impl PreviewApp {
                 || self.frames >= target.max(1).saturating_mul(120)
         }) {
             println!(
-                "MINIFORGE_WGPU_SURFACE_{} frames={} presented={} skipped={} reconfigured={} logical_draws={} gpu_draws={} binds={} vertex_bytes={} entities={} textures={} api={:?}",
+                "MINIFORGE_WGPU_SURFACE_{} frames={} presented={} skipped={} reconfigured={} surface_loss_recoveries={} device_loss_recoveries={} logical_draws={} gpu_draws={} binds={} vertex_bytes={} entities={} textures={} api={:?}",
                 if backend.submitted_frames >= self.autotest_frames.unwrap_or(1).max(1) {
                     "OK"
                 } else {
@@ -219,6 +230,8 @@ impl PreviewApp {
                 backend.submitted_frames,
                 backend.skipped_surface_frames,
                 backend.surface_reconfigurations,
+                backend.surface_loss_recoveries,
+                backend.device_loss_recoveries,
                 backend.last_frame_diagnostics().logical_draw_calls,
                 backend.last_frame_diagnostics().gpu_draw_calls,
                 backend.last_frame_diagnostics().texture_bind_changes,

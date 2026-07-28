@@ -39,6 +39,9 @@ use crate::engine::miniforge_2d::authoring_catalog::{AuthoringCatalog2D, Authori
 use crate::engine::miniforge_2d::content_browser::asset_from_record;
 use crate::engine::miniforge_2d::paper2d::SpriteFrames2D;
 use crate::engine::miniforge_2d::physics2d::Physics2DSettings;
+use crate::engine::miniforge_2d::sdk_pack_installer::{
+    SdkPackArchiveInstaller, SdkPackReleaseArtifact,
+};
 use crate::engine::miniforge_2d::sdk_packs::{SdkPackCatalog, SdkPackRegistry};
 use crate::engine::project_launcher::{LauncherTemplate, ProjectLauncherState};
 use crate::engine::project_storage::{BackupPolicy, DEFAULT_BACKUP_GENERATIONS, ProjectStorage};
@@ -2295,6 +2298,30 @@ impl EditorCore {
             "schema_version": catalog.schema_version,
             "plan": plan,
             "registry": registry,
+        }))
+    }
+
+    pub fn sdk_pack_install_archive(
+        &self,
+        pack_id: &str,
+        artifact_json: &str,
+        archive_path: &Path,
+        install_root: &Path,
+    ) -> Result<Value, EditorCoreError> {
+        let artifact = serde_json::from_str::<SdkPackReleaseArtifact>(artifact_json)?;
+        let catalog = builtin_sdk_pack_catalog();
+        let manifest = catalog.pack(pack_id).ok_or_else(|| {
+            EditorCoreError::new(
+                EditorCoreErrorKind::InvalidArgument,
+                format!("Unknown SDK pack: {pack_id}"),
+            )
+        })?;
+        let receipt = SdkPackArchiveInstaller::default()
+            .install(manifest, &artifact, archive_path, install_root)
+            .map_err(|message| EditorCoreError::new(EditorCoreErrorKind::CommandFailed, message))?;
+        Ok(json!({
+            "schema_version": catalog.schema_version,
+            "receipt": receipt,
         }))
     }
 

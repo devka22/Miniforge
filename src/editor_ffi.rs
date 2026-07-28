@@ -1,4 +1,5 @@
 use std::ffi::{CStr, c_char};
+use std::path::Path;
 use std::ptr;
 
 use crate::engine::developer_console::ConsoleSeverity;
@@ -1161,6 +1162,54 @@ pub unsafe extern "C" fn mf_editor_sdk_pack_plan_json(
     };
     write_serialized_result(
         core.sdk_pack_install_plan(profile_id, registry_json),
+        data,
+        capacity,
+        required,
+        error,
+    )
+}
+
+#[unsafe(no_mangle)]
+/// Verifies and atomically installs a downloaded SDK/content pack ZIP.
+///
+/// # Safety
+/// All string pointers must reference valid null-terminated UTF-8. Buffer
+/// pointers follow `mf_editor_project_path` semantics.
+pub unsafe extern "C" fn mf_editor_sdk_pack_install_archive_json(
+    handle: *const MfEditorHandle,
+    pack_id: *const c_char,
+    artifact_json: *const c_char,
+    archive_path: *const c_char,
+    install_root: *const c_char,
+    data: *mut c_char,
+    capacity: usize,
+    required: *mut usize,
+    error: *mut MfError,
+) -> MfStatus {
+    clear_error(error);
+    let Some(core) = core_ref(handle, error) else {
+        return MfStatus::InvalidArgument;
+    };
+    let (Ok(pack_id), Ok(artifact_json), Ok(archive_path), Ok(install_root)) = (
+        read_cstr(pack_id),
+        read_cstr(artifact_json),
+        read_cstr(archive_path),
+        read_cstr(install_root),
+    ) else {
+        set_error(
+            error,
+            MfStatus::InvalidArgument,
+            "SDK pack installation strings are invalid",
+        );
+        return MfStatus::InvalidArgument;
+    };
+    write_serialized_result(
+        core.sdk_pack_install_archive(
+            pack_id,
+            artifact_json,
+            Path::new(archive_path),
+            Path::new(install_root),
+        ),
         data,
         capacity,
         required,

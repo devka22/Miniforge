@@ -91,6 +91,8 @@ pub struct WgpuFrameDiagnostics {
     pub vertex_buffer_reallocations: u64,
     pub submitted: bool,
     pub surface_reconfigurations: u64,
+    pub surface_loss_recoveries: u64,
+    pub device_loss_recoveries: u64,
 }
 
 const SPRITE_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
@@ -101,8 +103,22 @@ struct WgpuTexture {
     bind_group: wgpu::BindGroup,
 }
 
+#[derive(Clone)]
+struct WgpuTextureBackup {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+struct DeviceLossNotice {
+    reason: String,
+    message: String,
+}
+
 struct WgpuState {
+    instance: wgpu::Instance,
     device: wgpu::Device,
+    device_loss_rx: mpsc::Receiver<DeviceLossNotice>,
     queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
     target: Option<wgpu::Texture>,
@@ -129,12 +145,16 @@ pub struct WgpuBackend {
     pub submitted_frames: u64,
     pub skipped_surface_frames: u64,
     pub surface_reconfigurations: u64,
+    pub surface_loss_recoveries: u64,
+    pub device_loss_recoveries: u64,
     pub vertex_buffer_reallocations: u64,
+    pub last_device_loss: Option<String>,
     frame_open: bool,
     clear_color: [f64; 4],
     sprites: Vec<QueuedSprite>,
     culled_sprites: usize,
     last_frame_diagnostics: WgpuFrameDiagnostics,
+    texture_backups: HashMap<u64, WgpuTextureBackup>,
     state: Option<WgpuState>,
 }
 
@@ -153,11 +173,14 @@ impl fmt::Debug for WgpuBackend {
             .field("submitted_frames", &self.submitted_frames)
             .field("skipped_surface_frames", &self.skipped_surface_frames)
             .field("surface_reconfigurations", &self.surface_reconfigurations)
+            .field("surface_loss_recoveries", &self.surface_loss_recoveries)
+            .field("device_loss_recoveries", &self.device_loss_recoveries)
             .field(
                 "vertex_buffer_reallocations",
                 &self.vertex_buffer_reallocations,
             )
             .field("last_frame_diagnostics", &self.last_frame_diagnostics)
+            .field("last_device_loss", &self.last_device_loss)
             .field("has_surface", &self.has_surface())
             .field("frame_open", &self.frame_open)
             .finish_non_exhaustive()
@@ -178,12 +201,16 @@ impl Default for WgpuBackend {
             submitted_frames: 0,
             skipped_surface_frames: 0,
             surface_reconfigurations: 0,
+            surface_loss_recoveries: 0,
+            device_loss_recoveries: 0,
             vertex_buffer_reallocations: 0,
+            last_device_loss: None,
             frame_open: false,
             clear_color: [0.035, 0.043, 0.059, 1.0],
             sprites: Vec::new(),
             culled_sprites: 0,
             last_frame_diagnostics: WgpuFrameDiagnostics::default(),
+            texture_backups: HashMap::new(),
             state: None,
         }
     }
@@ -267,17 +294,28 @@ impl WgpuBackend {
             "MiniForge uploaded sprite texture",
         );
         state.textures.insert(texture_id, texture);
+        self.texture_backups.insert(
+            texture_id,
+            WgpuTextureBackup {
+                width,
+                height,
+                pixels: pixels.to_vec(),
+            },
+        );
         Ok(())
     }
 
     pub fn remove_texture(&mut self, texture_id: u64) -> bool {
-        self.state
+        let removed_from_gpu = self
+            .state
             .as_mut()
-            .is_some_and(|state| state.textures.remove(&texture_id).is_some())
+            .is_some_and(|state| state.textures.remove(&texture_id).is_some());
+        let removed_from_backup = self.texture_backups.remove(&texture_id).is_some();
+        removed_from_gpu || removed_from_backup
     }
 
     pub fn texture_count(&self) -> usize {
-        self.state.as_ref().map_or(0, |state| state.textures.len())
+        self.texture_backups.len()
     }
 
     pub fn last_frame_diagnostics(&self) -> &WgpuFrameDiagnostics {
@@ -396,6 +434,13 @@ impl WgpuBackend {
             ..Default::default()
         }))
         .map_err(|error| render_error(format!("wgpu device creation failed: {error}")))?;
+        let (device_loss_tx, device_loss_rx) = mpsc::channel();
+        device.set_device_lost_callback(move |reason, message| {
+            let _ = device_loss_tx.send(DeviceLossNotice {
+                reason: format!("{reason:?}"),
+                message,
+            });
+        });
 
         let (target_format, surface_config) = if let Some(surface) = surface.as_ref() {
             let mut config = surface
@@ -516,7 +561,9 @@ impl WgpuBackend {
         };
         Ok((
             WgpuState {
+                instance: instance.clone(),
                 device,
+                device_loss_rx,
                 queue,
                 pipeline,
                 target,
@@ -545,7 +592,8 @@ impl WgpuBackend {
         surface: Option<wgpu::Surface<'static>>,
     ) -> MFResult<()> {
         match self.create_state(instance, surface) {
-            Ok((state, caps)) => {
+            Ok((mut state, caps)) => {
+                restore_texture_backups(&mut state, &self.texture_backups);
                 self.state = Some(state);
                 self.caps = Some(caps);
                 self.initialized = true;
@@ -557,6 +605,62 @@ impl WgpuBackend {
                 Err(error)
             }
         }
+    }
+
+    fn recover_device_if_needed(&mut self) -> MFResult<()> {
+        if let Some(state) = self.state.as_ref() {
+            let _ = state.device.poll(wgpu::PollType::Poll);
+        }
+        let notice = match self
+            .state
+            .as_ref()
+            .and_then(|state| state.device_loss_rx.try_recv().ok())
+        {
+            Some(notice) => notice,
+            None => return Ok(()),
+        };
+        let mut previous = self
+            .state
+            .take()
+            .ok_or_else(|| render_error("wgpu device recovery has no previous state"))?;
+        let instance = previous.instance.clone();
+        let surface = previous.surface.take();
+        let had_surface = surface.is_some();
+        drop(previous);
+
+        let loss_message = if notice.message.trim().is_empty() {
+            notice.reason
+        } else {
+            format!("{} · {}", notice.reason, notice.message)
+        };
+        match self.create_state(&instance, surface) {
+            Ok((mut state, caps)) => {
+                restore_texture_backups(&mut state, &self.texture_backups);
+                self.state = Some(state);
+                self.caps = Some(caps);
+                self.initialized = true;
+                self.last_error = None;
+                self.last_device_loss = Some(loss_message);
+                self.device_loss_recoveries += 1;
+                self.surface_reconfigurations += u64::from(had_surface);
+                Ok(())
+            }
+            Err(error) => {
+                self.initialized = false;
+                self.last_error = Some(format!(
+                    "wgpu device recovery failed after {loss_message}: {error}"
+                ));
+                Err(error)
+            }
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn force_device_loss_for_testing(&self) -> MFResult<()> {
+        let state = self.state()?;
+        state.device.destroy();
+        let _ = state.device.poll(wgpu::PollType::Poll);
+        Ok(())
     }
 
     fn state(&self) -> MFResult<&WgpuState> {
@@ -608,6 +712,7 @@ impl WgpuBackend {
         let clear_color = self.clear_color;
         let mut reallocated = false;
         let mut reconfiguration_count = 0u64;
+        let mut surface_loss_recovery_count = 0u64;
         let submitted;
         let vertex_buffer_capacity_bytes;
         {
@@ -641,28 +746,30 @@ impl WgpuBackend {
                     }
                     wgpu::CurrentSurfaceTexture::Timeout
                     | wgpu::CurrentSurfaceTexture::Occluded => Ok(None),
-                    wgpu::CurrentSurfaceTexture::Outdated => {
+                    status @ (wgpu::CurrentSurfaceTexture::Outdated
+                    | wgpu::CurrentSurfaceTexture::Lost) => {
+                        if matches!(status, wgpu::CurrentSurfaceTexture::Lost) {
+                            surface_loss_recovery_count += 1;
+                        }
                         let config = state.surface_config.as_ref().ok_or_else(|| {
                             render_error("wgpu surface is missing its presentation configuration")
                         })?;
                         surface.configure(&state.device, config);
                         reconfiguration_count += 1;
                         match surface.get_current_texture() {
-                            wgpu::CurrentSurfaceTexture::Success(texture)
-                            | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Ok(Some(texture)),
+                            wgpu::CurrentSurfaceTexture::Success(texture) => Ok(Some(texture)),
+                            wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
+                                reconfigure_after_present = true;
+                                Ok(Some(texture))
+                            }
                             wgpu::CurrentSurfaceTexture::Timeout
                             | wgpu::CurrentSurfaceTexture::Occluded
                             | wgpu::CurrentSurfaceTexture::Outdated => Ok(None),
-                            wgpu::CurrentSurfaceTexture::Lost => {
-                                Err(render_error("wgpu window surface was lost"))
-                            }
+                            wgpu::CurrentSurfaceTexture::Lost => Ok(None),
                             wgpu::CurrentSurfaceTexture::Validation => Err(render_error(
                                 "wgpu surface acquisition failed validation after reconfigure",
                             )),
                         }
-                    }
-                    wgpu::CurrentSurfaceTexture::Lost => {
-                        Err(render_error("wgpu window surface was lost"))
                     }
                     wgpu::CurrentSurfaceTexture::Validation => {
                         Err(render_error("wgpu surface acquisition failed validation"))
@@ -751,6 +858,7 @@ impl WgpuBackend {
         }
 
         self.surface_reconfigurations += reconfiguration_count;
+        self.surface_loss_recoveries += surface_loss_recovery_count;
         self.vertex_buffer_reallocations += u64::from(reallocated);
         Ok(WgpuFrameDiagnostics {
             frame_index: self.submitted_frames + self.skipped_surface_frames + 1,
@@ -764,6 +872,8 @@ impl WgpuBackend {
             vertex_buffer_reallocations: self.vertex_buffer_reallocations,
             submitted,
             surface_reconfigurations: reconfiguration_count,
+            surface_loss_recoveries: surface_loss_recovery_count,
+            device_loss_recoveries: self.device_loss_recoveries,
         })
     }
 }
@@ -782,6 +892,7 @@ impl RenderBackend for WgpuBackend {
     }
 
     fn begin_frame(&mut self) -> MFResult<()> {
+        self.recover_device_if_needed()?;
         self.state()?;
         self.sprites.clear();
         self.draw_calls = 0;
@@ -892,6 +1003,26 @@ fn create_vertex_buffer(device: &wgpu::Device, capacity_bytes: u64) -> wgpu::Buf
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
+}
+
+fn restore_texture_backups(
+    state: &mut WgpuState,
+    texture_backups: &HashMap<u64, WgpuTextureBackup>,
+) {
+    state.textures.reserve(texture_backups.len());
+    for (&texture_id, backup) in texture_backups {
+        let texture = create_sampled_texture(
+            &state.device,
+            &state.queue,
+            &state.texture_layout,
+            &state.sampler,
+            backup.width,
+            backup.height,
+            &backup.pixels,
+            "MiniForge restored sprite texture",
+        );
+        state.textures.insert(texture_id, texture);
+    }
 }
 
 fn normalize_clip_rect(clip: [u32; 4], width: u32, height: u32) -> Option<[u32; 4]> {
@@ -1173,5 +1304,42 @@ mod tests {
             Some([90, 90, 10, 10])
         );
         assert_eq!(normalize_clip_rect([0, 0, 0, 10], 100, 100), None);
+    }
+
+    #[test]
+    #[ignore = "requires a physical graphics adapter"]
+    fn physical_device_loss_recreates_resources_and_restores_textures() {
+        let mut backend = WgpuBackend::new(true, cfg!(target_os = "macos"));
+        backend.resize(32, 32).unwrap();
+        backend.init().unwrap();
+        backend
+            .upload_texture_rgba8(7, 2, 2, &[255, 40, 20, 255].repeat(4))
+            .unwrap();
+        backend.force_device_loss_for_testing().unwrap();
+        for _ in 0..8 {
+            backend.recover_device_if_needed().unwrap();
+            if backend.device_loss_recoveries > 0 {
+                break;
+            }
+        }
+        assert_eq!(backend.device_loss_recoveries, 1);
+        assert_eq!(backend.texture_count(), 1);
+
+        backend.begin_frame().unwrap();
+        backend
+            .draw_sprite(SpriteDrawCommand {
+                entity_id: 1,
+                texture_id: 7,
+                x: 0.0,
+                y: 0.0,
+                width: 32.0,
+                height: 32.0,
+                rotation: 0.0,
+                color: [1.0; 4],
+            })
+            .unwrap();
+        backend.end_frame().unwrap();
+        let pixels = backend.readback_rgba8().unwrap();
+        assert!(pixels.chunks_exact(4).any(|pixel| pixel[0] > 200));
     }
 }
