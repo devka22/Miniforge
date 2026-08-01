@@ -574,12 +574,16 @@ pub fn production_effect_presets_2d() -> Vec<RenderEffectPreset2D> {
         ),
         preset(
             "gpu_particles",
-            "GPU Particles",
+            "WGPU Compute Particles",
             RenderEffectKind2D::Particles,
             "GpuParticles2D",
             "particles_compute_2d",
-            &[("max_particles", 100000.0)],
-            &["particle_state"],
+            &[
+                ("max_particles", 8192.0),
+                ("emission_rate", 128.0),
+                ("lifetime", 1.25),
+            ],
+            &["persistent_storage", "compute_dispatch", "cpu_fallback"],
             true,
         ),
         preset(

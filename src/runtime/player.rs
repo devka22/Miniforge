@@ -218,10 +218,10 @@ impl RuntimeGraphicsSettings {
         if let Some(value) = values.get("max_source_cores").and_then(Value::as_u64) {
             self.max_source_cores = (value as usize).min(10_000);
         }
-        if let Some(value) = values.get("light_caster_padding").and_then(Value::as_f64) {
-            if value.is_finite() {
-                self.light_caster_padding = (value as f32).clamp(0.0, 32.0);
-            }
+        if let Some(value) = values.get("light_caster_padding").and_then(Value::as_f64)
+            && value.is_finite()
+        {
+            self.light_caster_padding = (value as f32).clamp(0.0, 32.0);
         }
         if let Some(value) = values.get("max_drawn_entities").and_then(Value::as_u64) {
             self.max_drawn_entities = (value as usize).clamp(64, 50_000);
@@ -616,7 +616,7 @@ fn draw_runtime(
     draw_ui(runtime, &graphics);
     if graphics_notice_timer > 0.0 {
         draw_text_ex(
-            &format!("Graficos: {}  (F1)", graphics.quality.label()),
+            format!("Graficos: {}  (F1)", graphics.quality.label()),
             24.0,
             34.0,
             TextParams {

@@ -126,6 +126,11 @@ public:
     Q_INVOKABLE QString sceneBrowserStateJson();
     Q_INVOKABLE QString sceneBrowserActionJson(const QString& action, const QString& payloadJson = QStringLiteral("{}"));
     Q_INVOKABLE QString componentCatalogJson();
+    Q_INVOKABLE QString authoringCatalogJson();
+    Q_INVOKABLE QString authoringPlanJson(const QString& presetId, const QString& parametersJson = QStringLiteral("{}"));
+    Q_INVOKABLE QString sdkPackCatalogJson();
+    Q_INVOKABLE QString sdkPackPlanJson(const QString& profileId, const QString& registryJson = QStringLiteral("{\"installed\":[]}"));
+    Q_INVOKABLE QString installSdkPackArchiveJson(const QString& packId, const QString& artifactJson, const QString& archivePath, const QString& installRoot);
     Q_INVOKABLE QString toolStateJson(const QString& tool);
     Q_INVOKABLE QString toolActionJson(const QString& tool, const QString& action, const QString& payloadJson = QStringLiteral("{}"));
     Q_INVOKABLE QString prefabStateJson();

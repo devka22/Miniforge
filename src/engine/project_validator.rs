@@ -101,10 +101,12 @@ impl ProjectValidator {
     }
 
     fn validate_folders(&mut self, paths: &crate::engine::asset_tools::ProjectPaths) {
-        for path in paths.as_map().values() {
+        for (name, path) in paths.as_map() {
             if !path.exists() {
-                self.errors
-                    .push(format!("Falta carpeta: {}", path.display()));
+                self.warnings.push(format!(
+                    "Carpeta de proyecto ausente ({name}); MiniForge la creara cuando sea necesaria: {}",
+                    path.display()
+                ));
             }
         }
     }
@@ -1220,4 +1222,41 @@ fn allowed_visual_script_nodes() -> std::collections::BTreeSet<&'static str> {
         "SetComponentNumber",
         "DestroySelf",
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProjectValidator;
+    use crate::engine::asset_tools::AssetTools;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn empty_scaffold_folders_do_not_block_a_valid_project_checkout() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "miniforge-validator-checkout-{}-{nonce}",
+            std::process::id()
+        ));
+        AssetTools::ensure_project_folders(&root).expect("project scaffold");
+
+        for relative in ["builds", "components", "scenes", "systems", "templates"] {
+            fs::remove_dir_all(root.join(relative)).expect("remove empty scaffold directory");
+        }
+
+        let mut validator = ProjectValidator::default();
+        assert!(validator.validate(&root));
+        assert!(validator.errors.is_empty());
+        assert!(
+            validator
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("components"))
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
 }

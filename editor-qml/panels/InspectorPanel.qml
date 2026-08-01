@@ -13,8 +13,9 @@ Rectangle {
     function runAction(action, payload) {
         if (inspectorModel.entityId === 0)
             return false
-        if (editorBridge.selectedEntityCount > 1
+            if (editorBridge.selectedEntityCount > 1
                 && (action === "add_component"
+                    || action === "add_component_bundle"
                     || action === "remove_component"
                     || action === "duplicate"
                     || action === "delete"))
@@ -108,6 +109,28 @@ Rectangle {
         }
     }
 
+    function loadAuthoringCatalog() {
+        readyMadeSystemModel.clear()
+        var json = editorBridge.authoringCatalogJson()
+        if (json.length === 0)
+            return
+        try {
+            var authoring = JSON.parse(json)
+            var presets = authoring.presets || []
+            for (var index = 0; index < presets.length; ++index) {
+                var preset = presets[index]
+                readyMadeSystemModel.append({
+                    "label": String(preset.label || preset.id || "System"),
+                    "bundle": String(preset.id || ""),
+                    "help": String(preset.summary || "")
+                        + " · " + (preset.components || []).length + " components"
+                })
+            }
+        } catch (error) {
+            componentCatalogError.text = "Invalid authoring catalog · " + error
+        }
+    }
+
     function removableSection(section) {
         return section !== "Transform"
             && section !== "Identity"
@@ -120,18 +143,27 @@ Rectangle {
     ListModel {
         id: componentModel
     }
+    ListModel { id: readyMadeSystemModel }
     ListModel { id: quickActionModel }
     ListModel { id: quickAssetModel }
 
     Connections {
         target: editorBridge
-        function onProjectChanged() { root.loadComponentCatalog(); root.loadQuickActions() }
+        function onProjectChanged() {
+            root.loadComponentCatalog()
+            root.loadAuthoringCatalog()
+            root.loadQuickActions()
+        }
         function onSelectionChanged() { root.loadQuickActions() }
         function onEntitiesChanged() { root.loadQuickActions() }
         function onAssetsChanged() { root.loadQuickActions() }
     }
 
-    Component.onCompleted: { loadComponentCatalog(); loadQuickActions() }
+    Component.onCompleted: {
+        loadComponentCatalog()
+        loadAuthoringCatalog()
+        loadQuickActions()
+    }
 
     Menu {
         id: inspectorMenu
@@ -180,10 +212,51 @@ Rectangle {
             MfPanelHeader {
                 width: parent.width
                 title: "Add Component"
-                detail: componentModel.count + " registered component types"
+                detail: readyMadeSystemModel.count + " ready-made systems or "
+                    + componentModel.count + " individual components"
                 badge: "Registry"
                 badgeColor: Theme.DarkTheme.info
             }
+
+            Text {
+                width: parent.width
+                text: "READY-MADE SYSTEMS"
+                color: Theme.DarkTheme.accent
+                font.pixelSize: 9
+                font.bold: true
+            }
+
+            GridView {
+                width: parent.width
+                height: 165
+                clip: true
+                cellWidth: Math.floor(width / 3)
+                cellHeight: 33
+                model: readyMadeSystemModel
+                ScrollBar.vertical: ScrollBar {}
+                delegate: Item {
+                    required property string label
+                    required property string bundle
+                    required property string help
+                    width: GridView.view.cellWidth
+                    height: GridView.view.cellHeight
+                    MfButton {
+                        anchors.fill: parent
+                        anchors.margins: 2
+                        text: label
+                        ToolTip.visible: hovered
+                        ToolTip.text: help
+                        onClicked: {
+                            if (root.runAction("add_component_bundle", {"bundle":bundle})) {
+                                componentPopup.close()
+                                root.quickStatus = label + " systems added"
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle { width: parent.width; height: 1; color: Theme.DarkTheme.borderSoft }
 
             MfSearchBar {
                 id: componentSearch

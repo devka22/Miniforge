@@ -94,7 +94,7 @@ impl ParticleSystem {
         self.live_scratch.clear();
         self.live_scratch.reserve(entities.len());
         for entity in entities {
-            let Some(component) = entity.get_component("ParticleEmitter") else {
+            let Some(component) = particle_component(entity) else {
                 continue;
             };
             if !component.enabled {
@@ -129,7 +129,7 @@ impl ParticleSystem {
     }
 
     pub fn burst(&mut self, entity: &GameObject, count: usize) {
-        let Some(component) = entity.get_component("ParticleEmitter") else {
+        let Some(component) = particle_component(entity) else {
             return;
         };
         let mut config = config_from_component(component);
@@ -254,7 +254,11 @@ fn config_from_component(component: &Component) -> ParticleEmitterConfig {
         .unwrap_or([255, 210, 120, 220]);
     ParticleEmitterConfig {
         looped: component.get_bool("looped", true),
-        rate: finite_or(component.get_f64("rate", 16.0), 16.0).clamp(0.0, 1_000_000.0),
+        rate: finite_or(
+            component.get_f64("rate", component.get_f64("emission_rate", 16.0)),
+            16.0,
+        )
+        .clamp(0.0, 1_000_000.0),
         burst_count: component
             .get_usize("burst_count", 0)
             .min(MAX_PARTICLES_PER_EMITTER),
@@ -269,6 +273,17 @@ fn config_from_component(component: &Component) -> ParticleEmitterConfig {
             .get_usize("max_particles", 128)
             .min(MAX_PARTICLES_PER_EMITTER),
     }
+}
+
+fn particle_component(entity: &GameObject) -> Option<&Component> {
+    entity
+        .get_component("ParticleEmitter")
+        .filter(|component| component.enabled)
+        .or_else(|| {
+            entity
+                .get_component("GpuParticles2D")
+                .filter(|component| component.enabled)
+        })
 }
 
 fn set_stat(stats: &mut BTreeMap<String, usize>, key: &str, value: usize) {
@@ -309,5 +324,23 @@ mod tests {
         system.update_previews(&[], 0.0);
         assert!(system.emitters.is_empty());
         assert!(system.previews.is_empty());
+    }
+
+    #[test]
+    fn gpu_particle_component_runs_through_cpu_fallback_without_duplicate_authoring() {
+        let mut entity = GameObject::new(4.0, 3.0, Some("GPU Emitter".to_string()));
+        let mut gpu = default_component("GpuParticles2D").expect("GPU particle component");
+        gpu.set("emission_rate", json!(0.0));
+        gpu.set("burst_count", json!(12));
+        gpu.set("max_particles", json!(24));
+        entity.add_component(gpu);
+
+        let mut system = ParticleSystem::default();
+        system.update_previews(&[entity], 1.0 / 60.0);
+
+        let state = system.emitters.values().next().expect("fallback state");
+        assert_eq!(state.particles.len(), 12);
+        assert_eq!(system.stats.get("emitters"), Some(&1));
+        assert_eq!(system.stats.get("particles"), Some(&12));
     }
 }

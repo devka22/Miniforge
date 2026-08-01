@@ -14,6 +14,7 @@ runtime de los juegos, pero ya no existe un editor visual Rust/egui.
 | Instalar y ejecutar el motor | [README principal](../README.md#inicio-rápido) |
 | Aprender el editor y crear un juego | [Editor y flujo de uso](EDITOR_Y_FLUJO_DE_USO.md) |
 | Crear supervivencia con componentes | [Componentes de supervivencia](SURVIVAL_COMPONENTS.md) |
+| Usar presets, parámetros y perfiles físicos | [Mega Authoring Update](MEGA_AUTHORING_UPDATE.md) |
 | Entender el runtime y sus sistemas | [Arquitectura y runtime](ARQUITECTURA_Y_RUNTIME.md) |
 | Programar con Luau o consumir APIs | [Datos, scripting y APIs](DATOS_SCRIPTING_Y_APIS.md) |
 | Compilar, probar, exportar o extender | [Desarrollo, build y extensión](DESARROLLO_BUILD_Y_EXTENSION.md) |

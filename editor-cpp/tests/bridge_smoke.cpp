@@ -230,6 +230,103 @@ int main(int argc, char** argv)
 
     required = 0;
     expectStatus(
+        mf_editor_authoring_catalog_json(editor, nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "query authoring catalog size"
+    );
+    std::vector<char> authoringCatalog(required);
+    expectStatus(
+        mf_editor_authoring_catalog_json(editor, authoringCatalog.data(), authoringCatalog.size(), &required, &error),
+        MF_STATUS_OK,
+        error,
+        "read authoring catalog"
+    );
+    expect(std::string(authoringCatalog.data()).find("\"physics_world\"") != std::string::npos, "authoring catalog should expose physics profiles");
+
+    required = 0;
+    expectStatus(
+        mf_editor_authoring_plan_json(
+            editor,
+            "topdown_player",
+            "{\"speed\":8.5,\"max_health\":140}",
+            nullptr,
+            0,
+            &required,
+            &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "query authoring application plan size"
+    );
+    std::vector<char> authoringPlan(required);
+    expectStatus(
+        mf_editor_authoring_plan_json(
+            editor,
+            "topdown_player",
+            "{\"speed\":8.5,\"max_health\":140}",
+            authoringPlan.data(),
+            authoringPlan.size(),
+            &required,
+            &error),
+        MF_STATUS_OK,
+        error,
+        "read authoring application plan"
+    );
+    expect(std::string(authoringPlan.data()).find("\"total_components_to_add\"") != std::string::npos, "authoring plan should explain pending component changes");
+
+    required = 0;
+    expectStatus(
+        mf_editor_sdk_pack_catalog_json(editor, nullptr, 0, &required, &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "query SDK pack catalog size"
+    );
+    std::vector<char> sdkPackCatalog(required);
+    expectStatus(
+        mf_editor_sdk_pack_catalog_json(
+            editor,
+            sdkPackCatalog.data(),
+            sdkPackCatalog.size(),
+            &required,
+            &error),
+        MF_STATUS_OK,
+        error,
+        "read SDK pack catalog"
+    );
+    expect(std::string(sdkPackCatalog.data()).find("\"studio-heavy\"") != std::string::npos, "SDK pack catalog should expose the heavy profile");
+
+    required = 0;
+    expectStatus(
+        mf_editor_sdk_pack_plan_json(
+            editor,
+            "studio-heavy",
+            "{\"installed\":[]}",
+            nullptr,
+            0,
+            &required,
+            &error),
+        MF_STATUS_BUFFER_TOO_SMALL,
+        error,
+        "query heavy SDK pack plan size"
+    );
+    std::vector<char> sdkPackPlan(required);
+    expectStatus(
+        mf_editor_sdk_pack_plan_json(
+            editor,
+            "studio-heavy",
+            "{\"installed\":[]}",
+            sdkPackPlan.data(),
+            sdkPackPlan.size(),
+            &required,
+            &error),
+        MF_STATUS_OK,
+        error,
+        "read heavy SDK pack plan"
+    );
+    expect(std::string(sdkPackPlan.data()).find("\"meets_profile_target\":true") != std::string::npos, "heavy SDK pack plan should remain within the 8-10 GiB target");
+
+    required = 0;
+    expectStatus(
         mf_editor_profiler_snapshot_json(editor, nullptr, 0, &required, &error),
         MF_STATUS_BUFFER_TOO_SMALL,
         error,

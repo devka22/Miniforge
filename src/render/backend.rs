@@ -1,6 +1,30 @@
 use serde::{Deserialize, Serialize};
 
-use crate::engine::error_handler::{MFResult, MiniForgeError};
+use crate::engine::error_handler::MFResult;
+
+pub use super::wgpu_backend::WgpuBackend;
+
+pub const BUILTIN_RADIAL_LIGHT_TEXTURE_ID: u64 = u64::MAX - 1;
+pub const BUILTIN_RADIAL_LIGHT_TEXTURE_SIZE: u32 = 64;
+pub const BUILTIN_FLAT_NORMAL_TEXTURE_ID: u64 = u64::MAX - 2;
+
+pub fn radial_light_texture_rgba8(size: u32) -> Vec<u8> {
+    let size = size.clamp(2, 512);
+    let mut pixels = Vec::with_capacity(size as usize * size as usize * 4);
+    let center = (size as f32 - 1.0) * 0.5;
+    let radius = center.max(1.0);
+    for y in 0..size {
+        for x in 0..size {
+            let dx = (x as f32 - center) / radius;
+            let dy = (y as f32 - center) / radius;
+            let distance = (dx * dx + dy * dy).sqrt();
+            let coverage = (1.0 - distance).clamp(0.0, 1.0);
+            let alpha = (coverage * coverage * 255.0).round() as u8;
+            pixels.extend_from_slice(&[255, 255, 255, alpha]);
+        }
+    }
+    pixels
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum GraphicsApi {
@@ -63,6 +87,160 @@ pub struct SpriteDrawCommand {
     pub color: [f32; 4],
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct SpriteRegionDrawCommand {
+    pub sprite: SpriteDrawCommand,
+    /// Normalized atlas rectangle: `[u_min, v_min, u_max, v_max]`.
+    pub uv_rect: [f32; 4],
+    /// Optional pixel-space clip rectangle: `[x, y, width, height]`.
+    pub clip_rect: Option<[u32; 4]>,
+}
+
+/// Stable, backend-independent blend modes for sprites, UI geometry and particles.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SpriteBlendMode {
+    /// Conventional straight-alpha compositing.
+    #[default]
+    Alpha,
+    /// Alpha compositing after the backend premultiplies the fragment color.
+    PremultipliedAlpha,
+    /// Adds the alpha-weighted source color to the destination.
+    Additive,
+    /// Multiplies the destination while preserving partial-alpha coverage.
+    Multiply,
+    /// Brightens the destination with a screen-style effect.
+    Screen,
+}
+
+impl SpriteBlendMode {
+    pub fn from_name(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+        match normalized.as_str() {
+            "alpha" | "normal" | "translucent" => Some(Self::Alpha),
+            "premultiplied" | "premultiplied_alpha" | "premultipliedalpha" => {
+                Some(Self::PremultipliedAlpha)
+            }
+            "add" | "additive" => Some(Self::Additive),
+            "multiply" | "multiplicative" => Some(Self::Multiply),
+            "screen" => Some(Self::Screen),
+            _ => None,
+        }
+    }
+}
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SpriteMaterialEffect {
+    #[default]
+    None = 0,
+    Grayscale = 1,
+    Sepia = 2,
+    Invert = 3,
+    Flash = 4,
+}
+
+impl SpriteMaterialEffect {
+    pub fn from_name(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+        match normalized.as_str() {
+            "none" | "default" | "sprite_default" | "unlit" => Some(Self::None),
+            "gray" | "grey" | "grayscale" | "greyscale" | "sprite_grayscale" => {
+                Some(Self::Grayscale)
+            }
+            "sepia" | "sprite_sepia" => Some(Self::Sepia),
+            "invert" | "inverted" | "sprite_invert" => Some(Self::Invert),
+            "flash" | "hit_flash" | "sprite_flash" => Some(Self::Flash),
+            _ => None,
+        }
+    }
+}
+
+/// Optional sprite render state kept separate from geometry for compatibility.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SpriteDrawOptions {
+    #[serde(default)]
+    pub blend_mode: SpriteBlendMode,
+    #[serde(default)]
+    pub material_effect: SpriteMaterialEffect,
+    #[serde(default = "default_effect_strength")]
+    pub effect_strength: u8,
+    /// Optional tangent-space normal texture uploaded through the same texture
+    /// registry as the base sprite.
+    #[serde(default)]
+    pub normal_texture_id: Option<u64>,
+    #[serde(default)]
+    pub normal_strength: u8,
+    #[serde(default)]
+    pub normal_flip_y: bool,
+    /// Signed normalized XY direction packed into `i16` for stable serialized
+    /// backend commands.
+    #[serde(default)]
+    pub light_direction: [i16; 2],
+    #[serde(default = "default_light_color")]
+    pub light_color: [u8; 3],
+    #[serde(default = "default_ambient_light")]
+    pub ambient_light: u8,
+}
+
+impl Default for SpriteDrawOptions {
+    fn default() -> Self {
+        Self {
+            blend_mode: SpriteBlendMode::Alpha,
+            material_effect: SpriteMaterialEffect::None,
+            effect_strength: u8::MAX,
+            normal_texture_id: None,
+            normal_strength: 0,
+            normal_flip_y: false,
+            light_direction: [0, -i16::MAX],
+            light_color: [u8::MAX; 3],
+            ambient_light: u8::MAX,
+        }
+    }
+}
+
+fn default_effect_strength() -> u8 {
+    u8::MAX
+}
+
+fn default_light_color() -> [u8; 3] {
+    [u8::MAX; 3]
+}
+
+fn default_ambient_light() -> u8 {
+    u8::MAX
+}
+
+/// Line breaking policy for backend-independent text.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TextWrapMode {
+    None,
+    #[default]
+    Word,
+    Glyph,
+}
+
+/// A shaped text area submitted in physical screen pixels.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TextDrawCommand {
+    pub text_id: u64,
+    pub text: String,
+    #[serde(default)]
+    pub font_family: String,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub font_size: f32,
+    pub line_height: f32,
+    pub color: [u8; 4],
+    #[serde(default)]
+    pub wrap: TextWrapMode,
+    pub clip_rect: Option<[u32; 4]>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TilemapDrawCommand {
     pub tilemap_id: u64,
@@ -72,11 +250,57 @@ pub struct TilemapDrawCommand {
     pub tile_count: usize,
 }
 
+/// Backend-independent GPU particle emitter submitted once per rendered frame.
+///
+/// The command describes an emitter rather than uploading individual particle
+/// quads. Compute-capable backends keep persistent particle state keyed by
+/// `system_id`; compatibility backends may use `particle_count` as a bounded
+/// CPU fallback budget.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct ParticleDrawCommand {
     pub system_id: u64,
+    /// Maximum number of persistent particles owned by this emitter.
     pub particle_count: usize,
     pub texture_id: Option<u64>,
+    pub origin: [f32; 2],
+    pub velocity: [f32; 2],
+    pub gravity: [f32; 2],
+    pub spread: f32,
+    pub lifetime: f32,
+    pub drag: f32,
+    pub start_size: f32,
+    pub end_size: f32,
+    pub color: [f32; 4],
+    pub emission_rate: f32,
+    pub burst_count: u32,
+    pub delta_seconds: f32,
+    pub playing: bool,
+    pub blend_mode: SpriteBlendMode,
+}
+
+impl Default for ParticleDrawCommand {
+    fn default() -> Self {
+        Self {
+            system_id: 0,
+            particle_count: 1_024,
+            texture_id: None,
+            origin: [0.0; 2],
+            velocity: [0.0, -40.0],
+            gravity: [0.0, 20.0],
+            spread: 18.0,
+            lifetime: 1.0,
+            drag: 0.0,
+            start_size: 8.0,
+            end_size: 0.0,
+            color: [1.0, 0.82, 0.42, 0.86],
+            emission_rate: 64.0,
+            burst_count: 16,
+            delta_seconds: 1.0 / 60.0,
+            playing: true,
+            blend_mode: SpriteBlendMode::Additive,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -166,6 +390,24 @@ pub trait RenderBackend {
     fn end_frame(&mut self) -> MFResult<()>;
     fn resize(&mut self, width: u32, height: u32) -> MFResult<()>;
     fn draw_sprite(&mut self, cmd: SpriteDrawCommand) -> MFResult<()>;
+    fn draw_sprite_with_options(
+        &mut self,
+        cmd: SpriteDrawCommand,
+        _options: SpriteDrawOptions,
+    ) -> MFResult<()> {
+        self.draw_sprite(cmd)
+    }
+    fn draw_sprite_region(&mut self, cmd: SpriteRegionDrawCommand) -> MFResult<()> {
+        self.draw_sprite(cmd.sprite)
+    }
+    fn draw_sprite_region_with_options(
+        &mut self,
+        cmd: SpriteRegionDrawCommand,
+        _options: SpriteDrawOptions,
+    ) -> MFResult<()> {
+        self.draw_sprite_region(cmd)
+    }
+    fn draw_text(&mut self, cmd: TextDrawCommand) -> MFResult<()>;
     fn draw_tilemap(&mut self, cmd: TilemapDrawCommand) -> MFResult<()>;
     fn draw_particles(&mut self, cmd: ParticleDrawCommand) -> MFResult<()>;
     fn draw_ui(&mut self, cmd: UiDrawCommand) -> MFResult<()>;
@@ -181,15 +423,6 @@ pub struct MacroquadBackend {
     pub width: u32,
     pub height: u32,
     pub draw_calls: usize,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct WgpuBackend {
-    pub enabled: bool,
-    pub prefer_metal: bool,
-    pub initialized: bool,
-    pub last_error: Option<String>,
-    pub caps: Option<RenderDeviceCaps>,
 }
 
 impl Default for RenderBackendConfig {
@@ -355,6 +588,11 @@ impl RenderBackend for MacroquadBackend {
         Ok(())
     }
 
+    fn draw_text(&mut self, _cmd: TextDrawCommand) -> MFResult<()> {
+        self.draw_calls += 1;
+        Ok(())
+    }
+
     fn draw_tilemap(&mut self, _cmd: TilemapDrawCommand) -> MFResult<()> {
         self.draw_calls += 1;
         Ok(())
@@ -384,77 +622,51 @@ impl RenderBackend for MacroquadBackend {
     }
 }
 
-impl RenderBackend for WgpuBackend {
-    fn name(&self) -> &'static str {
-        "wgpu_experimental"
+#[cfg(test)]
+mod tests {
+    use super::{SpriteBlendMode, SpriteMaterialEffect, radial_light_texture_rgba8};
+
+    #[test]
+    fn sprite_blend_mode_accepts_editor_and_asset_aliases() {
+        assert_eq!(
+            SpriteBlendMode::from_name("premultiplied-alpha"),
+            Some(SpriteBlendMode::PremultipliedAlpha)
+        );
+        assert_eq!(
+            SpriteBlendMode::from_name("add"),
+            Some(SpriteBlendMode::Additive)
+        );
+        assert_eq!(
+            SpriteBlendMode::from_name("multiplicative"),
+            Some(SpriteBlendMode::Multiply)
+        );
+        assert_eq!(
+            SpriteBlendMode::from_name("screen"),
+            Some(SpriteBlendMode::Screen)
+        );
+        assert_eq!(SpriteBlendMode::from_name("custom_shader"), None);
     }
 
-    fn init(&mut self) -> MFResult<()> {
-        if !self.enabled {
-            self.last_error = Some("wgpu backend experimental desactivado".to_string());
-            return Err(MiniForgeError::RenderError(
-                "wgpu backend experimental desactivado".to_string(),
-            ));
-        }
-        self.caps = Some(if self.prefer_metal && cfg!(target_os = "macos") {
-            RenderDeviceCaps::simulated_wgpu_metal()
-        } else {
-            RenderDeviceCaps {
-                api: if cfg!(target_os = "windows") {
-                    GraphicsApi::WgpuDx12
-                } else {
-                    GraphicsApi::WgpuVulkan
-                },
-                device_name: "wgpu-experimental".to_string(),
-                max_texture_size: 8192,
-                supports_compute: true,
-                supports_storage_buffers: true,
-                supports_timestamp_queries: false,
-                supports_multisampled_render_targets: true,
-                preferred_texture_format: "rgba8unorm_srgb".to_string(),
-            }
-        });
-        self.initialized = true;
-        Ok(())
+    #[test]
+    fn builtin_radial_light_texture_has_a_soft_bounded_falloff() {
+        let size = 8;
+        let pixels = radial_light_texture_rgba8(size);
+        assert_eq!(pixels.len(), size as usize * size as usize * 4);
+        let alpha = |x: usize, y: usize| pixels[(y * size as usize + x) * 4 + 3];
+        assert!(alpha(3, 3) > alpha(1, 1));
+        assert_eq!(alpha(0, 0), 0);
     }
 
-    fn begin_frame(&mut self) -> MFResult<()> {
-        Ok(())
-    }
-
-    fn end_frame(&mut self) -> MFResult<()> {
-        Ok(())
-    }
-
-    fn resize(&mut self, _width: u32, _height: u32) -> MFResult<()> {
-        Ok(())
-    }
-
-    fn draw_sprite(&mut self, _cmd: SpriteDrawCommand) -> MFResult<()> {
-        Ok(())
-    }
-
-    fn draw_tilemap(&mut self, _cmd: TilemapDrawCommand) -> MFResult<()> {
-        Ok(())
-    }
-
-    fn draw_particles(&mut self, _cmd: ParticleDrawCommand) -> MFResult<()> {
-        Ok(())
-    }
-
-    fn draw_ui(&mut self, _cmd: UiDrawCommand) -> MFResult<()> {
-        Ok(())
-    }
-
-    fn set_camera_3d(&mut self, _cmd: CameraCommand3D) -> MFResult<()> {
-        Ok(())
-    }
-
-    fn draw_mesh_3d(&mut self, _cmd: MeshDrawCommand3D) -> MFResult<()> {
-        Ok(())
-    }
-
-    fn draw_light_3d(&mut self, _cmd: LightDrawCommand3D) -> MFResult<()> {
-        Ok(())
+    #[test]
+    fn sprite_material_effect_accepts_editor_shader_aliases() {
+        assert_eq!(
+            SpriteMaterialEffect::from_name("sprite-grayscale"),
+            Some(SpriteMaterialEffect::Grayscale)
+        );
+        assert_eq!(
+            SpriteMaterialEffect::from_name("hit_flash"),
+            Some(SpriteMaterialEffect::Flash)
+        );
+        assert_eq!(SpriteMaterialEffect::from_name("custom_wgsl"), None);
     }
 }

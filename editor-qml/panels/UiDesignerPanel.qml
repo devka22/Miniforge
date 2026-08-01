@@ -108,10 +108,18 @@ Rectangle {
             Item { Layout.fillWidth: true }
             ComboBox {
                 id: templateBox
-                Layout.preferredWidth: 112
-                model: ["hud", "main_menu", "pause", "settings"]
+                Layout.preferredWidth: 148
+                model: [
+                    {"text":"Blank HUD", "value":"hud"},
+                    {"text":"Survival HUD", "value":"survival_hud"},
+                    {"text":"Main menu", "value":"main_menu"},
+                    {"text":"Pause menu", "value":"pause"},
+                    {"text":"Settings", "value":"settings"}
+                ]
+                textRole: "text"
+                valueRole: "value"
             }
-            MfButton { text: "New"; onClicked: root.run("new", {"template":templateBox.currentText}) }
+            MfButton { text: "Create"; onClicked: root.run("new", {"template":templateBox.currentValue}) }
             ComboBox {
                 id: resolutionBox
                 Layout.preferredWidth: 118
@@ -397,12 +405,29 @@ Rectangle {
                                 MfButton { width: 68; text: "Remove"; onClicked: root.run("remove_binding", {"widget_id":root.designer.selected_widget,"property":modelData.property}) }
                             }
                         }
-                        TextField { id: bindingProperty; Layout.fillWidth: true; placeholderText: "Widget property (text, value…)" }
-                        TextField { id: bindingSource; Layout.fillWidth: true; placeholderText: "Runtime path (player.health…)" }
+                        Text { text: "Widget property"; color: Theme.DarkTheme.muted; font.pixelSize: 9 }
+                        ComboBox {
+                            id: bindingProperty
+                            Layout.fillWidth: true
+                            editable: true
+                            model: root.toolState.binding_property_candidates || ["value", "text", "visible", "enabled"]
+                            ToolTip.visible: hovered
+                            ToolTip.text: "Choose a common property or type a custom one"
+                        }
+                        Text { text: "Game system value"; color: Theme.DarkTheme.muted; font.pixelSize: 9 }
+                        ComboBox {
+                            id: bindingSource
+                            Layout.fillWidth: true
+                            editable: true
+                            model: root.toolState.binding_candidates || []
+                            ToolTip.visible: hovered
+                            ToolTip.text: "Values exposed by reusable engine systems"
+                        }
                         TextField { id: bindingFallback; Layout.fillWidth: true; placeholderText: "Fallback JSON"; text: "null" }
                         MfButton {
-                            Layout.fillWidth: true; text: "Add / Update Binding"; accent: true
-                            onClicked: { var fallback=null; try { fallback=JSON.parse(bindingFallback.text) } catch (error) { fallback=bindingFallback.text }; root.run("upsert_binding", {"widget_id":root.designer.selected_widget,"property":bindingProperty.text,"source_path":bindingSource.text,"fallback":fallback}) }
+                            Layout.fillWidth: true; text: "Connect System Value"; accent: true
+                            enabled: bindingProperty.currentText.length > 0 && bindingSource.currentText.length > 0
+                            onClicked: { var fallback=null; try { fallback=JSON.parse(bindingFallback.text) } catch (error) { fallback=bindingFallback.text }; root.run("upsert_binding", {"widget_id":root.designer.selected_widget,"property":bindingProperty.currentText,"source_path":bindingSource.currentText,"fallback":fallback}) }
                         }
                     }
                 }

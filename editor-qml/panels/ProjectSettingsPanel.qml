@@ -40,6 +40,15 @@ Rectangle {
             safeMode.checked = engineSettings.safe_mode !== false
             vsync.checked = !engineSettings.rendering || engineSettings.rendering.vsync !== false
             pixelPerfect.checked = !engineSettings.rendering || engineSettings.rendering.pixel_perfect !== false
+            var rendering = engineSettings.rendering || {}
+            backendSelect.currentIndex = String(rendering.backend || "macroquad").toLowerCase() === "wgpu" ? 1 : 0
+            wgpuPreview.checked = rendering.experimental_wgpu === true
+            spriteBatching.checked = rendering.sprite_batching !== false
+            tilemapBatching.checked = rendering.tilemap_chunk_batching !== false
+            postProcessing.checked = rendering.post_processing !== false
+            shaderHotReload.checked = rendering.shader_hot_reload !== false
+            gpuParticles.checked = rendering.gpu_particles === true
+            renderScale.value = Number(rendering.render_scale || 1.0)
 
             actionModel.clear()
             var bindings = inputSettings.bindings || {}
@@ -74,6 +83,14 @@ Rectangle {
             value.rendering = {}
         value.rendering.vsync = vsync.checked
         value.rendering.pixel_perfect = pixelPerfect.checked
+        value.rendering.backend = backendSelect.currentValue
+        value.rendering.experimental_wgpu = wgpuPreview.checked
+        value.rendering.sprite_batching = spriteBatching.checked
+        value.rendering.tilemap_chunk_batching = tilemapBatching.checked
+        value.rendering.post_processing = postProcessing.checked
+        value.rendering.shader_hot_reload = shaderHotReload.checked
+        value.rendering.gpu_particles = gpuParticles.checked
+        value.rendering.render_scale = renderScale.value
         if (!editorBridge.saveEngineSettingsJson(JSON.stringify(value))) {
             statusText = editorBridge.lastError
             return false
@@ -186,6 +203,7 @@ Rectangle {
                 Layout.fillWidth: true
                 currentIndex: 0
                 TabButton { text: "General" }
+                TabButton { text: "Rendering" }
                 TabButton { text: "Input Map" }
                 TabButton { text: "Tags & Layers" }
             }
@@ -224,6 +242,67 @@ Rectangle {
                     Switch { id: safeMode; text: "Safe mode by default"; onToggled: if (!root.loading) root.dirty = true }
                     Switch { id: vsync; text: "Vertical sync"; onToggled: if (!root.loading) root.dirty = true }
                     Switch { id: pixelPerfect; text: "Pixel-perfect rendering"; onToggled: if (!root.loading) root.dirty = true }
+                }
+            }
+
+            ScrollView {
+                clip: true
+                ColumnLayout {
+                    width: Math.max(520, parent.width)
+                    spacing: 10
+
+                    Label { text: "2D renderer"; color: Theme.DarkTheme.muted }
+                    ComboBox {
+                        id: backendSelect
+                        Layout.fillWidth: true
+                        model: [
+                            {"text":"Macroquad · stable compatibility backend", "value":"macroquad"},
+                            {"text":"wgpu · advanced migration target", "value":"wgpu"}
+                        ]
+                        textRole: "text"
+                        valueRole: "value"
+                        onActivated: if (!root.loading) root.dirty = true
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: backendMessage.implicitHeight + 22
+                        radius: Theme.DarkTheme.cardRadius
+                        color: backendSelect.currentValue === "wgpu" ? "#3a3020" : Theme.DarkTheme.surface
+                        border.color: backendSelect.currentValue === "wgpu" ? Theme.DarkTheme.warning : Theme.DarkTheme.borderSoft
+                        Text {
+                            id: backendMessage
+                            anchors.fill: parent
+                            anchors.margins: 11
+                            color: backendSelect.currentValue === "wgpu" ? Theme.DarkTheme.warning : Theme.DarkTheme.text
+                            wrapMode: Text.Wrap
+                            text: backendSelect.currentValue === "wgpu"
+                                  ? "wgpu now uses physical Metal/Vulkan/DX12 adapters and draws layered tilemaps, atlas sprites, CPU particles and basic UI geometry. Exported builds still fall back to Macroquad until text, lighting, render textures, batching and device-loss parity are complete."
+                                  : "Macroquad remains the exported-game fallback while the native wgpu runtime reaches text, lighting, render-texture, batching and device-loss parity."
+                        }
+                    }
+                    Switch {
+                        id: wgpuPreview
+                        text: "Enable native wgpu project preview"
+                        enabled: backendSelect.currentValue === "wgpu"
+                        onToggled: if (!root.loading) root.dirty = true
+                    }
+                    Label { text: "Render scale · " + renderScale.value.toFixed(2) + "×"; color: Theme.DarkTheme.muted }
+                    Slider {
+                        id: renderScale
+                        Layout.fillWidth: true
+                        from: 0.5; to: 2.0; stepSize: 0.05
+                        onMoved: if (!root.loading) root.dirty = true
+                    }
+                    Switch { id: spriteBatching; text: "Sprite batching"; onToggled: if (!root.loading) root.dirty = true }
+                    Switch { id: tilemapBatching; text: "Tilemap chunk batching"; onToggled: if (!root.loading) root.dirty = true }
+                    Switch { id: postProcessing; text: "2D post-processing stack"; onToggled: if (!root.loading) root.dirty = true }
+                    Switch { id: shaderHotReload; text: "Shader hot reload"; onToggled: if (!root.loading) root.dirty = true }
+                    Switch {
+                        id: gpuParticles
+                        text: "GPU particles (requires wgpu preview)"
+                        enabled: backendSelect.currentValue === "wgpu" && wgpuPreview.checked
+                        onToggled: if (!root.loading) root.dirty = true
+                    }
                 }
             }
 

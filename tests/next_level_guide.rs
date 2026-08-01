@@ -285,13 +285,13 @@ fn render_backend_and_2d_render_data_are_ready_for_macroquad_and_wgpu() {
     let mut disabled_wgpu = WgpuBackend::default();
     assert!(disabled_wgpu.init().is_err());
 
-    let mut enabled_wgpu = WgpuBackend {
-        enabled: true,
-        prefer_metal: true,
-        ..Default::default()
-    };
-    enabled_wgpu.init().unwrap();
-    assert!(enabled_wgpu.caps.as_ref().unwrap().supports_compute);
+    let mut enabled_wgpu = WgpuBackend::new(true, true);
+    if enabled_wgpu.init().is_ok() {
+        assert!(enabled_wgpu.is_using_physical_device());
+        assert!(enabled_wgpu.caps.as_ref().unwrap().supports_compute);
+    } else {
+        assert!(enabled_wgpu.last_error.is_some());
+    }
 
     let mut batcher = SpriteBatcher::default();
     for id in 0..2050 {
@@ -485,6 +485,13 @@ fn massive_particle_templates_bridge_to_runtime_and_gpu_planning() {
         .unwrap();
     assert!(rain.system.gpu_recommended());
     assert!(rain.system.estimate_max_particles() >= 4_096);
+    let runtime_components = rain.system.to_runtime_components();
+    assert_eq!(runtime_components[0].component_type, "GpuParticles2D");
+    assert_eq!(runtime_components[1].component_type, "ParticleEmitter");
+    assert_eq!(
+        runtime_components[0].get_usize("max_particles", 0),
+        runtime_components[1].get_usize("max_particles", 0)
+    );
 
     let explosion = templates
         .iter()

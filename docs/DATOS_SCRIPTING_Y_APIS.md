@@ -247,6 +247,11 @@ Familias del registry:
 - Persistence: `SaveShard2D`, `Saveable`, `DontDestroyOnLoad`.
 - Grand Strategy: `Province2D`, `Nation2D`, `PopulationPops2D`, `Market2D`, `Factory2D`, `Diplomacy2D`, `ResearchTree2D`, `ArmyStack2D`, `WarGoal2D`, `TradeRoute2D`.
 
+`Light2D.light_type` acepta `ambient`, `directional`/`sun`/`moon`, `point` y tipos locales
+compatibles. El compositor wgpu limita la escena a 256 luces, 16 luces con sombras y 64
+`ShadowCaster2D` por luz. Las sombras se proyectan automáticamente desde el rectángulo del actor;
+`casts_shadows`, `shadow_opacity` y `shadow_softness` permiten configurarlas sin código.
+
 ## Luau
 
 El runtime Luau usa `mlua` con Luau vendored. La API evita entregar referencias Rust directas: los scripts encolan comandos y el motor los aplica despues del callback.
@@ -542,6 +547,9 @@ Hay tres superficies UI:
 - focus.
 - comandos por widget.
 - hit testing legacy.
+- controles `UIElement` sin script (slider, toggle, dropdown, input e inventario).
+- desplazamiento bajo el puntero mediante `scroll_entity_under_pointer`; grids grandes se recortan
+  y virtualizan automáticamente.
 
 Eventos:
 

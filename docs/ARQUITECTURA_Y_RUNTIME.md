@@ -403,6 +403,10 @@ El catalogo actual incluye:
 - luces, sombras, normal maps, particulas, decals, trails, debug draw.
 - plan Metal/compute para particulas, tile visibility, flow fields, lighting, post process y UI layout.
 
+El compositor compartido wgpu ya ejecuta ambiente multiplicativo, luz direccional aditiva, luces
+puntuales radiales y sombras rotadas de `ShadowCaster2D` con presupuestos deterministas. UI se dibuja
+después de la iluminación para conservar HUD legible.
+
 `engine::render_3d` modela el arranque hibrido:
 
 - transform, mesh, material, camera, light, render graph y compatibilidad.

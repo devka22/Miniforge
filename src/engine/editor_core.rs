@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -13,7 +14,7 @@ use crate::engine::asset_database::AssetRecord;
 use crate::engine::asset_importers::SpriteSheetImporter;
 use crate::engine::asset_tools::AssetTools;
 use crate::engine::command_palette::CommandPalette;
-use crate::engine::component::default_component;
+use crate::engine::component::{Component, default_component};
 use crate::engine::component_registry::ComponentSubMenu;
 use crate::engine::developer_console::ConsoleEntry;
 use crate::engine::editor_asset_connector::EditorAssetConnector;
@@ -34,8 +35,14 @@ use crate::engine::inspector_editor::InspectorEditor;
 use crate::engine::luau_scripting::{
     LuauScriptRuntime, ScriptBreakpoint, ScriptDebuggerState, ScriptWatchResult,
 };
+use crate::engine::miniforge_2d::authoring_catalog::{AuthoringCatalog2D, AuthoringPreset2D};
 use crate::engine::miniforge_2d::content_browser::asset_from_record;
 use crate::engine::miniforge_2d::paper2d::SpriteFrames2D;
+use crate::engine::miniforge_2d::physics2d::Physics2DSettings;
+use crate::engine::miniforge_2d::sdk_pack_installer::{
+    SdkPackArchiveInstaller, SdkPackReleaseArtifact,
+};
+use crate::engine::miniforge_2d::sdk_packs::{SdkPackCatalog, SdkPackRegistry};
 use crate::engine::project_launcher::{LauncherTemplate, ProjectLauncherState};
 use crate::engine::project_storage::{BackupPolicy, DEFAULT_BACKUP_GENERATIONS, ProjectStorage};
 use crate::engine::project_validator::ProjectValidator;
@@ -55,6 +62,10 @@ use crate::systems::rts_system::RTSSystem;
 pub const EDITOR_CORE_API_VERSION: u32 = 1;
 const MAX_EDITOR_SCRIPT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CONTENT_TEXT_BYTES: usize = 8 * 1024 * 1024;
+type ParsedInputMap = (
+    BTreeMap<String, Vec<String>>,
+    BTreeMap<String, InputActionInfo>,
+);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EntityRow {
@@ -983,6 +994,45 @@ impl EditorCore {
                     action: action.clone(),
                     message: "Session recovery checkpoint cleared".to_string(),
                     artifact_path: None,
+                    files: 0,
+                    bytes: 0,
+                }
+            }
+            "prepare_wgpu_preview" => {
+                let project_path = self
+                    .project_path
+                    .clone()
+                    .ok_or_else(EditorCoreError::no_project)?;
+                let executable =
+                    crate::engine::packaging_manager::PackagingManager::wgpu_preview_binary();
+                let ready = executable.is_some();
+                let warnings = if ready {
+                    Vec::new()
+                } else {
+                    vec![
+                        "wgpu preview executable unavailable; build miniforge_wgpu_preview with the wgpu_runtime feature or set MINIFORGE_WGPU_PREVIEW"
+                            .to_string(),
+                    ]
+                };
+                let plan = ExternalLaunchPlanDto {
+                    kind: "wgpu-preview".to_string(),
+                    profile: "development".to_string(),
+                    ready,
+                    executable: executable.map(|path| path.to_string_lossy().to_string()),
+                    arguments: vec![project_path.to_string_lossy().to_string()],
+                    working_directory: project_path.to_string_lossy().to_string(),
+                    artifact_path: project_path.to_string_lossy().to_string(),
+                    warnings,
+                };
+                self.external_launch_plan = Some(plan.clone());
+                ProjectOperationOutcomeDto {
+                    action: action.clone(),
+                    message: if plan.ready {
+                        "Native wgpu project preview prepared".to_string()
+                    } else {
+                        "wgpu preview executable is missing".to_string()
+                    },
+                    artifact_path: Some(plan.artifact_path.clone()),
                     files: 0,
                     bytes: 0,
                 }
@@ -1964,6 +2014,17 @@ impl EditorCore {
                     }
                     None
                 }
+                "add_component_bundle" => {
+                    let bundle = required_payload_string(&payload, "bundle")?;
+                    let parameters = payload.get("parameters").cloned();
+                    let _ = add_component_bundle_to_entities(
+                        self.game_mut()?,
+                        &[entity_id],
+                        bundle,
+                        parameters.as_ref(),
+                    )?;
+                    None
+                }
                 "remove_component" => {
                     let component_type = required_payload_string(&payload, "component_type")?;
                     self.game_mut()?
@@ -2007,6 +2068,16 @@ impl EditorCore {
                 self.game_mut()?,
                 required_payload_string(&payload, "component_type")?,
             )?,
+            "add_component_bundle" => {
+                let selection = selected_entity_ids(self.game()?)?;
+                let parameters = payload.get("parameters").cloned();
+                add_component_bundle_to_entities(
+                    self.game_mut()?,
+                    &selection,
+                    required_payload_string(&payload, "bundle")?,
+                    parameters.as_ref(),
+                )?
+            }
             "remove_component" => remove_component_from_selected(
                 self.game_mut()?,
                 required_payload_string(&payload, "component_type")?,
@@ -2118,6 +2189,140 @@ impl EditorCore {
 
     pub fn component_catalog(&self) -> Result<Vec<ComponentSubMenu>, EditorCoreError> {
         Ok(self.game()?.component_registry.submenu_model())
+    }
+
+    pub fn authoring_catalog(&self) -> AuthoringCatalog2D {
+        builtin_authoring_catalog().clone()
+    }
+
+    pub fn authoring_application_plan(
+        &self,
+        preset_id: &str,
+        parameters_json: &str,
+    ) -> Result<Value, EditorCoreError> {
+        let parameters = if parameters_json.trim().is_empty() {
+            Value::Object(Default::default())
+        } else {
+            serde_json::from_str::<Value>(parameters_json)?
+        };
+        if !parameters.is_object() {
+            return Err(EditorCoreError::new(
+                EditorCoreErrorKind::InvalidArgument,
+                "Authoring preset parameters must be a JSON object",
+            ));
+        }
+
+        let game = self.game()?;
+        let selection = selected_entity_ids(game)?;
+        let catalog = builtin_authoring_catalog();
+        let preset = catalog.resolve(preset_id).ok_or_else(|| {
+            EditorCoreError::new(
+                EditorCoreErrorKind::InvalidArgument,
+                format!("Unknown authoring preset: {preset_id}"),
+            )
+        })?;
+        let mut targets = Vec::with_capacity(selection.len());
+        let mut total_components_to_add = 0usize;
+        let mut total_components_existing = 0usize;
+        for entity_id in selection {
+            let entity = game.get_entity_by_id(entity_id).ok_or_else(|| {
+                EditorCoreError::new(
+                    EditorCoreErrorKind::NotFound,
+                    format!("Selected entity {entity_id} is missing"),
+                )
+            })?;
+            let plan = catalog
+                .application_plan(
+                    &preset.id,
+                    entity
+                        .components
+                        .iter()
+                        .map(|component| component.component_type.as_str()),
+                    Some(&parameters),
+                )
+                .expect("resolved preset must produce an application plan");
+            total_components_to_add += plan.add_components.len();
+            total_components_existing += plan.existing_components.len();
+            targets.push(json!({
+                "entity_id": entity.id,
+                "entity_name": entity.name,
+                "add_components": plan.add_components,
+                "existing_components": plan.existing_components,
+                "configured_components": plan.configured_components,
+            }));
+        }
+
+        Ok(json!({
+            "schema_version": 1,
+            "preset_id": preset.id,
+            "label": preset.label,
+            "summary": preset.summary,
+            "target_count": targets.len(),
+            "total_components_to_add": total_components_to_add,
+            "total_components_existing": total_components_existing,
+            "world_profile_will_change": preset.physics_world.is_some(),
+            "physics_world": preset.physics_world,
+            "requirements": preset.requirements,
+            "workflow_steps": preset.workflow_steps,
+            "recommended_next": preset.recommended_next,
+            "parameters": parameters,
+            "targets": targets,
+        }))
+    }
+
+    pub fn sdk_pack_catalog(&self) -> Value {
+        let catalog = builtin_sdk_pack_catalog();
+        json!({
+            "catalog": catalog,
+            "validation": catalog.validate(),
+        })
+    }
+
+    pub fn sdk_pack_install_plan(
+        &self,
+        profile_id: &str,
+        registry_json: &str,
+    ) -> Result<Value, EditorCoreError> {
+        let registry = if registry_json.trim().is_empty() {
+            SdkPackRegistry::default()
+        } else {
+            serde_json::from_str::<SdkPackRegistry>(registry_json)?
+        };
+        let catalog = builtin_sdk_pack_catalog();
+        let plan = catalog
+            .install_plan(profile_id, &registry)
+            .map_err(|message| {
+                EditorCoreError::new(EditorCoreErrorKind::InvalidArgument, message)
+            })?;
+        Ok(json!({
+            "schema_version": catalog.schema_version,
+            "plan": plan,
+            "registry": registry,
+        }))
+    }
+
+    pub fn sdk_pack_install_archive(
+        &self,
+        pack_id: &str,
+        artifact_json: &str,
+        archive_path: &Path,
+        install_root: &Path,
+    ) -> Result<Value, EditorCoreError> {
+        let artifact = serde_json::from_str::<SdkPackReleaseArtifact>(artifact_json)?;
+        let catalog = builtin_sdk_pack_catalog();
+        let manifest = catalog.pack(pack_id).ok_or_else(|| {
+            EditorCoreError::new(
+                EditorCoreErrorKind::InvalidArgument,
+                format!("Unknown SDK pack: {pack_id}"),
+            )
+        })?;
+        let receipt = SdkPackArchiveInstaller::default()
+            .install(manifest, &artifact, archive_path, install_root)
+            .map_err(|message| EditorCoreError::new(EditorCoreErrorKind::CommandFailed, message))?;
+        Ok(json!({
+            "schema_version": catalog.schema_version,
+            "receipt": receipt,
+        }))
     }
 
     pub fn prefab_studio_state(&mut self) -> Result<PrefabStudioStateDto, EditorCoreError> {
@@ -2330,6 +2535,9 @@ impl EditorCore {
         let (tile, scale, offset_x, offset_y) =
             viewport_layout(game, viewport_width, viewport_height);
         let pixels_per_unit = tile * scale;
+        let physics_debug = game
+            .physics_system
+            .debug_snapshot(&game.runtime_world.units, 2_048);
         let entities = game
             .runtime_world
             .units
@@ -2337,6 +2545,22 @@ impl EditorCore {
             .map(|entity| {
                 let component_types = entity.component_types();
                 let light = entity.get_component("Light2D");
+                let body = entity
+                    .get_component("Rigidbody2D")
+                    .or_else(|| entity.get_component("KinematicBody2D"))
+                    .or_else(|| entity.get_component("StaticBody2D"));
+                let physics_material = entity.get_component("PhysicsMaterial2D");
+                let force_field = entity.get_component("ForceField2D");
+                let joint = entity.get_component("Joint2D");
+                let gpu_particles = entity.get_component("GpuParticles2D");
+                let joint_target = joint.and_then(|joint| {
+                    let target_id = joint.get("target_id").and_then(Value::as_u64);
+                    let target_name = joint.get_string("target_name", "");
+                    game.runtime_world.units.iter().find(|candidate| {
+                        target_id.is_some_and(|id| candidate.id == id)
+                            || (!target_name.is_empty() && candidate.name == target_name)
+                    })
+                });
                 json!({
                     "id": entity.id,
                     "name": entity.name,
@@ -2358,9 +2582,46 @@ impl EditorCore {
                         || entity.get_component("Area2D").is_some(),
                     "is_trigger": entity.get_component("Trigger2D").is_some()
                         || entity.get_component("Area2D").is_some(),
+                    "body_type": body.map(|component| {
+                        match component.component_type.as_str() {
+                            "KinematicBody2D" => "kinematic".to_string(),
+                            "StaticBody2D" => "static".to_string(),
+                            _ => component.get_string("body_type", "dynamic"),
+                        }
+                    }),
+                    "velocity_x": body.map(|component| component.get_f64("velocity_x", 0.0)).unwrap_or(0.0),
+                    "velocity_y": body.map(|component| component.get_f64("velocity_y", 0.0)).unwrap_or(0.0),
+                    "physics_sleeping": body.map(|component| component.get_bool("sleeping", false)).unwrap_or(false),
+                    "physics_friction": physics_material
+                        .map(|component| component.get_f64("friction", 0.25))
+                        .or_else(|| body.map(|component| component.get_f64("friction", 0.25)))
+                        .unwrap_or(0.25),
+                    "physics_bounciness": physics_material
+                        .map(|component| component.get_f64("bounciness", 0.0))
+                        .or_else(|| body.map(|component| component.get_f64("bounciness", 0.0)))
+                        .unwrap_or(0.0),
+                    "force_field_type": force_field.map(|component| component.get_string("field_type", "directional")),
+                    "force_field_radius": force_field.map(|component| component.get_f64("radius", 8.0)).unwrap_or(0.0),
+                    "force_field_strength": force_field.map(|component| component.get_f64("strength", 10.0)).unwrap_or(0.0),
+                    "force_field_direction_x": force_field.map(|component| component.get_f64("direction_x", 1.0)).unwrap_or(0.0),
+                    "force_field_direction_y": force_field.map(|component| component.get_f64("direction_y", 0.0)).unwrap_or(0.0),
+                    "joint_type": joint.map(|component| component.get_string("joint_type", "distance")),
+                    "joint_broken": joint.map(|component| component.get_bool("broken", false)).unwrap_or(false),
+                    "joint_target_id": joint_target.map(|target| target.id),
+                    "joint_target_x": joint_target.map(|target| target.x),
+                    "joint_target_y": joint_target.map(|target| target.y),
                     "light_radius": light.map(|component| component.get_f64("radius", 5.0)).unwrap_or(0.0),
                     "light_angle": light.map(|component| component.get_f64("angle", 360.0)).unwrap_or(360.0),
                     "light_direction": light.map(|component| component.get_f64("direction", 0.0)).unwrap_or(0.0),
+                    "gpu_particle_capacity": gpu_particles
+                        .map(|component| component.get_usize("max_particles", 8_192))
+                        .unwrap_or(0),
+                    "gpu_particle_emission_rate": gpu_particles
+                        .map(|component| component.get_f64("emission_rate", 128.0))
+                        .unwrap_or(0.0),
+                    "gpu_particle_playing": gpu_particles
+                        .map(|component| component.get_bool("playing", true))
+                        .unwrap_or(false),
                     "collision_points": EditorSpatialTools2D::collision_points(entity),
                 })
             })
@@ -2373,6 +2634,7 @@ impl EditorCore {
             "pixels_per_unit": pixels_per_unit,
             "offset_x": offset_x,
             "offset_y": offset_y,
+            "physics_debug": physics_debug,
             "entities": entities,
         }))
     }
@@ -3478,6 +3740,30 @@ impl EditorCore {
                     message: format!("Created physics and lighting occluder #{id}"),
                 }
             }
+            "object.create_lit_sprite2d" => {
+                let (x, y) = editor_spawn_position(game);
+                let id = game.spawn_scene_node(
+                    "LitSprite2D",
+                    &["SpriteRenderer", "Material2D", "NormalMap2D"],
+                    x,
+                    y,
+                );
+                if let Some(entity) = game.get_entity_by_id_mut(id) {
+                    if let Some(material) = entity.get_component_mut("Material2D") {
+                        material.set("lighting", json!(true));
+                    }
+                    if let Some(normal_map) = entity.get_component_mut("NormalMap2D") {
+                        normal_map.set_f64("strength", 1.0);
+                    }
+                }
+                game.sync_world();
+                CommandOutcome {
+                    changed: true,
+                    message: format!(
+                        "Created WGPU LitSprite2D #{id}; assign its color and normal textures in the Inspector"
+                    ),
+                }
+            }
             "object.create_area2d" => {
                 let id = game.spawn_scene_node("Area2D", &["Area2D"], 0.0, 0.0);
                 CommandOutcome {
@@ -3502,6 +3788,31 @@ impl EditorCore {
                     message: format!("Created StaticBody2D #{id}"),
                 }
             }
+            "object.create_kinematic_body2d" => {
+                let (x, y) = editor_spawn_position(game);
+                let id = game.spawn_scene_node(
+                    "KinematicBody2D",
+                    &["KinematicBody2D", "Collider2D"],
+                    x,
+                    y,
+                );
+                CommandOutcome {
+                    changed: true,
+                    message: format!("Created moving KinematicBody2D #{id}"),
+                }
+            }
+            "object.create_force_field2d" => {
+                let (x, y) = editor_spawn_position(game);
+                let id = game.spawn_scene_node("ForceField2D", &["ForceField2D"], x, y);
+                CommandOutcome {
+                    changed: true,
+                    message: format!("Created configurable ForceField2D #{id}"),
+                }
+            }
+            "physics.connect_selection_distance" => {
+                connect_selected_physics_joint(game, "distance")?
+            }
+            "physics.connect_selection_spring" => connect_selected_physics_joint(game, "spring")?,
             "object.create_trigger_volume2d" => {
                 let (x, y) = editor_spawn_position(game);
                 let id = game.spawn_scene_node("TriggerVolume2D", &["Area2D", "Trigger2D"], x, y);
@@ -3563,6 +3874,36 @@ impl EditorCore {
                 CommandOutcome {
                     changed: true,
                     message: format!("Created ParticleEmitter2D #{id}"),
+                }
+            }
+            "object.create_gpu_particle_emitter2d" => {
+                let (x, y) = editor_spawn_position(game);
+                let id = game.spawn_scene_node(
+                    "GpuParticleEmitter2D",
+                    &["GpuParticles2D", "ParticleEmitter"],
+                    x,
+                    y,
+                );
+                if let Some(entity) = game.get_entity_by_id_mut(id)
+                    && let Some(fallback) = entity.get_component_mut("ParticleEmitter")
+                {
+                    fallback.set_f64("rate", 128.0);
+                    fallback.set("burst_count", json!(32));
+                    fallback.set_f64("lifetime", 1.25);
+                    fallback.set_f64("velocity_y", -44.0);
+                    fallback.set_f64("spread", 26.0);
+                    fallback.set_f64("start_size", 9.0);
+                    fallback.set_f64("end_size", 1.0);
+                    fallback.set("color", json!([125, 205, 255, 220]));
+                    fallback.set("max_particles", json!(8_192));
+                    fallback.set("blend_mode", json!("additive"));
+                }
+                game.sync_world();
+                CommandOutcome {
+                    changed: true,
+                    message: format!(
+                        "Created compute GpuParticleEmitter2D #{id} with automatic CPU fallback"
+                    ),
                 }
             }
             "object.create_audio_emitter2d" => {
@@ -3982,7 +4323,7 @@ impl EditorCore {
     }
 
     /// Applies one non-destructive sprite utility as a single undoable edit.
-    /// This keeps native-editor actions (flip, rotate, crop and outline) on the
+    /// This keeps native-editor actions (paint utilities and transforms) on the
     /// same history stack as regular pixel strokes.
     pub fn sprite_transform(
         &mut self,
@@ -3996,17 +4337,69 @@ impl EditorCore {
         };
         if !matches!(
             action,
-            "flip_horizontal" | "flip_vertical" | "rotate_right" | "crop_to_content" | "outline"
+            "flip_horizontal"
+                | "flip_vertical"
+                | "rotate_right"
+                | "crop_to_content"
+                | "outline"
+                | "bucket_fill"
+                | "replace_color"
+                | "drop_shadow"
         ) {
             return Err(EditorCoreError::new(
                 EditorCoreErrorKind::InvalidArgument,
                 format!("Unknown sprite transform: {action}"),
             ));
         }
-        let outline_color = (action == "outline")
+        let effect_color = matches!(action, "outline" | "bucket_fill" | "drop_shadow")
             .then(|| sprite_color_from_payload(&payload))
             .transpose()?;
+        let replace_colors = (action == "replace_color")
+            .then(|| {
+                let from = payload.get("from").ok_or_else(|| {
+                    EditorCoreError::new(
+                        EditorCoreErrorKind::InvalidArgument,
+                        "replace_color requires a from color",
+                    )
+                })?;
+                let to = payload.get("to").ok_or_else(|| {
+                    EditorCoreError::new(
+                        EditorCoreErrorKind::InvalidArgument,
+                        "replace_color requires a to color",
+                    )
+                })?;
+                Ok::<_, EditorCoreError>((
+                    sprite_color_from_payload(from)?,
+                    sprite_color_from_payload(to)?,
+                ))
+            })
+            .transpose()?;
+        let bucket_coordinates = (action == "bucket_fill")
+            .then(|| {
+                let x = payload.get("x").and_then(Value::as_u64).ok_or_else(|| {
+                    EditorCoreError::new(
+                        EditorCoreErrorKind::InvalidArgument,
+                        "bucket_fill requires an x coordinate",
+                    )
+                })?;
+                let y = payload.get("y").and_then(Value::as_u64).ok_or_else(|| {
+                    EditorCoreError::new(
+                        EditorCoreErrorKind::InvalidArgument,
+                        "bucket_fill requires a y coordinate",
+                    )
+                })?;
+                Ok::<_, EditorCoreError>((x as u32, y as u32))
+            })
+            .transpose()?;
         let canvas = &mut self.game_mut()?.sprite_editor;
+        if let Some((x, y)) = bucket_coordinates
+            && (x >= canvas.width || y >= canvas.height)
+        {
+            return Err(EditorCoreError::new(
+                EditorCoreErrorKind::InvalidArgument,
+                format!("Sprite pixel out of bounds: {x},{y}"),
+            ));
+        }
         canvas.begin_edit();
         match action {
             "flip_horizontal" => canvas.flip_horizontal(),
@@ -4026,8 +4419,31 @@ impl EditorCore {
                     .and_then(Value::as_u64)
                     .unwrap_or(1)
                     .clamp(1, 16) as u32;
-                let color = outline_color.expect("outline payload was validated");
+                let color = effect_color.expect("outline payload was validated");
                 let _ = canvas.outline_alpha_thick(thickness, color);
+            }
+            "bucket_fill" => {
+                let (x, y) = bucket_coordinates.expect("bucket coordinates were validated");
+                let color = effect_color.expect("bucket payload was validated");
+                let _ = canvas.bucket_fill(x, y, color);
+            }
+            "replace_color" => {
+                let (from, to) = replace_colors.expect("replace payload was validated");
+                let _ = canvas.replace_color(from, to);
+            }
+            "drop_shadow" => {
+                let offset_x = payload
+                    .get("offset_x")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1)
+                    .clamp(-64, 64) as i32;
+                let offset_y = payload
+                    .get("offset_y")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1)
+                    .clamp(-64, 64) as i32;
+                let color = effect_color.expect("shadow payload was validated");
+                let _ = canvas.drop_shadow(offset_x, offset_y, color);
             }
             _ => unreachable!("sprite transform action was validated"),
         }
@@ -4141,7 +4557,7 @@ impl EditorCore {
             if !game.script_editor.document.dirty
                 && active_path
                     .as_ref()
-                    .is_some_and(|active| changed_paths.iter().any(|path| *path == active))
+                    .is_some_and(|active| changed_paths.contains(&active))
                 && let Err(error) = game.reload_open_file()
             {
                 game.console
@@ -4548,6 +4964,81 @@ fn editor_spawn_position(game: &Game) -> (f64, f64) {
     )
 }
 
+fn connect_selected_physics_joint(
+    game: &mut Game,
+    joint_type: &str,
+) -> Result<CommandOutcome, EditorCoreError> {
+    if game.selected_units.len() != 2 {
+        return Err(EditorCoreError::new(
+            EditorCoreErrorKind::InvalidArgument,
+            "Select exactly two entities: the joint owner first and its target second",
+        ));
+    }
+    let owner_id = game.selected_units[0];
+    let target_id = game.selected_units[1];
+    let target = game.get_entity_by_id(target_id).cloned().ok_or_else(|| {
+        EditorCoreError::new(EditorCoreErrorKind::NotFound, "Joint target is missing")
+    })?;
+    let owner = game.get_entity_by_id(owner_id).cloned().ok_or_else(|| {
+        EditorCoreError::new(EditorCoreErrorKind::NotFound, "Joint owner is missing")
+    })?;
+    let owner_name = owner.name.clone();
+    let rest_length = ((owner.x - target.x).powi(2) + (owner.y - target.y).powi(2))
+        .sqrt()
+        .max(0.001);
+    let before = game.capture_editor_snapshot();
+    let owner = game.get_entity_by_id_mut(owner_id).ok_or_else(|| {
+        EditorCoreError::new(EditorCoreErrorKind::NotFound, "Joint owner is missing")
+    })?;
+    if owner.get_component("Rigidbody2D").is_none()
+        && owner.get_component("KinematicBody2D").is_none()
+    {
+        owner.add_component(default_component("Rigidbody2D").expect("registered Rigidbody2D"));
+    }
+    if owner.get_component("Collider2D").is_none() {
+        owner.add_component(default_component("Collider2D").expect("registered Collider2D"));
+    }
+    if owner.get_component("Joint2D").is_none() {
+        owner.add_component(default_component("Joint2D").expect("registered Joint2D"));
+    }
+    let joint = owner
+        .get_component_mut("Joint2D")
+        .expect("joint was just attached");
+    joint.set("joint_type", json!(joint_type));
+    joint.set("target_id", json!(target_id));
+    joint.set("target_name", json!(target.name));
+    joint.set_f64("rest_length", rest_length);
+    joint.set_f64(
+        "max_distance",
+        if joint_type == "spring" {
+            rest_length * 1.5
+        } else {
+            rest_length
+        },
+    );
+    joint.set_f64("stiffness", if joint_type == "spring" { 18.0 } else { 0.9 });
+    joint.set_f64("damping", if joint_type == "spring" { 3.0 } else { 0.18 });
+    joint.set("broken", json!(false));
+    owner.sync_to_components();
+    game.sync_world();
+    game.mark_scene_dirty("Connect Physics Joint");
+    game.scene_save_manager.note_entity_dirty(owner_id);
+    game.push_editor_command(
+        format!("Connect {joint_type} Joint"),
+        EditorCommandKind::SceneOperation {
+            name: format!("Connect {joint_type} joint"),
+        },
+        before,
+    );
+    Ok(CommandOutcome {
+        changed: true,
+        message: format!(
+            "Connected {} to {} with a {joint_type} joint ({rest_length:.2} units)",
+            owner_name, target.name
+        ),
+    })
+}
+
 fn queue_worker_on_selection(game: &mut Game) -> CommandOutcome {
     let Some(entity_id) = game.selected_units.first().copied() else {
         return CommandOutcome {
@@ -4653,7 +5144,7 @@ fn sprite_color_from_payload(payload: &Value) -> Result<SpriteColor, EditorCoreE
         u8::try_from(value).map_err(|_| {
             EditorCoreError::new(
                 EditorCoreErrorKind::InvalidArgument,
-                format!("Sprite outline channel {name} must be between 0 and 255"),
+                format!("Sprite color channel {name} must be between 0 and 255"),
             )
         })
     };
@@ -4711,15 +5202,7 @@ fn validate_engine_settings(value: &Value) -> Result<(), EditorCoreError> {
     Ok(())
 }
 
-fn parse_input_map(
-    value: &Value,
-) -> Result<
-    (
-        BTreeMap<String, Vec<String>>,
-        BTreeMap<String, InputActionInfo>,
-    ),
-    EditorCoreError,
-> {
+fn parse_input_map(value: &Value) -> Result<ParsedInputMap, EditorCoreError> {
     let object = value.as_object().ok_or_else(|| {
         EditorCoreError::new(
             EditorCoreErrorKind::InvalidArgument,
@@ -5103,6 +5586,12 @@ fn default_command_descriptors() -> Vec<CommandDescriptor> {
             "Lighting",
             None,
         ),
+        command(
+            "object.create_lit_sprite2d",
+            "Create Lit Sprite 2D",
+            "Lighting",
+            None,
+        ),
         command("object.create_area2d", "Create Area2D", "Objects", None),
         command(
             "object.create_rigidbody2d",
@@ -5113,6 +5602,30 @@ fn default_command_descriptors() -> Vec<CommandDescriptor> {
         command(
             "object.create_static_body2d",
             "Create StaticBody2D",
+            "Physics",
+            None,
+        ),
+        command(
+            "object.create_kinematic_body2d",
+            "Create KinematicBody2D",
+            "Physics",
+            None,
+        ),
+        command(
+            "object.create_force_field2d",
+            "Create Force Field 2D",
+            "Physics",
+            None,
+        ),
+        command(
+            "physics.connect_selection_distance",
+            "Connect Selection with Distance Joint",
+            "Physics",
+            None,
+        ),
+        command(
+            "physics.connect_selection_spring",
+            "Connect Selection with Spring Joint",
             "Physics",
             None,
         ),
@@ -5143,6 +5656,12 @@ fn default_command_descriptors() -> Vec<CommandDescriptor> {
         command(
             "object.create_particle_emitter2d",
             "Create Particle Emitter 2D",
+            "Effects",
+            None,
+        ),
+        command(
+            "object.create_gpu_particle_emitter2d",
+            "Create GPU Particle Emitter 2D",
             "Effects",
             None,
         ),
@@ -6526,10 +7045,10 @@ fn manage_asset_import(
         }
         sidecars.push(import_sidecar);
     }
-    if SpriteSheetImporter::supports_image(&destination) {
-        if let Ok(generated) = create_imported_sprite_bundle(project_root, &destination) {
-            sidecars.extend(generated);
-        }
+    if SpriteSheetImporter::supports_image(&destination)
+        && let Ok(generated) = create_imported_sprite_bundle(project_root, &destination)
+    {
+        sidecars.extend(generated);
     }
     sidecars.sort();
     sidecars.dedup();
@@ -7139,6 +7658,93 @@ fn add_component_to_selected(
     Ok(targets.len())
 }
 
+fn builtin_authoring_catalog() -> &'static AuthoringCatalog2D {
+    static CATALOG: OnceLock<AuthoringCatalog2D> = OnceLock::new();
+    CATALOG.get_or_init(AuthoringCatalog2D::builtin)
+}
+
+fn builtin_sdk_pack_catalog() -> &'static SdkPackCatalog {
+    static CATALOG: OnceLock<SdkPackCatalog> = OnceLock::new();
+    CATALOG.get_or_init(SdkPackCatalog::builtin)
+}
+
+fn component_bundle_preset(bundle: &str) -> Option<&'static AuthoringPreset2D> {
+    builtin_authoring_catalog().resolve(bundle)
+}
+
+fn configure_bundle_component(bundle: &str, component: &mut Component, parameters: Option<&Value>) {
+    builtin_authoring_catalog().configure_component(bundle, component, parameters);
+}
+
+fn add_component_bundle_to_entities(
+    game: &mut Game,
+    entity_ids: &[u64],
+    bundle: &str,
+    parameters: Option<&Value>,
+) -> Result<usize, EditorCoreError> {
+    let preset = component_bundle_preset(bundle).ok_or_else(|| {
+        EditorCoreError::new(
+            EditorCoreErrorKind::InvalidArgument,
+            format!("Unknown component bundle: {bundle}"),
+        )
+    })?;
+    let label = &preset.label;
+    let component_types = &preset.components;
+    let physics_world = preset.physics_world.as_ref();
+    let targets = entity_ids
+        .iter()
+        .copied()
+        .filter(|id| game.get_entity_by_id(*id).is_some())
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        return Err(EditorCoreError::new(
+            EditorCoreErrorKind::NotFound,
+            "No target entities exist for the component bundle",
+        ));
+    }
+
+    let before = game.capture_editor_snapshot();
+    if let Some(profile) = physics_world {
+        Physics2DSettings::from_world_profile(profile).apply_to_system(&mut game.physics_system);
+    }
+    let mut added = 0usize;
+    for entity_id in &targets {
+        let entity = game.get_entity_by_id_mut(*entity_id).ok_or_else(|| {
+            EditorCoreError::new(EditorCoreErrorKind::NotFound, "Selected entity is missing")
+        })?;
+        for component_type in component_types {
+            if entity.get_component(component_type).is_none() {
+                let mut component =
+                    default_component(component_type).expect("bundle component must be registered");
+                configure_bundle_component(&preset.id, &mut component, parameters);
+                entity.add_component(component);
+                added += 1;
+            }
+        }
+        entity.sync_from_components();
+    }
+    if added == 0 {
+        return Err(EditorCoreError::new(
+            EditorCoreErrorKind::CommandFailed,
+            format!("Selected entities already contain the {label} systems"),
+        ));
+    }
+
+    game.sync_world();
+    game.mark_scene_dirty("Add Component Bundle");
+    for entity_id in &targets {
+        game.scene_save_manager.note_entity_dirty(*entity_id);
+    }
+    game.push_editor_command(
+        format!("Add {label} Systems"),
+        EditorCommandKind::SceneOperation {
+            name: format!("Add {label} component bundle"),
+        },
+        before,
+    );
+    Ok(added)
+}
+
 fn remove_component_from_selected(
     game: &mut Game,
     component_type: &str,
@@ -7598,11 +8204,20 @@ mod tests {
                 "object.create_shadow_occluder2d",
                 &["StaticBody2D", "Collider2D", "ShadowCaster2D"],
             ),
+            (
+                "object.create_lit_sprite2d",
+                &["SpriteRenderer", "Material2D", "NormalMap2D"],
+            ),
             ("object.create_rigidbody2d", &["Rigidbody2D", "Collider2D"]),
             (
                 "object.create_static_body2d",
                 &["StaticBody2D", "Collider2D"],
             ),
+            (
+                "object.create_kinematic_body2d",
+                &["KinematicBody2D", "Collider2D"],
+            ),
+            ("object.create_force_field2d", &["ForceField2D"]),
             ("object.create_trigger_volume2d", &["Area2D", "Trigger2D"]),
             (
                 "object.create_one_way_platform2d",
@@ -7613,6 +8228,10 @@ mod tests {
                 &["NavAgent", "Collider2D", "Selectable"],
             ),
             ("object.create_particle_emitter2d", &["ParticleEmitter"]),
+            (
+                "object.create_gpu_particle_emitter2d",
+                &["GpuParticles2D", "ParticleEmitter"],
+            ),
             ("object.create_audio_emitter2d", &["AudioSource"]),
         ];
 
@@ -7652,6 +8271,29 @@ mod tests {
                         1.0
                     );
                 }
+                "object.create_gpu_particle_emitter2d" => {
+                    let gpu = entity.get_component("GpuParticles2D").unwrap();
+                    let fallback = entity.get_component("ParticleEmitter").unwrap();
+                    assert_eq!(gpu.get_string("simulation", ""), "compute");
+                    assert_eq!(gpu.get_usize("max_particles", 0), 8_192);
+                    assert_eq!(fallback.get_usize("max_particles", 0), 8_192);
+                    assert_eq!(fallback.get_f64("rate", 0.0), 128.0);
+                }
+                "object.create_lit_sprite2d" => {
+                    assert!(
+                        entity
+                            .get_component("Material2D")
+                            .unwrap()
+                            .get_bool("lighting", false)
+                    );
+                    assert_eq!(
+                        entity
+                            .get_component("NormalMap2D")
+                            .unwrap()
+                            .get_f64("strength", 0.0),
+                        1.0
+                    );
+                }
                 _ => {}
             }
 
@@ -7659,6 +8301,55 @@ mod tests {
             assert_eq!(core.entity_count().unwrap(), before, "undo {command_id}");
         }
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn physics_joint_command_connects_exactly_two_selected_entities_and_is_undoable() {
+        let root = temp_project("physics_joint_command");
+        let mut core = EditorCore::new();
+        core.open_project(&root).unwrap();
+
+        core.execute_command("object.create_rigidbody2d").unwrap();
+        let owner_id = core.game().unwrap().selected_units[0];
+        core.execute_command("object.create_static_body2d").unwrap();
+        let target_id = core.game().unwrap().selected_units[0];
+        core.select_entity(owner_id).unwrap();
+        core.update_selection(target_id, "add").unwrap();
+
+        let outcome = core
+            .execute_command("physics.connect_selection_spring")
+            .unwrap();
+        assert!(outcome.changed);
+        let owner = core.game().unwrap().get_entity_by_id(owner_id).unwrap();
+        let joint = owner.get_component("Joint2D").expect("joint component");
+        assert_eq!(joint.get_string("joint_type", ""), "spring");
+        assert_eq!(
+            joint.get("target_id").and_then(Value::as_u64),
+            Some(target_id)
+        );
+        assert!(joint.get_f64("rest_length", 0.0) > 0.0);
+
+        let state = core.viewport_state(800, 600).unwrap();
+        assert!(state["physics_debug"]["joints"].is_array());
+        let owner_state = state["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entity| entity["id"].as_u64() == Some(owner_id))
+            .unwrap();
+        assert_eq!(owner_state["joint_target_id"].as_u64(), Some(target_id));
+        assert_eq!(owner_state["joint_type"].as_str(), Some("spring"));
+
+        assert!(core.execute_command("edit.undo").unwrap().changed);
+        assert!(
+            core.game()
+                .unwrap()
+                .get_entity_by_id(owner_id)
+                .unwrap()
+                .get_component("Joint2D")
+                .is_none()
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -8015,6 +8706,30 @@ mod tests {
                 .is_empty()
         );
         assert!(core.sprite_transform("unknown", "{}").is_err());
+
+        core.sprite_new_canvas(4, 4).unwrap();
+        assert!(
+            core.sprite_transform(
+                "bucket_fill",
+                r#"{"x":0,"y":0,"color":{"r":20,"g":40,"b":60,"a":255}}"#,
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            core.sprite_snapshot().unwrap().rgba[0..4],
+            [20, 40, 60, 255]
+        );
+        assert!(
+            core.sprite_transform(
+                "replace_color",
+                r#"{"from":{"r":20,"g":40,"b":60,"a":255},"to":{"r":200,"g":180,"b":160,"a":255}}"#,
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            core.sprite_snapshot().unwrap().rgba[0..4],
+            [200, 180, 160, 255]
+        );
 
         let _ = fs::remove_dir_all(root);
     }
@@ -8416,6 +9131,14 @@ mod tests {
         assert!(!imported.join(".miniforge").exists());
         assert!(!imported.join("saves/autosave").exists());
 
+        core.project_operation("prepare_wgpu_preview", "{}")
+            .unwrap();
+        let preview = core.project_operations().unwrap().external_launch.unwrap();
+        assert_eq!(preview.kind, "wgpu-preview");
+        assert_eq!(preview.profile, "development");
+        assert_eq!(preview.arguments, vec![root.to_string_lossy().to_string()]);
+        assert_eq!(preview.ready, preview.executable.is_some());
+
         core.project_operation("prepare_external_play", r#"{"profile":"debug"}"#)
             .unwrap();
         let play = core.project_operations().unwrap().external_launch.unwrap();
@@ -8717,6 +9440,43 @@ mod tests {
     }
 
     #[test]
+    fn ready_made_system_bundles_only_use_registered_components_and_apply_genre_defaults() {
+        let catalog = builtin_authoring_catalog();
+        let validation = catalog.validate();
+        assert!(validation.valid, "{:?}", validation.issues);
+        assert!(catalog.presets.len() >= 40);
+
+        let mut topdown_body = default_component("Rigidbody2D").unwrap();
+        configure_bundle_component("topdown_player", &mut topdown_body, None);
+        assert!(!topdown_body.get_bool("use_gravity", true));
+        assert!(topdown_body.get_bool("freeze_rotation", false));
+
+        let mut platformer_pawn = default_component("Pawn2D").unwrap();
+        configure_bundle_component("platformer_player", &mut platformer_pawn, None);
+        assert_eq!(
+            platformer_pawn.get_string("movement_mode", ""),
+            "platformer"
+        );
+
+        let mut camera = default_component("Camera2D").unwrap();
+        configure_bundle_component("camera_rig", &mut camera, None);
+        assert!(camera.get_bool("active", false));
+        assert!(camera.get_bool("pixel_perfect", false));
+
+        let mut audio = default_component("AudioSource2D").unwrap();
+        configure_bundle_component("audio_emitter", &mut audio, None);
+        assert_eq!(audio.get_f64("spatial_blend", 0.0), 1.0);
+
+        let mut parameterized = default_component("CharacterController2D").unwrap();
+        configure_bundle_component(
+            "topdown_player",
+            &mut parameterized,
+            Some(&json!({"movement_speed": 11.0})),
+        );
+        assert_eq!(parameterized.get_f64("walk_speed", 0.0), 11.0);
+    }
+
+    #[test]
     fn inspector_quick_actions_and_selection_batches_are_real_and_atomic() {
         let root = temp_project("inspector_quick_batch");
         AssetTools::ensure_project_folders(&root).unwrap();
@@ -8824,6 +9584,20 @@ mod tests {
             );
         }
         assert!(core.execute_command("edit.redo").unwrap().changed);
+        core.update_selection(original_id, "replace").unwrap();
+        core.update_selection(duplicated_id, "add").unwrap();
+        assert!(
+            core.selected_entity_action("add_component_bundle", r#"{"bundle":"survival_actor"}"#,)
+                .unwrap()
+                > 0
+        );
+        for entity_id in [original_id, duplicated_id] {
+            let entity = core.game().unwrap().get_entity_by_id(entity_id).unwrap();
+            for component in ["Health", "SurvivalNeeds", "Inventory", "CraftingBook"] {
+                assert!(entity.get_component(component).is_some(), "{component}");
+            }
+        }
+        assert!(core.execute_command("edit.undo").unwrap().changed);
         core.update_selection(original_id, "replace").unwrap();
         core.update_selection(duplicated_id, "add").unwrap();
         assert_eq!(

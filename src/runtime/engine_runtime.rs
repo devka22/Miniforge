@@ -4,12 +4,14 @@
 //! service.  Exported players build this type, which makes the editor/runtime
 //! boundary enforceable by Cargo features instead of relying on a boolean.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::ops::{Deref, DerefMut};
-use std::path::{Path, PathBuf};
+use std::path::{Component as PathComponent, Path, PathBuf};
 use std::time::Instant;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::core::engine_config::EngineConfig;
@@ -22,6 +24,7 @@ use crate::engine::developer_console::DeveloperConsole;
 use crate::engine::diagnostics::Diagnostics;
 use crate::engine::game_clock::GameClock;
 use crate::engine::luau_scripting::{LuauRunReport, LuauScriptRuntime, ScriptSchedulerConfig};
+use crate::engine::miniforge_2d::ui_framework::UiCanvas2D;
 use crate::engine::profiler::Profiler;
 use crate::engine::resource_manager::ResourceManager;
 use crate::engine::runtime_config::RuntimeConfig;
@@ -43,6 +46,69 @@ use crate::systems::physics_system::{PairType, PhysicsEventPhase, PhysicsSystem}
 use crate::systems::rts_system::RTSSystem;
 use crate::systems::runtime_2d_system::Runtime2DSystem;
 use crate::systems::sprite_animation_system::SpriteAnimationSystem;
+
+const MAX_UI_DOCUMENT_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_UI_DOCUMENT_WIDGETS: usize = 10_000;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuntimeUiDocument2D {
+    pub entity_id: u64,
+    pub asset_path: String,
+    pub input_enabled: bool,
+    #[serde(default = "default_ui_scale_mode")]
+    pub scale_mode: String,
+    pub canvas: UiCanvas2D,
+}
+
+fn default_ui_scale_mode() -> String {
+    "scale_with_screen".to_string()
+}
+
+impl RuntimeUiDocument2D {
+    pub fn layout_viewport(&self, screen: (f32, f32)) -> (f32, f32) {
+        if self.scales_with_screen()
+            && self.canvas.viewport_width.is_finite()
+            && self.canvas.viewport_height.is_finite()
+            && self.canvas.viewport_width > 0.0
+            && self.canvas.viewport_height > 0.0
+        {
+            (self.canvas.viewport_width, self.canvas.viewport_height)
+        } else {
+            (screen.0.max(1.0), screen.1.max(1.0))
+        }
+    }
+
+    pub fn layout_scale(&self, screen: (f32, f32)) -> (f32, f32) {
+        let layout = self.layout_viewport(screen);
+        (
+            (screen.0.max(1.0) / layout.0.max(1.0)).clamp(0.01, 100.0),
+            (screen.1.max(1.0) / layout.1.max(1.0)).clamp(0.01, 100.0),
+        )
+    }
+
+    pub fn screen_to_layout(&self, screen: (f32, f32), pointer: (f32, f32)) -> (f32, f32) {
+        let scale = self.layout_scale(screen);
+        (pointer.0 / scale.0, pointer.1 / scale.1)
+    }
+
+    fn scales_with_screen(&self) -> bool {
+        matches!(
+            self.scale_mode
+                .trim()
+                .to_ascii_lowercase()
+                .replace(['-', ' '], "_")
+                .as_str(),
+            "scale_with_screen" | "scale" | "reference_resolution" | "responsive"
+        )
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeUiDocumentLoadReport {
+    pub loaded: usize,
+    pub skipped: usize,
+    pub errors: Vec<String>,
+}
 
 fn physics_pair_type_name(pair_type: PairType) -> &'static str {
     match pair_type {
@@ -118,6 +184,7 @@ pub struct EngineRuntime {
     pub camera: Camera,
     pub scene_manager: SceneManager,
     pub ui_canvases: Value,
+    pub ui_documents: Vec<RuntimeUiDocument2D>,
     pub runtime_config: RuntimeConfig,
     pub resources: ResourceManager,
     pub asset_database: AssetDatabase,
@@ -215,6 +282,7 @@ impl EngineRuntime {
             camera,
             scene_manager: SceneManager::new_with_start_scene(&project_path, &start_scene),
             ui_canvases: json!([]),
+            ui_documents: Vec::new(),
             runtime_config,
             resources,
             asset_database,
@@ -266,6 +334,7 @@ impl EngineRuntime {
             .unwrap_or_default();
         self.runtime_world.replace_entities(entities);
         self.apply_scene_environment(data);
+        self.reload_ui_documents();
     }
 
     fn apply_scene_environment(&mut self, data: &Value) {
@@ -343,6 +412,82 @@ impl EngineRuntime {
             .get("ui_canvases")
             .cloned()
             .unwrap_or_else(|| json!([]));
+    }
+
+    /// Reloads the retained-mode `.ui2d.json` documents referenced by visible
+    /// `WidgetCanvas2D` components.
+    ///
+    /// Runtime documents are restricted to files inside the project, bounded
+    /// to four MiB, validated for unique widget ids and capped at 10k widgets.
+    /// A broken document is isolated and reported without preventing the game
+    /// from loading.
+    pub fn reload_ui_documents(&mut self) -> RuntimeUiDocumentLoadReport {
+        let references = self
+            .runtime_world
+            .units
+            .iter()
+            .filter_map(|entity| {
+                let component = entity.get_component("WidgetCanvas2D")?;
+                let asset_path = component.get_string("canvas", "");
+                (entity.enabled
+                    && entity.visible
+                    && component.enabled
+                    && component.get_bool("visible", true)
+                    && !asset_path.trim().is_empty())
+                .then_some((
+                    entity.id,
+                    asset_path,
+                    component.get_bool("input_enabled", true),
+                    component.get_string("scale_mode", "scale_with_screen"),
+                ))
+            })
+            .collect::<Vec<_>>();
+        let mut cache = BTreeMap::<String, UiCanvas2D>::new();
+        let mut documents = Vec::new();
+        let mut report = RuntimeUiDocumentLoadReport::default();
+        for (entity_id, asset_path, input_enabled, scale_mode) in references {
+            let loaded = if let Some(canvas) = cache.get(&asset_path) {
+                Ok(canvas.clone())
+            } else {
+                load_ui_canvas_asset(&self.project_path, &asset_path).inspect(|canvas| {
+                    cache.insert(asset_path.clone(), canvas.clone());
+                })
+            };
+            match loaded {
+                Ok(canvas) => {
+                    documents.push(RuntimeUiDocument2D {
+                        entity_id,
+                        asset_path,
+                        input_enabled,
+                        scale_mode,
+                        canvas,
+                    });
+                    report.loaded += 1;
+                }
+                Err(error) => {
+                    report.skipped += 1;
+                    if report.errors.len() < 64 {
+                        report
+                            .errors
+                            .push(format!("entity {entity_id}: {asset_path}: {error}"));
+                    }
+                }
+            }
+        }
+        self.ui_documents = documents;
+        for error in report.errors.iter().take(6) {
+            self.console.warning(error.clone(), "UI");
+        }
+        if report.loaded > 0 {
+            self.console.log(
+                format!(
+                    "{} UI document(s) retained loaded; {} skipped",
+                    report.loaded, report.skipped
+                ),
+                "UI",
+            );
+        }
+        report
     }
 
     pub fn run_headless_once(&mut self, dt: f64) {
@@ -712,6 +857,7 @@ impl EngineRuntime {
             .load_scene(name, &self.runtime_world.units)?;
         self.runtime_world.replace_entities(entities);
         self.apply_scene_environment(&data);
+        self.reload_ui_documents();
         Ok(self.runtime_world.units.len())
     }
 
@@ -775,5 +921,144 @@ impl EngineRuntime {
             updated += 1;
         }
         updated
+    }
+}
+
+fn load_ui_canvas_asset(project_path: &Path, asset_path: &str) -> Result<UiCanvas2D, String> {
+    let relative = Path::new(asset_path.trim());
+    if relative.as_os_str().is_empty()
+        || asset_path.contains('\\')
+        || relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                PathComponent::ParentDir | PathComponent::RootDir | PathComponent::Prefix(_)
+            )
+        })
+    {
+        return Err("path must be a project-relative asset without traversal".to_string());
+    }
+    let project_root = project_path
+        .canonicalize()
+        .map_err(|error| format!("project root unavailable: {error}"))?;
+    let candidate = project_path.join(relative);
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|error| format!("asset unavailable: {error}"))?;
+    if !canonical.starts_with(&project_root) {
+        return Err("asset resolves outside the project".to_string());
+    }
+    let metadata = fs::metadata(&canonical).map_err(|error| format!("metadata failed: {error}"))?;
+    if !metadata.is_file() {
+        return Err("asset is not a file".to_string());
+    }
+    if metadata.len() > MAX_UI_DOCUMENT_BYTES {
+        return Err(format!(
+            "document exceeds {} byte limit",
+            MAX_UI_DOCUMENT_BYTES
+        ));
+    }
+    let bytes = fs::read(&canonical).map_err(|error| format!("read failed: {error}"))?;
+    if bytes.len() as u64 > MAX_UI_DOCUMENT_BYTES {
+        return Err(format!(
+            "document exceeds {} byte limit",
+            MAX_UI_DOCUMENT_BYTES
+        ));
+    }
+    let canvas: UiCanvas2D =
+        serde_json::from_slice(&bytes).map_err(|error| format!("invalid JSON: {error}"))?;
+    if !canvas.viewport_width.is_finite()
+        || !canvas.viewport_height.is_finite()
+        || canvas.viewport_width <= 0.0
+        || canvas.viewport_height <= 0.0
+    {
+        return Err("canvas viewport must be finite and positive".to_string());
+    }
+    if !canvas.validate_widget_ids() {
+        return Err("canvas contains duplicate widget ids".to_string());
+    }
+    let widget_count = canvas.flatten_widgets().len();
+    if widget_count > MAX_UI_DOCUMENT_WIDGETS {
+        return Err(format!(
+            "canvas contains {widget_count} widgets; limit is {MAX_UI_DOCUMENT_WIDGETS}"
+        ));
+    }
+    Ok(canvas)
+}
+
+#[cfg(test)]
+mod ui_document_tests {
+    use super::*;
+
+    fn temporary_project(name: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("miniforge-{name}-{unique}"));
+        fs::create_dir_all(root.join("assets/ui")).expect("UI directory");
+        root
+    }
+
+    #[test]
+    fn ui_asset_loader_accepts_project_assets_and_rejects_traversal() {
+        let root = temporary_project("ui-loader");
+        fs::write(
+            root.join("assets/ui/hud.ui2d.json"),
+            br#"{
+                "name":"HUD",
+                "viewport_width":320.0,
+                "viewport_height":180.0,
+                "widgets":[],
+                "theme":{"name":"Test","styles":{}},
+                "animations":[]
+            }"#,
+        )
+        .expect("write UI document");
+
+        let canvas =
+            load_ui_canvas_asset(&root, "assets/ui/hud.ui2d.json").expect("project UI document");
+        assert_eq!(canvas.name, "HUD");
+        let document = RuntimeUiDocument2D {
+            entity_id: 7,
+            asset_path: "assets/ui/hud.ui2d.json".to_string(),
+            input_enabled: true,
+            scale_mode: "scale_with_screen".to_string(),
+            canvas,
+        };
+        assert_eq!(document.layout_viewport((640.0, 360.0)), (320.0, 180.0));
+        assert_eq!(document.layout_scale((640.0, 360.0)), (2.0, 2.0));
+        assert_eq!(
+            document.screen_to_layout((640.0, 360.0), (200.0, 100.0)),
+            (100.0, 50.0)
+        );
+        let error = load_ui_canvas_asset(&root, "../outside.ui2d.json").unwrap_err();
+        assert!(error.contains("without traversal"));
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn ui_asset_loader_rejects_duplicate_widget_ids() {
+        let root = temporary_project("ui-duplicates");
+        fs::write(
+            root.join("assets/ui/hud.ui2d.json"),
+            br#"{
+                "name":"HUD",
+                "viewport_width":320.0,
+                "viewport_height":180.0,
+                "widgets":[
+                    {"id":"same","widget_type":"Panel","rect":{"x":0.0,"y":0.0,"width":10.0,"height":10.0},"anchors":{"min_x":0.0,"min_y":0.0,"max_x":0.0,"max_y":0.0}},
+                    {"id":"same","widget_type":"Panel","rect":{"x":20.0,"y":0.0,"width":10.0,"height":10.0},"anchors":{"min_x":0.0,"min_y":0.0,"max_x":0.0,"max_y":0.0}}
+                ],
+                "theme":{"name":"Test","styles":{}},
+                "animations":[]
+            }"#,
+        )
+        .expect("write UI document");
+
+        let error =
+            load_ui_canvas_asset(&root, "assets/ui/hud.ui2d.json").expect_err("duplicates fail");
+        assert!(error.contains("duplicate widget ids"));
+        fs::remove_dir_all(root).ok();
     }
 }

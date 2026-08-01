@@ -100,6 +100,12 @@ impl PackagingManager {
         find_runtime_binary()
     }
 
+    /// Resolves the native wgpu project preview without coupling the editor to
+    /// a Cargo invocation.
+    pub fn wgpu_preview_binary() -> Option<PathBuf> {
+        find_wgpu_preview_binary()
+    }
+
     pub fn package_project(
         project_path: &Path,
         destination: &Path,
@@ -343,6 +349,40 @@ fn find_runtime_binary() -> Option<PathBuf> {
     runtime_binary_candidates()
         .into_iter()
         .find(|candidate| candidate.is_file())
+}
+
+fn wgpu_preview_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "miniforge_wgpu_preview.exe"
+    } else {
+        "miniforge_wgpu_preview"
+    }
+}
+
+fn find_wgpu_preview_binary() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(path) = env::var("MINIFORGE_WGPU_PREVIEW") {
+        candidates.push(PathBuf::from(path));
+    }
+    if let Ok(current) = env::current_exe() {
+        candidates.push(current.with_file_name(wgpu_preview_binary_name()));
+        if let Some(debug_or_release) = current.parent().and_then(Path::parent) {
+            candidates.push(debug_or_release.join(wgpu_preview_binary_name()));
+        }
+    }
+    if let Ok(cwd) = env::current_dir() {
+        candidates.push(
+            cwd.join("target")
+                .join("debug")
+                .join(wgpu_preview_binary_name()),
+        );
+        candidates.push(
+            cwd.join("target")
+                .join("release")
+                .join(wgpu_preview_binary_name()),
+        );
+    }
+    candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
 fn runtime_binary_candidates() -> Vec<PathBuf> {

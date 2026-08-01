@@ -21,6 +21,16 @@ ApplicationWindow {
             editorController.executeCommand(commandId)
     }
 
+    function openAuthoringHub(kind) {
+        workspaceTabs.currentIndex = 1
+        if (kind && kind.length > 0)
+            authoringHub.selectKind(kind)
+    }
+
+    function openSdkPacks() {
+        workspaceTabs.currentIndex = 2
+    }
+
     readonly property string projectSummaryText: typeof editorBridge !== "undefined" && editorBridge.projectSummary.length > 0
         ? editorBridge.projectSummary
         : "MiniForge 0.9.3.4 | No project"
@@ -59,11 +69,26 @@ ApplicationWindow {
         }
 
         Menu {
+            title: "Systems"
+            Action { text: "Mega Authoring Hub"; onTriggered: root.openAuthoringHub("all") }
+            MenuSeparator {}
+            Action { text: "Players and Actors"; onTriggered: root.openAuthoringHub("actor") }
+            Action { text: "Gameplay Systems"; onTriggered: root.openAuthoringHub("gameplay") }
+            Action { text: "Physics Profiles"; onTriggered: root.openAuthoringHub("physics") }
+            Action { text: "World Building"; onTriggered: root.openAuthoringHub("world") }
+            Action { text: "Effects and Audio"; onTriggered: root.openAuthoringHub("effects") }
+            Action { text: "User Interface"; onTriggered: root.openAuthoringHub("user_interface") }
+            Action { text: "Strategy and RTS"; onTriggered: root.openAuthoringHub("strategy") }
+        }
+
+        Menu {
             title: "Project"
             Action { text: "Run Audit"; onTriggered: root.runCommand("project.audit") }
             Action { text: "Refresh Assets"; onTriggered: root.runCommand("assets.refresh") }
             Action { text: "Validate Luau Scripts"; onTriggered: root.runCommand("luau.validate_scripts") }
             Action { text: "Write 2D Render Profile"; onTriggered: root.runCommand("render.write_2d_profile") }
+            MenuSeparator {}
+            Action { text: "SDK & Content Packs"; onTriggered: root.openSdkPacks() }
         }
     }
 
@@ -91,7 +116,8 @@ ApplicationWindow {
                 spacing: 10
 
                 Column {
-                    width: Math.max(280, parent.width - saveButton.width - undoButton.width - redoButton.width - auditButton.width - 46)
+                    width: Math.max(240, parent.width - saveButton.width - undoButton.width
+                        - redoButton.width - systemsButton.width - auditButton.width - 56)
                     height: parent.height
                     spacing: 2
 
@@ -142,6 +168,14 @@ ApplicationWindow {
                 }
 
                 MfButton {
+                    id: systemsButton
+                    width: 92
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Systems"
+                    onClicked: root.openAuthoringHub("all")
+                }
+
+                MfButton {
                     id: auditButton
                     width: 104
                     anchors.verticalCenter: parent.verticalCenter
@@ -166,10 +200,10 @@ ApplicationWindow {
                 }
 
                 Repeater {
-                    model: ["Scene", "Sprite", "Luau", "Objects", "Debug"]
+                    model: ["Scene", "Systems", "SDK Packs", "Sprite", "Luau", "Objects", "Debug"]
                     TabButton {
                         text: modelData
-                        width: Math.max(120, workspaceTabs.width / 5)
+                        width: Math.max(100, workspaceTabs.width / 7)
                     }
                 }
             }
@@ -262,6 +296,10 @@ ApplicationWindow {
                         }
                     }
 
+                    Panels.AuthoringHubPanel {
+                        id: authoringHub
+                    }
+                    Panels.SdkPacksPanel {}
                     Panels.SpriteStudioPanel {}
                     Panels.LuauStudioPanel {}
                     Panels.ObjectStudioPanel {}

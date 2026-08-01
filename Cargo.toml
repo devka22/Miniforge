@@ -10,6 +10,7 @@ autobins = false
 [features]
 default = ["editor_core"]
 runtime = []
+wgpu_runtime = ["runtime", "dep:winit"]
 editor_ffi = ["editor_core"]
 editor_core = [
     "runtime",
@@ -40,6 +41,11 @@ name = "miniforge_dev"
 path = "src/bin/miniforge_dev.rs"
 required-features = ["editor_core"]
 
+[[bin]]
+name = "miniforge_wgpu_preview"
+path = "src/bin/miniforge_wgpu_preview.rs"
+required-features = ["wgpu_runtime"]
+
 [dependencies]
 guillotiere = "0.7"
 image = "0.25.10"
@@ -55,6 +61,7 @@ mlua = { version = "0.12.0", features = ["luau", "vendored"] }
 libloading = "0.9.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.11"
 strsim = "0.11.1"
 sysinfo = "0.39"
 walkdir = "2.5.0"
@@ -68,6 +75,11 @@ nucleo-matcher = { version = "0.3.1", optional = true }
 crossbeam-channel = "0.5.15"
 resvg = "0.47.0"
 usvg = "0.47.0"
+bytemuck = { version = "1.24", features = ["derive"] }
+pollster = "1.0"
+glyphon = "0.12.0"
+wgpu = "30.0.0"
+winit = { version = "0.30.13", optional = true }
 
 [package.metadata.miniforge]
 engine-version = "0.9.3.4"

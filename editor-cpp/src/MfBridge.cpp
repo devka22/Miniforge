@@ -644,8 +644,14 @@ bool MfBridge::performSelectedEntityAction(const QString& action, const QString&
     emit selectionChanged(selectedEntityId());
     emit sceneStateChanged();
     emit dataChanged();
+    const QString changedKind = action == QStringLiteral("add_component_bundle")
+        ? QStringLiteral("component(s)")
+        : QStringLiteral("object(s)");
     emit operationCompleted(
-        QStringLiteral("Selection action complete · %1 · %2 object(s)").arg(action).arg(changed),
+        QStringLiteral("Selection action complete · %1 · %2 %3")
+            .arg(action)
+            .arg(changed)
+            .arg(changedKind),
         true);
     return true;
 }
@@ -818,6 +824,164 @@ QString MfBridge::componentCatalogJson()
     if (!ensureOk(status, error, QStringLiteral("Failed to read component catalog"))) {
         return {};
     }
+    return QString::fromUtf8(buffer.constData());
+}
+
+QString MfBridge::authoringCatalogJson()
+{
+    MfError error {};
+    size_t required = 0;
+    const MfStatus probeStatus = mf_editor_authoring_catalog_json(
+        m_handle, nullptr, 0, &required, &error);
+    if (probeStatus != MF_STATUS_BUFFER_TOO_SMALL || required == 0) {
+        setError(error, QStringLiteral("Failed to query authoring catalog"));
+        return {};
+    }
+    QByteArray buffer(static_cast<qsizetype>(required), '\0');
+    const MfStatus status = mf_editor_authoring_catalog_json(
+        m_handle,
+        buffer.data(),
+        static_cast<size_t>(buffer.size()),
+        &required,
+        &error);
+    if (!ensureOk(status, error, QStringLiteral("Failed to read authoring catalog"))) {
+        return {};
+    }
+    return QString::fromUtf8(buffer.constData());
+}
+
+QString MfBridge::authoringPlanJson(const QString& presetId, const QString& parametersJson)
+{
+    const QByteArray presetBytes = utf8(presetId);
+    const QByteArray parameterBytes = utf8(parametersJson);
+    MfError error {};
+    size_t required = 0;
+    const MfStatus probeStatus = mf_editor_authoring_plan_json(
+        m_handle,
+        presetBytes.constData(),
+        parameterBytes.constData(),
+        nullptr,
+        0,
+        &required,
+        &error);
+    if (probeStatus != MF_STATUS_BUFFER_TOO_SMALL || required == 0) {
+        setError(error, QStringLiteral("Failed to build authoring application plan"));
+        return {};
+    }
+    QByteArray buffer(static_cast<qsizetype>(required), '\0');
+    const MfStatus status = mf_editor_authoring_plan_json(
+        m_handle,
+        presetBytes.constData(),
+        parameterBytes.constData(),
+        buffer.data(),
+        static_cast<size_t>(buffer.size()),
+        &required,
+        &error);
+    if (!ensureOk(status, error, QStringLiteral("Failed to read authoring application plan"))) {
+        return {};
+    }
+    return QString::fromUtf8(buffer.constData());
+}
+
+QString MfBridge::sdkPackCatalogJson()
+{
+    MfError error {};
+    size_t required = 0;
+    const MfStatus probeStatus = mf_editor_sdk_pack_catalog_json(
+        m_handle, nullptr, 0, &required, &error);
+    if (probeStatus != MF_STATUS_BUFFER_TOO_SMALL || required == 0) {
+        setError(error, QStringLiteral("Failed to query SDK pack catalog"));
+        return {};
+    }
+    QByteArray buffer(static_cast<qsizetype>(required), '\0');
+    const MfStatus status = mf_editor_sdk_pack_catalog_json(
+        m_handle,
+        buffer.data(),
+        static_cast<size_t>(buffer.size()),
+        &required,
+        &error);
+    if (!ensureOk(status, error, QStringLiteral("Failed to read SDK pack catalog"))) {
+        return {};
+    }
+    return QString::fromUtf8(buffer.constData());
+}
+
+QString MfBridge::sdkPackPlanJson(const QString& profileId, const QString& registryJson)
+{
+    const QByteArray profileBytes = utf8(profileId);
+    const QByteArray registryBytes = utf8(registryJson);
+    MfError error {};
+    size_t required = 0;
+    const MfStatus probeStatus = mf_editor_sdk_pack_plan_json(
+        m_handle,
+        profileBytes.constData(),
+        registryBytes.constData(),
+        nullptr,
+        0,
+        &required,
+        &error);
+    if (probeStatus != MF_STATUS_BUFFER_TOO_SMALL || required == 0) {
+        setError(error, QStringLiteral("Failed to build SDK pack installation plan"));
+        return {};
+    }
+    QByteArray buffer(static_cast<qsizetype>(required), '\0');
+    const MfStatus status = mf_editor_sdk_pack_plan_json(
+        m_handle,
+        profileBytes.constData(),
+        registryBytes.constData(),
+        buffer.data(),
+        static_cast<size_t>(buffer.size()),
+        &required,
+        &error);
+    if (!ensureOk(status, error, QStringLiteral("Failed to read SDK pack installation plan"))) {
+        return {};
+    }
+    return QString::fromUtf8(buffer.constData());
+}
+
+QString MfBridge::installSdkPackArchiveJson(
+    const QString& packId,
+    const QString& artifactJson,
+    const QString& archivePath,
+    const QString& installRoot)
+{
+    const QByteArray packBytes = utf8(packId);
+    const QByteArray artifactBytes = utf8(artifactJson);
+    const QByteArray archiveBytes = utf8(archivePath);
+    const QByteArray rootBytes = utf8(installRoot);
+    MfError error {};
+    size_t required = 0;
+    const MfStatus probeStatus = mf_editor_sdk_pack_install_archive_json(
+        m_handle,
+        packBytes.constData(),
+        artifactBytes.constData(),
+        archiveBytes.constData(),
+        rootBytes.constData(),
+        nullptr,
+        0,
+        &required,
+        &error);
+    if (probeStatus != MF_STATUS_BUFFER_TOO_SMALL || required == 0) {
+        setError(error, QStringLiteral("Failed to verify SDK pack archive"));
+        return {};
+    }
+    QByteArray buffer(static_cast<qsizetype>(required), '\0');
+    const MfStatus status = mf_editor_sdk_pack_install_archive_json(
+        m_handle,
+        packBytes.constData(),
+        artifactBytes.constData(),
+        archiveBytes.constData(),
+        rootBytes.constData(),
+        buffer.data(),
+        static_cast<size_t>(buffer.size()),
+        &required,
+        &error);
+    if (!ensureOk(status, error, QStringLiteral("Failed to install SDK pack archive"))) {
+        emit operationCompleted(QStringLiteral("SDK pack installation failed · %1").arg(m_lastError), false);
+        return {};
+    }
+    emit dataChanged();
+    emit operationCompleted(QStringLiteral("SDK pack verified and installed"), true);
     return QString::fromUtf8(buffer.constData());
 }
 

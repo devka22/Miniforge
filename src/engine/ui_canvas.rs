@@ -612,7 +612,13 @@ impl UICanvas {
         let (px, py) = point;
         let mut hits = Vec::new();
         for entity in entities {
+            if !entity.enabled || !entity.visible {
+                continue;
+            }
             if let Some(ui) = entity.get_component("UIElement") {
+                if !ui.enabled || !ui.get_bool("visible", true) {
+                    continue;
+                }
                 let x = ui.get_f64("x", 0.0);
                 let y = ui.get_f64("y", 0.0);
                 let width = ui.get_f64("width", 0.0);
