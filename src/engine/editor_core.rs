@@ -56,7 +56,8 @@ use crate::engine::sprite_editor::{SpriteColor, SpriteEditorCanvas};
 use crate::engine::system_audit::{SystemReadinessLevel, SystemReadinessReport};
 use crate::engine::visual_graph_serializer::VisualGraphSerializer;
 use crate::entities::game_object::GameObject;
-use crate::render::backend::RenderBackendConfig;
+use crate::render::backend::{RenderBackendConfig, namespaced_render_target_texture_id};
+use crate::render::runtime_scene_2d::render_target_binding_key;
 use crate::systems::rts_system::RTSSystem;
 
 pub const EDITOR_CORE_API_VERSION: u32 = 1;
@@ -2553,6 +2554,7 @@ impl EditorCore {
                 let force_field = entity.get_component("ForceField2D");
                 let joint = entity.get_component("Joint2D");
                 let gpu_particles = entity.get_component("GpuParticles2D");
+                let render_texture = entity.get_component("RenderTexture2D");
                 let joint_target = joint.and_then(|joint| {
                     let target_id = joint.get("target_id").and_then(Value::as_u64);
                     let target_name = joint.get_string("target_name", "");
@@ -2622,6 +2624,14 @@ impl EditorCore {
                     "gpu_particle_playing": gpu_particles
                         .map(|component| component.get_bool("playing", true))
                         .unwrap_or(false),
+                    "render_target_width": render_texture
+                        .map(|component| component.get_usize("width", 512))
+                        .unwrap_or(0),
+                    "render_target_height": render_texture
+                        .map(|component| component.get_usize("height", 512))
+                        .unwrap_or(0),
+                    "render_target_update_mode": render_texture
+                        .map(|component| component.get_string("update_mode", "always")),
                     "collision_points": EditorSpatialTools2D::collision_points(entity),
                 })
             })
@@ -3700,6 +3710,46 @@ impl EditorCore {
                 CommandOutcome {
                     changed: true,
                     message: format!("Created CameraRig #{id}"),
+                }
+            }
+            "object.create_camera_texture2d" => {
+                let (x, y) = editor_spawn_position(game);
+                let id = game.spawn_scene_node(
+                    "CameraTexture2D",
+                    &["Camera2D", "RenderTexture2D"],
+                    x,
+                    y,
+                );
+                let target_name = format!("CameraTexture_{id}");
+                let texture_id = namespaced_render_target_texture_id(id);
+                let binding_key = render_target_binding_key(&target_name);
+                if let Some(entity) = game.get_entity_by_id_mut(id) {
+                    entity.width = 4.0;
+                    entity.height = 3.0;
+                    entity.sprite_name = Some(target_name.clone());
+                    entity.remove_component("Collider2D");
+                    if let Some(camera) = entity.get_component_mut("Camera2D") {
+                        camera.set("render_target", json!(target_name.clone()));
+                        camera.set("active", json!(false));
+                    }
+                    if let Some(target) = entity.get_component_mut("RenderTexture2D") {
+                        target.set("name", json!(target_name));
+                        target.set("texture_id", json!(texture_id));
+                    }
+                    if let Some(sprite) = entity.get_component_mut("SpriteRenderer") {
+                        // `texture_path` is serialized with the scene. Keys prefixed
+                        // with `_` are runtime cache data and intentionally omitted.
+                        sprite.set("texture_path", json!(binding_key));
+                        sprite.set("sorting_order", json!(10));
+                    }
+                    entity.sync_to_components();
+                }
+                game.sync_world();
+                CommandOutcome {
+                    changed: true,
+                    message: format!(
+                        "Created CameraTexture2D #{id} with a sampleable 512x512 WGPU target"
+                    ),
                 }
             }
             "object.create_point_light2d" => {
@@ -5568,6 +5618,12 @@ fn default_command_descriptors() -> Vec<CommandDescriptor> {
             None,
         ),
         command("object.create_camera", "Create Camera Rig", "Objects", None),
+        command(
+            "object.create_camera_texture2d",
+            "Create Camera to Texture 2D",
+            "Rendering",
+            None,
+        ),
         command(
             "object.create_point_light2d",
             "Create Point Light 2D",
@@ -8199,6 +8255,10 @@ mod tests {
 
         let cases: &[(&str, &[&str])] = &[
             ("object.create_point_light2d", &["Light2D"]),
+            (
+                "object.create_camera_texture2d",
+                &["Camera2D", "RenderTexture2D"],
+            ),
             ("object.create_spot_light2d", &["Light2D"]),
             (
                 "object.create_shadow_occluder2d",
@@ -8253,6 +8313,47 @@ mod tests {
                     let light = entity.get_component("Light2D").unwrap();
                     assert_eq!(light.get_string("light_type", ""), "spot");
                     assert_eq!(light.get_f64("angle", 0.0), 60.0);
+                }
+                "object.create_camera_texture2d" => {
+                    let camera = entity.get_component("Camera2D").unwrap();
+                    let target = entity.get_component("RenderTexture2D").unwrap();
+                    assert_eq!(
+                        camera.get_string("render_target", ""),
+                        target.get_string("name", "")
+                    );
+                    assert_eq!(
+                        target.get("texture_id").and_then(Value::as_u64),
+                        Some(namespaced_render_target_texture_id(entity.id))
+                    );
+                    assert_eq!(target.get_usize("width", 0), 512);
+                    assert_eq!(target.get_usize("height", 0), 512);
+                    let expected_binding =
+                        render_target_binding_key(&target.get_string("name", ""));
+                    assert_eq!(
+                        entity
+                            .get_component("SpriteRenderer")
+                            .and_then(|sprite| sprite.get("texture_path"))
+                            .and_then(Value::as_str),
+                        Some(expected_binding.as_str())
+                    );
+                    let mut serialized_entity = entity.clone();
+                    let serialized = GameObject::serialize(&mut serialized_entity);
+                    let serialized_sprite = serialized
+                        .get("components")
+                        .and_then(Value::as_array)
+                        .and_then(|components| {
+                            components.iter().find(|component| {
+                                component.get("component_type").and_then(Value::as_str)
+                                    == Some("SpriteRenderer")
+                            })
+                        });
+                    assert_eq!(
+                        serialized_sprite
+                            .and_then(|component| component.get("texture_path"))
+                            .and_then(Value::as_str),
+                        Some(expected_binding.as_str()),
+                        "camera texture bindings must survive scene save/reload"
+                    );
                 }
                 "object.create_one_way_platform2d" => {
                     assert!(

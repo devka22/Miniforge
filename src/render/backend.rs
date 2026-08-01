@@ -1,12 +1,21 @@
 use serde::{Deserialize, Serialize};
 
-use crate::engine::error_handler::MFResult;
+use crate::engine::error_handler::{MFResult, MiniForgeError};
 
 pub use super::wgpu_backend::WgpuBackend;
 
 pub const BUILTIN_RADIAL_LIGHT_TEXTURE_ID: u64 = u64::MAX - 1;
 pub const BUILTIN_RADIAL_LIGHT_TEXTURE_SIZE: u32 = 64;
 pub const BUILTIN_FLAT_NORMAL_TEXTURE_ID: u64 = u64::MAX - 2;
+pub const MAX_RENDER_TARGET_SIZE_2D: u32 = 16_384;
+/// High-bit namespace used by scene-authored render targets so their sampleable
+/// texture handles cannot collide with sequentially imported asset textures.
+pub const RENDER_TARGET_TEXTURE_ID_NAMESPACE: u64 = 1 << 62;
+
+pub fn namespaced_render_target_texture_id(entity_id: u64) -> u64 {
+    let local_id = (entity_id & (RENDER_TARGET_TEXTURE_ID_NAMESPACE - 1)).max(1);
+    RENDER_TARGET_TEXTURE_ID_NAMESPACE | local_id
+}
 
 pub fn radial_light_texture_rgba8(size: u32) -> Vec<u8> {
     let size = size.clamp(2, 512);
@@ -94,6 +103,33 @@ pub struct SpriteRegionDrawCommand {
     pub uv_rect: [f32; 4],
     /// Optional pixel-space clip rectangle: `[x, y, width, height]`.
     pub clip_rect: Option<[u32; 4]>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RenderTargetDescriptor2D {
+    pub texture_id: u64,
+    pub width: u32,
+    pub height: u32,
+    #[serde(default = "default_render_target_clear_color")]
+    pub clear_color: [f64; 4],
+    #[serde(default)]
+    pub label: String,
+}
+
+impl Default for RenderTargetDescriptor2D {
+    fn default() -> Self {
+        Self {
+            texture_id: 1,
+            width: 512,
+            height: 512,
+            clear_color: default_render_target_clear_color(),
+            label: "Render Target 2D".to_string(),
+        }
+    }
+}
+
+fn default_render_target_clear_color() -> [f64; 4] {
+    [0.0, 0.0, 0.0, 0.0]
 }
 
 /// Stable, backend-independent blend modes for sprites, UI geometry and particles.
@@ -414,6 +450,27 @@ pub trait RenderBackend {
     fn set_camera_3d(&mut self, cmd: CameraCommand3D) -> MFResult<()>;
     fn draw_mesh_3d(&mut self, cmd: MeshDrawCommand3D) -> MFResult<()>;
     fn draw_light_3d(&mut self, cmd: LightDrawCommand3D) -> MFResult<()>;
+    fn create_render_target_2d(&mut self, _descriptor: RenderTargetDescriptor2D) -> MFResult<()> {
+        Err(MiniForgeError::RenderError(format!(
+            "{} does not support render targets",
+            self.name()
+        )))
+    }
+    fn remove_render_target_2d(&mut self, _texture_id: u64) -> MFResult<bool> {
+        Ok(false)
+    }
+    fn begin_render_target_2d(&mut self, _texture_id: u64) -> MFResult<()> {
+        Err(MiniForgeError::RenderError(format!(
+            "{} does not support render targets",
+            self.name()
+        )))
+    }
+    fn end_render_target_2d(&mut self) -> MFResult<()> {
+        Err(MiniForgeError::RenderError(format!(
+            "{} does not support render targets",
+            self.name()
+        )))
+    }
 }
 
 #[derive(Debug, Clone, Default)]

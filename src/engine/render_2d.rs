@@ -3,9 +3,11 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::engine::component::Component;
 use crate::render::backend::{
-    GraphicsApi, ParticleDrawCommand, RenderBackendConfig, RenderBackendSelection,
-    RenderDeviceCaps, SpriteDrawCommand, TilemapDrawCommand,
+    GraphicsApi, MAX_RENDER_TARGET_SIZE_2D, ParticleDrawCommand, RenderBackendConfig,
+    RenderBackendSelection, RenderDeviceCaps, RenderTargetDescriptor2D, SpriteDrawCommand,
+    TilemapDrawCommand,
 };
 
 mod texture_atlas;
@@ -158,6 +160,131 @@ pub struct RenderTexture2D {
     pub width: u32,
     pub height: u32,
     pub format: String,
+    #[serde(default = "default_render_texture_clear_color")]
+    pub clear_color: [f64; 4],
+    #[serde(default = "default_render_texture_update_mode")]
+    pub update_mode: String,
+    #[serde(default = "default_render_texture_usage")]
+    pub usage: String,
+}
+
+impl Default for RenderTexture2D {
+    fn default() -> Self {
+        Self {
+            name: "CameraTexture2D".to_string(),
+            width: 512,
+            height: 512,
+            format: "rgba8_srgb".to_string(),
+            clear_color: default_render_texture_clear_color(),
+            update_mode: default_render_texture_update_mode(),
+            usage: default_render_texture_usage(),
+        }
+    }
+}
+
+impl RenderTexture2D {
+    pub fn from_component(component: &Component) -> Result<Self, String> {
+        if component.component_type != "RenderTexture2D" {
+            return Err(format!(
+                "expected RenderTexture2D component, got {}",
+                component.component_type
+            ));
+        }
+        let width = u32::try_from(component.get_usize("width", 512))
+            .map_err(|_| "RenderTexture2D width exceeds u32".to_string())?;
+        let height = u32::try_from(component.get_usize("height", 512))
+            .map_err(|_| "RenderTexture2D height exceeds u32".to_string())?;
+        let mut clear_color = [0.0; 4];
+        if let Some(channels) = component
+            .get("clear_color")
+            .and_then(serde_json::Value::as_array)
+        {
+            for (index, output) in clear_color.iter_mut().enumerate() {
+                let channel = channels
+                    .get(index)
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0);
+                *output = if channel > 1.0 {
+                    channel / 255.0
+                } else {
+                    channel
+                };
+            }
+        }
+        Ok(Self {
+            name: component.get_string("name", "CameraTexture2D"),
+            width,
+            height,
+            format: component.get_string("format", "rgba8_srgb"),
+            clear_color,
+            update_mode: component.get_string("update_mode", "always"),
+            usage: component.get_string("usage", "camera"),
+        })
+    }
+
+    pub fn backend_descriptor_from_component(
+        component: &Component,
+    ) -> Result<RenderTargetDescriptor2D, String> {
+        let texture_id = component
+            .get("texture_id")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| "RenderTexture2D.texture_id must be assigned".to_string())?;
+        Self::from_component(component)?.to_backend_descriptor(texture_id)
+    }
+
+    pub fn to_backend_descriptor(
+        &self,
+        texture_id: u64,
+    ) -> Result<RenderTargetDescriptor2D, String> {
+        if texture_id == 0 {
+            return Err("render target texture id must be non-zero".to_string());
+        }
+        if self.width == 0
+            || self.height == 0
+            || self.width > MAX_RENDER_TARGET_SIZE_2D
+            || self.height > MAX_RENDER_TARGET_SIZE_2D
+        {
+            return Err(format!(
+                "render target dimensions must be between 1 and {MAX_RENDER_TARGET_SIZE_2D}; got {}x{}",
+                self.width, self.height
+            ));
+        }
+        if !matches!(
+            self.format.trim().to_ascii_lowercase().as_str(),
+            "rgba8" | "rgba8_srgb" | "rgba8unorm_srgb"
+        ) {
+            return Err(format!(
+                "unsupported RenderTexture2D format '{}'; use rgba8_srgb",
+                self.format
+            ));
+        }
+        if self.clear_color.iter().any(|channel| !channel.is_finite()) {
+            return Err("render target clear color must be finite".to_string());
+        }
+        Ok(RenderTargetDescriptor2D {
+            texture_id,
+            width: self.width,
+            height: self.height,
+            clear_color: self.clear_color.map(|channel| channel.clamp(0.0, 1.0)),
+            label: if self.name.trim().is_empty() {
+                "Render Target 2D".to_string()
+            } else {
+                self.name.clone()
+            },
+        })
+    }
+}
+
+fn default_render_texture_clear_color() -> [f64; 4] {
+    [0.0, 0.0, 0.0, 0.0]
+}
+
+fn default_render_texture_update_mode() -> String {
+    "always".to_string()
+}
+
+fn default_render_texture_usage() -> String {
+    "camera".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1049,6 +1176,7 @@ fn caps_for_selection(api: GraphicsApi) -> RenderDeviceCaps {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::component::default_component;
 
     #[test]
     fn render_2d_profiles_distinguish_opengl_fallback_and_metal_scale() {
@@ -1093,5 +1221,38 @@ mod tests {
             assert!(metal.supports_persistent_buffers);
         }
         assert!(metal.max_visible_sprites >= 100_000);
+    }
+
+    #[test]
+    fn render_texture_asset_builds_a_bounded_backend_descriptor() {
+        let mut texture = RenderTexture2D {
+            name: "Security Camera".to_string(),
+            width: 320,
+            height: 180,
+            clear_color: [-1.0, 0.25, 2.0, 1.0],
+            ..RenderTexture2D::default()
+        };
+        let descriptor = texture.to_backend_descriptor(42).unwrap();
+        assert_eq!(descriptor.texture_id, 42);
+        assert_eq!([descriptor.width, descriptor.height], [320, 180]);
+        assert_eq!(descriptor.clear_color, [0.0, 0.25, 1.0, 1.0]);
+        assert_eq!(descriptor.label, "Security Camera");
+
+        texture.width = 0;
+        assert!(texture.to_backend_descriptor(42).is_err());
+        texture.width = 320;
+        texture.format = "depth32".to_string();
+        assert!(texture.to_backend_descriptor(42).is_err());
+
+        let mut component = default_component("RenderTexture2D").unwrap();
+        component.set("texture_id", json!(99));
+        component.set("width", json!(640));
+        component.set("height", json!(360));
+        component.set("clear_color", json!([12, 24, 36, 255]));
+        let from_component =
+            RenderTexture2D::backend_descriptor_from_component(&component).unwrap();
+        assert_eq!(from_component.texture_id, 99);
+        assert_eq!([from_component.width, from_component.height], [640, 360]);
+        assert_eq!(from_component.clear_color[3], 1.0);
     }
 }

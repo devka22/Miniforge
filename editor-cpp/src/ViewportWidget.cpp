@@ -1037,6 +1037,27 @@ void ViewportWidget::paintSceneOverlays(QPainter& painter)
             }
         }
 
+        if (entityHasComponent(entity, QStringLiteral("RenderTexture2D"))) {
+            const QRectF monitor(center + QPointF(-12, -9), QSizeF(24, 18));
+            painter.setPen(QPen(QColor(81, 220, 208, selected ? 245 : 165),
+                selected ? 2.0 : 1.25));
+            painter.setBrush(QColor(22, 72, 78, selected ? 88 : 46));
+            painter.drawRoundedRect(monitor, 3, 3);
+            painter.drawLine(center + QPointF(-5, 12), center + QPointF(5, 12));
+            painter.drawLine(center + QPointF(0, 9), center + QPointF(0, 12));
+            painter.setPen(QColor(184, 255, 246, selected ? 250 : 190));
+            painter.drawText(monitor, Qt::AlignCenter, QStringLiteral("RT"));
+            if (selected) {
+                const int targetWidth = entity.value(QStringLiteral("render_target_width")).toInt(512);
+                const int targetHeight = entity.value(QStringLiteral("render_target_height")).toInt(512);
+                const QString updateMode = entity.value(QStringLiteral("render_target_update_mode"))
+                                               .toString(QStringLiteral("always"));
+                painter.drawText(QRectF(center + QPointF(16, -10), QSizeF(210, 22)),
+                    Qt::AlignLeft | Qt::AlignVCenter,
+                    QStringLiteral("%1x%2 · %3").arg(targetWidth).arg(targetHeight).arg(updateMode));
+            }
+        }
+
         if (entityHasComponent(entity, QStringLiteral("NavAgent"))) {
             painter.setPen(QPen(QColor(87, 219, 159, selected ? 230 : 125), 1.5, Qt::DotLine));
             painter.setBrush(Qt::NoBrush);

@@ -440,6 +440,7 @@ void MainWindow::createMenus()
         addMenuCommand(core2d, QStringLiteral("Node2D"), QStringLiteral("object.create_node2d"));
         addMenuCommand(core2d, QStringLiteral("Sprite Actor"), QStringLiteral("object.create_sprite_actor"));
         addMenuCommand(core2d, QStringLiteral("Camera Rig"), QStringLiteral("object.create_camera"));
+        addMenuCommand(core2d, QStringLiteral("Camera to Texture 2D"), QStringLiteral("object.create_camera_texture2d"));
         addMenuCommand(core2d, QStringLiteral("HUD Text"), QStringLiteral("object.create_ui_text"));
 
         auto* physics = menu->addMenu(QStringLiteral("Physics & Sensors"));
@@ -863,6 +864,7 @@ void MainWindow::createToolbar()
     addCreateAction(core2dMenu, QStringLiteral("Node2D"), QStringLiteral("object.create_node2d"));
     addCreateAction(core2dMenu, QStringLiteral("Sprite Actor"), QStringLiteral("object.create_sprite_actor"));
     addCreateAction(core2dMenu, QStringLiteral("Camera Rig"), QStringLiteral("object.create_camera"));
+    addCreateAction(core2dMenu, QStringLiteral("Camera to Texture 2D"), QStringLiteral("object.create_camera_texture2d"));
     addCreateAction(core2dMenu, QStringLiteral("HUD Text"), QStringLiteral("object.create_ui_text"));
 
     auto* physicsMenu = addMenu->addMenu(QStringLiteral("Physics & Sensors"));

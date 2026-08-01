@@ -69,6 +69,24 @@ changes participate in stable batching and diagnostics. The Create menu, Inspect
 viewport glyph and `lit_sprite` authoring preset provide the complete path without game code.
 `GpuParticles2D` also runs persistent storage-buffer simulation and instanced soft-particle
 rendering through WGPU compute, with a synchronized `ParticleEmitter` CPU fallback.
+`WgpuBackend` now owns sampleable RGBA8-sRGB render targets with independent dimensions, clear
+colors, target-specific pipelines and GPU readback. Off-screen sprite passes are encoded before the
+window pass and can immediately be sampled as a color or normal texture. Target descriptors survive
+physical device recovery, resource IDs occupy a scene-target namespace that cannot collide with
+sequential asset uploads, self-feedback is rejected, and `render_target_passes` is exposed in frame
+diagnostics.
+
+The complete no-code camera path is available from **Create > Core 2D > Camera to Texture 2D**. The
+command creates one ordinary scene entity with `Camera2D`, `RenderTexture2D` and a display
+`SpriteRenderer`; the persistent `render-target://CameraTexture_<entity>` binding makes the result
+save/reload/export safe. `miniforge_wgpu_preview` discovers those components, creates their GPU
+attachments and renders the world from the authored camera before composing the main scene. Update
+mode can be `always`, `once` or `manual`, lighting can be included independently, and device recovery
+invalidates `once` targets so they are rebuilt. The target pass currently includes grid, tile layers,
+sprites, atlas regions, normal maps and 2D lighting/shadows. Retained UI, text and compute particles
+inside the off-screen pass remain deliberately unsupported until their target-aware paths land; they
+fail explicitly instead of silently drawing to the wrong attachment.
+
 Outdated and lost window surfaces are reconfigured and retried once; an occluded or
 still-unavailable surface skips the frame without poisoning the next one. A Metal surface smoke
 with the default 70×30 grid reduced 2,100 logical
@@ -80,7 +98,8 @@ mid-run and verifies that presentation resumes with `device_loss_recoveries=1`.
 The shared 2D composer now turns visible tilemap cells, atlas-backed entities, CPU particles and
 interactive UI geometry into backend-independent sprite quads with camera transforms, ordering and
 screen culling. The main exported runtime still uses Macroquad while retained-canvas hierarchy
-clipping and normal-mapped sprites are available in the WGPU preview; render textures,
+clipping, normal-mapped sprites and camera-to-texture world passes are available in the WGPU
+preview; target-aware retained UI/text,
 higher-fidelity soft/cone shadows and custom hot-reloaded shader materials remain migration work.
 Projects should therefore leave `experimental_wgpu` disabled for exports that need the full
 production renderer. Project Settings keeps this migration state visible instead of hiding it in
@@ -101,9 +120,10 @@ The preview becomes playable only after these gates pass on macOS, Windows and L
    and CPU-particle quads are done. Additive point-light emission is done. Runtime inventory and
    ability grids now use clipped, virtualized rows with scriptless wheel scrolling, and ScrollBox
    text uses the same scissor path. Ambient/directional light and bounded geometric point-light
-   shadows are done. Tangent-space normal maps and persistent compute particles with CPU fallback
-   are done; broader retained-canvas virtualization, chunk batching, higher-fidelity soft/cone
-   shadows and render textures remain.
+   shadows are done. Tangent-space normal maps, persistent compute particles with CPU fallback and
+   sampleable camera render targets for the sprite-expanded world are done. Target-aware retained
+   UI/text/compute particles, broader retained-canvas virtualization, chunk batching and
+   higher-fidelity soft/cone shadows remain.
 4. WGSL materials, post-processing and hot reload with readable shader diagnostics. Four built-in
    per-sprite WGSL effects are done; custom material compilation, post-processing and hot reload
    remain.

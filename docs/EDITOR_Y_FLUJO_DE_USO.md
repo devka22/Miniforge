@@ -224,11 +224,18 @@ La capa Qt llama comandos por ID mediante `editorController.executeCommand(comma
 - `object.create_node2d`
 - `object.create_sprite_actor`
 - `object.create_camera`
+- `object.create_camera_texture2d`
 - `object.create_area2d`
 - `object.create_character_body2d`
 - `object.create_ui_text`
 
 `EditorCore` tambien expone datos paginados para entidades, assets, comandos, consola, readiness y snapshots de viewport.
+
+`object.create_camera_texture2d` crea una cámara WGPU, su `RenderTexture2D` sampleable y el sprite
+que muestra el resultado en una sola acción. El objeto se reconoce por el glifo `RT` del viewport;
+Inspector expone resolución y modo de actualización (`always`, `once`, `manual`). El enlace
+`render-target://...` se persiste dentro de la escena: no requiere un script del juego ni volver a
+conectar la textura después de guardar.
 
 La Command Palette fusiona comandos del backend y acciones propias del shell Qt. La búsqueda es
 fuzzy, se navega con teclado y respeta si un comando requiere proyecto o selección. Es la vía más

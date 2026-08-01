@@ -351,9 +351,11 @@ La configuración vive en `settings/runtime_config.json` bajo `stability_guard`.
 
 ### Render y plataformas
 
-Macroquad es el backend gráfico y de ventana actual del juego. El runtime incluye sprites,
-tilemaps, materiales, cámaras 2D, UI, luces/sombras 2D, partículas y culling/budgets configurables.
-WGPU/Metal y 3D existen como foundations experimentales, no como pipeline completo de producción.
+Macroquad sigue siendo el backend de exportación predeterminado. La migración WGPU ya dispone de
+surface Metal/Vulkan/DX12/WebGPU, sprites/atlas y batching persistente, cinco modos de mezcla, texto
+Unicode, UI 2D, materiales WGSL integrados, normal maps iluminados, partículas compute y cámaras a
+texturas sampleables creadas sin código desde el editor. Aún se conserva Macroquad como fallback
+hasta cerrar paridad de postproceso, shaders personalizados y todos los pases UI en render targets.
 
 ## Estructura de un proyecto
 
@@ -577,7 +579,8 @@ proyectos críticos sin una fase propia de estabilización.
 Límites conocidos:
 
 - APIs y schemas todavía pueden evolucionar antes de 1.0;
-- el render principal sigue siendo Macroquad; WGPU/3D no están completos;
+- la exportación predeterminada sigue usando Macroquad mientras WGPU termina postproceso, shaders
+  personalizados, golden images multiplataforma y UI/texto dentro de render targets;
 - el debugger Luau es callback-level;
 - la UI runtime conserva modelos legacy y canvas nuevos durante la migración;
 - distribución firmada/notarizada y matrices completas de CI multiplataforma siguen pendientes;

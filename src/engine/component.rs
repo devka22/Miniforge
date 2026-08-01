@@ -1289,6 +1289,21 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "pixels_per_unit": 16.0,
             "viewport_width": 1280.0,
             "viewport_height": 720.0,
+            "render_target": null,
+            "render_target_update_mode": null,
+            "render_target_include_ui": false,
+            "render_target_include_lighting": true,
+        }),
+        "RenderTexture2D" => json!({
+            "name": "CameraTexture2D",
+            "width": 512,
+            "height": 512,
+            "format": "rgba8_srgb",
+            "clear_color": [0, 0, 0, 0],
+            "update_mode": "always",
+            "usage": "camera",
+            "texture_id": null,
+            "expose_as_texture": true,
         }),
         "Transform3D" => json!({
             "x": 0.0,
@@ -2344,6 +2359,7 @@ pub fn advanced_component_types() -> &'static [&'static str] {
         "VisualGraphComponent",
         "AudioSource2D",
         "Camera2D",
+        "RenderTexture2D",
         "Transform3D",
         "MeshRenderer3D",
         "Camera3D",
@@ -2466,7 +2482,7 @@ pub fn advanced_component_category(component_type: &str) -> Option<&'static str>
         "AnimationBlueprint2D" | "Animator2D" | "AnimatedSprite" | "AnimationPlayer" => "Animation",
         "ScriptComponent" | "ScriptSchedule" | "VisualGraphComponent" => "Scripting",
         "AudioSource2D" => "Audio",
-        "Camera2D" => "Camera",
+        "Camera2D" | "RenderTexture2D" => "Camera",
         "Transform3D" | "MeshRenderer3D" | "Material3D" | "Billboard3D" | "HybridScene3D" => {
             "Rendering3D"
         }

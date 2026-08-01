@@ -4,11 +4,14 @@ use miniforge::engine::component::default_component;
 use miniforge::entities::game_object::GameObject;
 use miniforge::map::grid::Grid;
 use miniforge::render::backend::{
-    BUILTIN_RADIAL_LIGHT_TEXTURE_ID, ParticleDrawCommand, RenderBackend, SpriteBlendMode,
-    SpriteDrawCommand, SpriteDrawOptions, SpriteMaterialEffect, SpriteRegionDrawCommand,
-    TextDrawCommand, TextWrapMode, WgpuBackend,
+    BUILTIN_RADIAL_LIGHT_TEXTURE_ID, ParticleDrawCommand, RenderBackend, RenderTargetDescriptor2D,
+    SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions, SpriteMaterialEffect,
+    SpriteRegionDrawCommand, TextDrawCommand, TextWrapMode, WgpuBackend,
 };
-use miniforge::render::runtime_scene_2d::draw_engine_runtime_scene_2d;
+use miniforge::render::runtime_scene_2d::{
+    RenderTargetCameraView2D, draw_engine_runtime_scene_2d,
+    draw_engine_runtime_world_to_render_target_2d,
+};
 use miniforge::runtime::engine_runtime::EngineRuntime;
 use serde_json::json;
 
@@ -315,6 +318,184 @@ fn physical_wgpu_normal_maps_react_to_tangent_space_light_direction() {
         1
     );
     assert!(backend.is_using_physical_device());
+}
+
+#[test]
+#[ignore = "requires a physical or software wgpu adapter"]
+fn physical_wgpu_render_target_draws_offscreen_then_samples_on_main_target() {
+    let mut backend = WgpuBackend::new(true, cfg!(target_os = "macos"));
+    backend.resize(64, 32).unwrap();
+    backend.set_clear_color([0.0, 0.0, 0.0, 1.0]);
+    backend.init().unwrap();
+    backend
+        .create_render_target_2d(RenderTargetDescriptor2D {
+            texture_id: 51,
+            width: 16,
+            height: 16,
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            label: "Physical camera texture".to_string(),
+        })
+        .unwrap();
+
+    backend.begin_frame().unwrap();
+    backend.begin_render_target_2d(51).unwrap();
+    backend
+        .draw_sprite(SpriteDrawCommand {
+            entity_id: 1,
+            texture_id: 0,
+            x: 0.0,
+            y: 0.0,
+            width: 16.0,
+            height: 16.0,
+            rotation: 0.0,
+            color: [0.1, 0.8, 0.25, 1.0],
+        })
+        .unwrap();
+    assert!(
+        backend
+            .draw_sprite(SpriteDrawCommand {
+                entity_id: 2,
+                texture_id: 51,
+                x: 0.0,
+                y: 0.0,
+                width: 16.0,
+                height: 16.0,
+                rotation: 0.0,
+                color: [1.0; 4],
+            })
+            .is_err(),
+        "a target must reject sampling its own attachment in the same pass"
+    );
+    backend.end_render_target_2d().unwrap();
+    backend
+        .draw_sprite(SpriteDrawCommand {
+            entity_id: 3,
+            texture_id: 51,
+            x: 16.0,
+            y: 0.0,
+            width: 32.0,
+            height: 32.0,
+            rotation: 0.0,
+            color: [1.0; 4],
+        })
+        .unwrap();
+    backend.end_frame().unwrap();
+
+    let target_pixels = backend.readback_render_target_rgba8(51).unwrap();
+    let target_center = (8 * 16 + 8) * 4;
+    assert!(target_pixels[target_center + 1] > 200);
+    let main_pixels = backend.readback_rgba8().unwrap();
+    let main_center = (16 * 64 + 32) * 4;
+    assert!(main_pixels[main_center + 1] > 200);
+    assert!(main_pixels[main_center] < 100);
+    assert_eq!(backend.render_target_count(), 1);
+    assert_eq!(backend.last_frame_diagnostics().render_target_passes, 1);
+    assert_eq!(backend.last_frame_diagnostics().gpu_draw_calls, 2);
+
+    backend.begin_frame().unwrap();
+    backend
+        .draw_sprite(SpriteDrawCommand {
+            entity_id: 4,
+            texture_id: 0,
+            x: 0.0,
+            y: 0.0,
+            width: 8.0,
+            height: 8.0,
+            rotation: 0.0,
+            color: [1.0; 4],
+        })
+        .unwrap();
+    assert!(
+        backend.begin_render_target_2d(51).is_err(),
+        "off-screen passes must reject ambiguous submission after main-frame geometry"
+    );
+    backend.end_frame().unwrap();
+}
+
+#[test]
+#[ignore = "requires a physical or software wgpu adapter"]
+fn physical_wgpu_runtime_world_camera_renders_to_sampleable_target_without_ui() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("miniforge-wgpu-camera-target-{unique}"));
+    std::fs::create_dir_all(root.join("assets/scenes")).unwrap();
+    std::fs::create_dir_all(root.join("settings")).unwrap();
+    std::fs::write(
+        root.join("project.mforge"),
+        r#"{"name":"Camera Target Test","start_scene":"assets/scenes/main.scene.json"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("assets/scenes/main.scene.json"),
+        r#"{"entities":[],"grid":{"width":4,"height":4,"tile_size":8,"chunk_size":2}}"#,
+    )
+    .unwrap();
+    let mut runtime = EngineRuntime::new(&root).unwrap();
+    runtime.grid = Grid::new(4, 4, 8, 2);
+    let mut subject = GameObject::new(2.0, 2.0, Some("Camera Subject".to_string()));
+    subject.tag = "Player".to_string();
+    subject
+        .get_component_mut("SpriteRenderer")
+        .unwrap()
+        .set("tint", json!([20, 80, 255, 255]));
+    runtime.runtime_world.replace_entities(vec![subject]);
+
+    let mut backend = WgpuBackend::new(true, cfg!(target_os = "macos"));
+    backend.resize(64, 32).unwrap();
+    backend.set_clear_color([0.0, 0.0, 0.0, 1.0]);
+    backend.init().unwrap();
+    backend
+        .create_render_target_2d(RenderTargetDescriptor2D {
+            texture_id: 61,
+            width: 32,
+            height: 32,
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            label: "Runtime world camera".to_string(),
+        })
+        .unwrap();
+
+    backend.begin_frame().unwrap();
+    let stats = draw_engine_runtime_world_to_render_target_2d(
+        &mut backend,
+        &runtime,
+        &BTreeMap::new(),
+        61,
+        RenderTargetCameraView2D {
+            world_x: 2.0,
+            world_y: 2.0,
+            width: 32,
+            height: 32,
+            ..RenderTargetCameraView2D::default()
+        },
+    )
+    .unwrap();
+    backend
+        .draw_sprite(SpriteDrawCommand {
+            entity_id: 3,
+            texture_id: 61,
+            x: 16.0,
+            y: 0.0,
+            width: 32.0,
+            height: 32.0,
+            rotation: 0.0,
+            color: [1.0; 4],
+        })
+        .unwrap();
+    backend.end_frame().unwrap();
+
+    let pixels = backend.readback_rgba8().unwrap();
+    let center = (16 * 64 + 32) * 4;
+    assert!(
+        pixels[center + 2] > pixels[center],
+        "the centered Player entity should remain blue after world-camera render and composition"
+    );
+    assert_eq!(stats.tile_quads, 16);
+    assert_eq!(stats.entity_quads, 1);
+    assert_eq!(stats.ui_quads, 0);
+    assert_eq!(backend.last_frame_diagnostics().render_target_passes, 1);
+    std::fs::remove_dir_all(root).ok();
 }
 
 #[test]

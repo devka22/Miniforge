@@ -1023,6 +1023,23 @@ fn builtin_presets() -> Vec<AuthoringPreset2D> {
         )
         .aliases(&["camera"]),
         preset(
+            "render_target_camera",
+            "Camera to Texture 2D",
+            "Presentation",
+            AuthoringPresetKind2D::Effects,
+            "Off-screen WGPU camera target that can be sampled by sprites for monitors, portals, minimaps and composition.",
+            &["Camera2D", "RenderTexture2D"],
+            &[
+                ov("Camera2D", "active", json!(false)),
+                ov("Camera2D", "render_target_update_mode", json!("always")),
+                ov("RenderTexture2D", "format", json!("rgba8_srgb")),
+                ov("RenderTexture2D", "update_mode", json!("always")),
+            ],
+            &["all"],
+            &["camera", "render-target", "portal", "minimap", "wgpu"],
+        )
+        .aliases(&["camera_texture", "render_texture_camera"]),
+        preset(
             "audio_emitter",
             "Spatial Audio Emitter",
             "Presentation",
@@ -1733,6 +1750,26 @@ fn automatic_parameters(components: &[String]) -> Vec<PresetParameter2D> {
             &[("NormalMap2D", "strength")],
         ));
     }
+    if has(components, "RenderTexture2D") {
+        parameters.push(integer_parameter(
+            "render_target_width",
+            "Target Width",
+            512,
+            1,
+            i64::from(crate::render::backend::MAX_RENDER_TARGET_SIZE_2D),
+            "Off-screen target width in pixels.",
+            &[("RenderTexture2D", "width")],
+        ));
+        parameters.push(integer_parameter(
+            "render_target_height",
+            "Target Height",
+            512,
+            1,
+            i64::from(crate::render::backend::MAX_RENDER_TARGET_SIZE_2D),
+            "Off-screen target height in pixels.",
+            &[("RenderTexture2D", "height")],
+        ));
+    }
     parameters
 }
 
@@ -1825,6 +1862,12 @@ fn automatic_requirements(components: &[String]) -> Vec<String> {
                 .to_string(),
         );
     }
+    if has(components, "RenderTexture2D") {
+        requirements.push(
+            "Use the WGPU renderer for GPU render-target allocation and sampling; compatibility backends report the unsupported operation explicitly"
+                .to_string(),
+        );
+    }
     requirements
 }
 
@@ -1861,6 +1904,16 @@ fn automatic_workflow_steps(kind: AuthoringPresetKind2D, components: &[String]) 
         );
         steps.push(
             "Add a Point Light 2D or Directional Light 2D and inspect the live normal response"
+                .to_string(),
+        );
+    }
+    if has(components, "RenderTexture2D") {
+        steps.push(
+            "Choose target resolution and update mode, then render sprite passes between Begin/End Render Target 2D"
+                .to_string(),
+        );
+        steps.push(
+            "Assign the generated texture id to a SpriteRenderer or Material2D texture slot"
                 .to_string(),
         );
     }
@@ -1915,6 +1968,7 @@ mod tests {
             "physics_wind_zone",
             "gpu_particle_emitter",
             "lit_sprite",
+            "render_target_camera",
         ] {
             assert!(catalog.resolve(expected).is_some(), "{expected}");
         }
