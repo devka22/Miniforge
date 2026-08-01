@@ -355,7 +355,7 @@ Macroquad sigue siendo el backend de exportación predeterminado. La migración 
 surface Metal/Vulkan/DX12/WebGPU, sprites/atlas y batching persistente, cinco modos de mezcla, texto
 Unicode, UI 2D, materiales WGSL integrados, normal maps iluminados, partículas compute y cámaras a
 texturas sampleables creadas sin código desde el editor. Aún se conserva Macroquad como fallback
-hasta cerrar paridad de postproceso, shaders personalizados y todos los pases UI en render targets.
+hasta cerrar paridad de postproceso, shaders personalizados y partículas compute en render targets.
 
 ## Estructura de un proyecto
 
@@ -580,7 +580,7 @@ Límites conocidos:
 
 - APIs y schemas todavía pueden evolucionar antes de 1.0;
 - la exportación predeterminada sigue usando Macroquad mientras WGPU termina postproceso, shaders
-  personalizados, golden images multiplataforma y UI/texto dentro de render targets;
+  personalizados, golden images multiplataforma y partículas compute dentro de render targets;
 - el debugger Luau es callback-level;
 - la UI runtime conserva modelos legacy y canvas nuevos durante la migración;
 - distribución firmada/notarizada y matrices completas de CI multiplataforma siguen pendientes;

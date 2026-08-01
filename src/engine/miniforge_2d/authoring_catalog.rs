@@ -1769,6 +1769,15 @@ fn automatic_parameters(components: &[String]) -> Vec<PresetParameter2D> {
             "Off-screen target height in pixels.",
             &[("RenderTexture2D", "height")],
         ));
+        if has(components, "Camera2D") {
+            parameters.push(boolean_parameter(
+                "render_target_include_ui",
+                "Include UI",
+                false,
+                "Render legacy UI, scene canvases and retained UI text into the camera texture.",
+                &[("Camera2D", "render_target_include_ui")],
+            ));
+        }
     }
     parameters
 }
@@ -1816,6 +1825,31 @@ fn number_parameter(
         default_value: json!(default_value),
         minimum: Some(minimum),
         maximum: Some(maximum),
+        description: description.to_string(),
+        bindings: bindings
+            .iter()
+            .map(|(component, property)| PresetParameterBinding2D {
+                component: (*component).to_string(),
+                property: (*property).to_string(),
+            })
+            .collect(),
+    }
+}
+
+fn boolean_parameter(
+    id: &str,
+    label: &str,
+    default_value: bool,
+    description: &str,
+    bindings: &[(&str, &str)],
+) -> PresetParameter2D {
+    PresetParameter2D {
+        id: id.to_string(),
+        label: label.to_string(),
+        value_type: "bool".to_string(),
+        default_value: json!(default_value),
+        minimum: None,
+        maximum: None,
         description: description.to_string(),
         bindings: bindings
             .iter()
@@ -1909,11 +1943,11 @@ fn automatic_workflow_steps(kind: AuthoringPresetKind2D, components: &[String]) 
     }
     if has(components, "RenderTexture2D") {
         steps.push(
-            "Choose target resolution and update mode, then render sprite passes between Begin/End Render Target 2D"
+            "Choose target resolution, update mode and whether the camera should include UI"
                 .to_string(),
         );
         steps.push(
-            "Assign the generated texture id to a SpriteRenderer or Material2D texture slot"
+            "Use the persistent render-target:// binding from a SpriteRenderer or Material2D texture slot"
                 .to_string(),
         );
     }
@@ -1995,6 +2029,32 @@ mod tests {
             .find(|component| component.component_type == "Rigidbody2D")
             .unwrap();
         assert!(!rigidbody.get_bool("use_gravity", true));
+    }
+
+    #[test]
+    fn render_target_preset_exposes_scriptless_ui_capture() {
+        let catalog = AuthoringCatalog2D::builtin();
+        let parameters = json!({
+            "render_target_width": 640,
+            "render_target_height": 360,
+            "render_target_include_ui": true,
+        });
+        let plan = catalog
+            .application_plan("render_target_camera", ["Transform"], Some(&parameters))
+            .unwrap();
+        let camera = plan
+            .configured_components
+            .iter()
+            .find(|component| component.component_type == "Camera2D")
+            .unwrap();
+        let texture = plan
+            .configured_components
+            .iter()
+            .find(|component| component.component_type == "RenderTexture2D")
+            .unwrap();
+        assert!(camera.get_bool("render_target_include_ui", false));
+        assert_eq!(texture.get_usize("width", 0), 640);
+        assert_eq!(texture.get_usize("height", 0), 360);
     }
 
     #[test]

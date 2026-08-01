@@ -68,6 +68,8 @@ pub struct RenderTargetCameraView2D {
     pub height: u32,
     #[serde(default = "default_true")]
     pub include_lighting: bool,
+    #[serde(default)]
+    pub include_ui: bool,
 }
 
 impl Default for RenderTargetCameraView2D {
@@ -79,6 +81,7 @@ impl Default for RenderTargetCameraView2D {
             width: 512,
             height: 512,
             include_lighting: true,
+            include_ui: false,
         }
     }
 }
@@ -145,12 +148,6 @@ pub fn runtime_render_target_cameras(
         else {
             continue;
         };
-        if camera.get_bool("render_target_include_ui", false) {
-            return Err(format!(
-                "Camera2D entity {} requests render_target_include_ui, but target-aware UI/text rendering is not available yet",
-                entity.id
-            ));
-        }
         let render_texture = RenderTexture2D::from_component(target_component)?;
         let texture_id = target_component
             .get("texture_id")
@@ -192,6 +189,7 @@ pub fn runtime_render_target_cameras(
                 width: render_texture.width,
                 height: render_texture.height,
                 include_lighting: camera.get_bool("render_target_include_lighting", true),
+                include_ui: camera.get_bool("render_target_include_ui", false),
             },
             update_mode: RenderTargetUpdateMode2D::from_name(
                 camera
@@ -471,10 +469,11 @@ pub fn draw_engine_runtime_scene_2d<B: RenderBackend>(
 
 /// Renders the world layers of an exported runtime into a sampleable 2D target.
 ///
-/// The pass intentionally excludes retained UI, text and compute particles so
-/// camera textures remain deterministic and compatible with the current WGPU
-/// sprite-target contract. It includes tile layers, entities, normal-mapped
-/// materials, ambient/directional lights, point lights and bounded shadows.
+/// The pass includes tile layers, entities, normal-mapped materials,
+/// ambient/directional lights, point lights and bounded shadows. When the camera
+/// opts into UI, legacy UI elements, scene canvases and retained UI documents
+/// are rendered with target-local clipping and glyph atlases. Persistent compute
+/// particles remain a main-frame-only path.
 pub fn draw_engine_runtime_world_to_render_target_2d<B: RenderBackend>(
     backend: &mut B,
     runtime: &EngineRuntime,
@@ -560,6 +559,33 @@ pub fn draw_engine_runtime_world_to_render_target_2d<B: RenderBackend>(
                 origin_x,
                 origin_y,
                 tile,
+                width,
+                height,
+                &mut stats,
+            )?;
+        }
+        if view.include_ui {
+            draw_runtime_ui(
+                backend,
+                &runtime.runtime_world,
+                &runtime.tilemap_layers,
+                textures,
+                width,
+                height,
+                &mut stats,
+            )?;
+            draw_scene_ui_canvases(
+                backend,
+                &runtime.ui_canvases,
+                textures,
+                width,
+                height,
+                &mut stats,
+            )?;
+            draw_runtime_ui_documents(
+                backend,
+                &runtime.ui_documents,
+                textures,
                 width,
                 height,
                 &mut stats,
@@ -3005,6 +3031,7 @@ mod tests {
         let mut camera = default_component("Camera2D").unwrap();
         camera.set("zoom", json!(2.0));
         camera.set("render_target", json!("SecurityFeed"));
+        camera.set("render_target_include_ui", json!(true));
         let mut target = default_component("RenderTexture2D").unwrap();
         target.set("name", json!("SecurityFeed"));
         target.set("width", json!(320));
@@ -3024,6 +3051,7 @@ mod tests {
         assert_eq!(cameras[0].view.world_x, 3.0);
         assert_eq!(cameras[0].view.world_y, 4.0);
         assert_eq!(cameras[0].view.zoom, 2.0);
+        assert!(cameras[0].view.include_ui);
         assert_eq!(cameras[0].update_mode, RenderTargetUpdateMode2D::Once);
     }
 

@@ -351,6 +351,22 @@ fn physical_wgpu_render_target_draws_offscreen_then_samples_on_main_target() {
             color: [0.1, 0.8, 0.25, 1.0],
         })
         .unwrap();
+    backend
+        .draw_text(TextDrawCommand {
+            text_id: 52,
+            text: "RT".to_string(),
+            font_family: String::new(),
+            x: 1.0,
+            y: 1.0,
+            width: 14.0,
+            height: 14.0,
+            font_size: 10.0,
+            line_height: 12.0,
+            color: [255; 4],
+            wrap: TextWrapMode::None,
+            clip_rect: Some([0, 0, 16, 16]),
+        })
+        .unwrap();
     assert!(
         backend
             .draw_sprite(SpriteDrawCommand {
@@ -384,13 +400,21 @@ fn physical_wgpu_render_target_draws_offscreen_then_samples_on_main_target() {
     let target_pixels = backend.readback_render_target_rgba8(51).unwrap();
     let target_center = (8 * 16 + 8) * 4;
     assert!(target_pixels[target_center + 1] > 200);
+    assert!(
+        target_pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 220 && pixel[1] > 220 && pixel[2] > 220 && pixel[3] > 220 }),
+        "the target-specific glyph atlas should render white text off-screen"
+    );
     let main_pixels = backend.readback_rgba8().unwrap();
     let main_center = (16 * 64 + 32) * 4;
     assert!(main_pixels[main_center + 1] > 200);
     assert!(main_pixels[main_center] < 100);
     assert_eq!(backend.render_target_count(), 1);
     assert_eq!(backend.last_frame_diagnostics().render_target_passes, 1);
-    assert_eq!(backend.last_frame_diagnostics().gpu_draw_calls, 2);
+    assert_eq!(backend.last_frame_diagnostics().queued_text_areas, 1);
+    assert_eq!(backend.last_frame_diagnostics().render_target_text_areas, 1);
+    assert_eq!(backend.last_frame_diagnostics().gpu_draw_calls, 3);
 
     backend.begin_frame().unwrap();
     backend
@@ -414,7 +438,7 @@ fn physical_wgpu_render_target_draws_offscreen_then_samples_on_main_target() {
 
 #[test]
 #[ignore = "requires a physical or software wgpu adapter"]
-fn physical_wgpu_runtime_world_camera_renders_to_sampleable_target_without_ui() {
+fn physical_wgpu_runtime_camera_renders_world_and_ui_to_sampleable_target() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -440,7 +464,20 @@ fn physical_wgpu_runtime_world_camera_renders_to_sampleable_target_without_ui() 
         .get_component_mut("SpriteRenderer")
         .unwrap()
         .set("tint", json!([20, 80, 255, 255]));
-    runtime.runtime_world.replace_entities(vec![subject]);
+    let mut hud = GameObject::new(0.0, 0.0, Some("Camera HUD".to_string()));
+    hud.remove_component("SpriteRenderer");
+    hud.remove_component("Collider2D");
+    let mut label = default_component("UIElement").unwrap();
+    label.set("text", json!("CAM 01"));
+    label.set("x", json!(2.0));
+    label.set("y", json!(2.0));
+    label.set("width", json!(28.0));
+    label.set("height", json!(14.0));
+    label.set("font_size", json!(8.0));
+    label.set("color", json!([0, 0, 0, 180]));
+    label.set("text_color", json!([255, 255, 255, 255]));
+    hud.add_component(label);
+    runtime.runtime_world.replace_entities(vec![subject, hud]);
 
     let mut backend = WgpuBackend::new(true, cfg!(target_os = "macos"));
     backend.resize(64, 32).unwrap();
@@ -467,6 +504,7 @@ fn physical_wgpu_runtime_world_camera_renders_to_sampleable_target_without_ui() 
             world_y: 2.0,
             width: 32,
             height: 32,
+            include_ui: true,
             ..RenderTargetCameraView2D::default()
         },
     )
@@ -493,8 +531,17 @@ fn physical_wgpu_runtime_world_camera_renders_to_sampleable_target_without_ui() 
     );
     assert_eq!(stats.tile_quads, 16);
     assert_eq!(stats.entity_quads, 1);
-    assert_eq!(stats.ui_quads, 0);
+    assert!(stats.ui_quads >= 5);
+    assert_eq!(stats.ui_text_areas, 1);
+    let target_pixels = backend.readback_render_target_rgba8(61).unwrap();
+    assert!(
+        target_pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel[0] > 220 && pixel[1] > 220 && pixel[2] > 220),
+        "camera target should contain its authored HUD text"
+    );
     assert_eq!(backend.last_frame_diagnostics().render_target_passes, 1);
+    assert_eq!(backend.last_frame_diagnostics().render_target_text_areas, 1);
     std::fs::remove_dir_all(root).ok();
 }
 

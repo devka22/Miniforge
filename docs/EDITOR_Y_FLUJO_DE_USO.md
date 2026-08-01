@@ -235,7 +235,9 @@ La capa Qt llama comandos por ID mediante `editorController.executeCommand(comma
 que muestra el resultado en una sola acción. El objeto se reconoce por el glifo `RT` del viewport;
 Inspector expone resolución y modo de actualización (`always`, `once`, `manual`). El enlace
 `render-target://...` se persiste dentro de la escena: no requiere un script del juego ni volver a
-conectar la textura después de guardar.
+conectar la textura después de guardar. En Authoring Hub, el preset **Camera to Texture 2D** añade
+un switch **Include UI**: al activarlo la cámara captura también `UIElement`, Canvas/UI Designer y
+texto retained con clipping adaptado a la resolución del target.
 
 La Command Palette fusiona comandos del backend y acciones propias del shell Qt. La búsqueda es
 fuzzy, se navega con teclado y respeta si un comando requiere proyecto o selección. Es la vía más

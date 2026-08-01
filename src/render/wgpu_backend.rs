@@ -363,6 +363,12 @@ struct QueuedSprite {
     viewport_size: [u32; 2],
 }
 
+#[derive(Debug, Clone)]
+struct QueuedText {
+    command: TextDrawCommand,
+    render_target_pass: Option<usize>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SpriteBatch {
     texture_id: u64,
@@ -382,6 +388,8 @@ pub struct WgpuFrameDiagnostics {
     pub culled_sprites: usize,
     pub queued_text_areas: usize,
     pub culled_text_areas: usize,
+    #[serde(default)]
+    pub render_target_text_areas: usize,
     pub queued_particle_systems: usize,
     pub gpu_particle_capacity: usize,
     pub gpu_particle_spawned: usize,
@@ -426,6 +434,9 @@ struct WgpuRenderTarget {
     color_view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
     normal_bind_group: wgpu::BindGroup,
+    text_atlas: TextAtlas,
+    text_renderer: TextRenderer,
+    text_viewport: TextViewport,
     width: u32,
     height: u32,
 }
@@ -435,6 +446,7 @@ struct ActiveRenderTargetPass {
     target_id: u64,
     pass_index: usize,
     first_sprite: usize,
+    first_text: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -443,6 +455,8 @@ struct QueuedRenderTargetPass {
     clear_color: [f64; 4],
     first_sprite: usize,
     sprite_count: usize,
+    first_text: usize,
+    text_count: usize,
 }
 
 struct GpuParticleSystem {
@@ -526,7 +540,7 @@ pub struct WgpuBackend {
     frame_open: bool,
     clear_color: [f64; 4],
     sprites: Vec<QueuedSprite>,
-    texts: Vec<TextDrawCommand>,
+    texts: Vec<QueuedText>,
     particles: Vec<ParticleDrawCommand>,
     render_target_descriptors: HashMap<u64, RenderTargetDescriptor2D>,
     render_target_passes: Vec<QueuedRenderTargetPass>,
@@ -1198,7 +1212,7 @@ impl WgpuBackend {
             .ok_or_else(|| render_error("wgpu backend has not been initialized"))
     }
 
-    fn queued_sprite_target(&self) -> (Option<usize>, [u32; 2]) {
+    fn queued_draw_target(&self) -> (Option<usize>, [u32; 2]) {
         let Some(active) = self.active_render_target else {
             return (None, [self.width.max(1), self.height.max(1)]);
         };
@@ -1272,10 +1286,30 @@ impl WgpuBackend {
             .iter()
             .filter(|batch| batch.render_target_pass.is_none())
             .collect::<Vec<_>>();
-        let text_commands = &self.texts;
+        let render_target_text_commands = (0..render_target_passes.len())
+            .map(|pass_index| {
+                self.texts
+                    .iter()
+                    .filter(|queued| queued.render_target_pass == Some(pass_index))
+                    .map(|queued| queued.command.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let main_text_commands = self
+            .texts
+            .iter()
+            .filter(|queued| queued.render_target_pass.is_none())
+            .map(|queued| queued.command.clone())
+            .collect::<Vec<_>>();
         let particle_commands = &self.particles;
-        let has_text = !text_commands.is_empty();
-        let mut text_buffers = Vec::with_capacity(text_commands.len());
+        let has_main_text = !main_text_commands.is_empty();
+        let target_text_passes = render_target_text_commands
+            .iter()
+            .filter(|commands| !commands.is_empty())
+            .count();
+        let render_target_text_areas = render_target_text_commands.iter().map(Vec::len).sum();
+        let mut main_text_buffers = Vec::with_capacity(main_text_commands.len());
+        let mut render_target_text_buffers = Vec::with_capacity(render_target_text_commands.len());
         let vertex_bytes = std::mem::size_of_val(vertices.as_slice()) as u64;
         let clear_color = self.clear_color;
         let mut reallocated = false;
@@ -1304,14 +1338,70 @@ impl WgpuBackend {
                     .queue
                     .write_buffer(&state.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
             }
-            if has_text {
+            if has_main_text {
+                let WgpuState {
+                    device,
+                    queue,
+                    font_system,
+                    swash_cache,
+                    text_atlas,
+                    text_renderer,
+                    text_viewport,
+                    ..
+                } = state;
                 prepare_text_areas(
-                    state,
-                    text_commands,
-                    &mut text_buffers,
+                    TextRenderResources {
+                        device,
+                        queue,
+                        font_system,
+                        swash_cache,
+                        text_atlas,
+                        text_renderer,
+                        text_viewport,
+                    },
+                    &main_text_commands,
+                    &mut main_text_buffers,
                     self.width,
                     self.height,
                 )?;
+            }
+            for (pass, commands) in render_target_passes
+                .iter()
+                .zip(render_target_text_commands.iter())
+            {
+                let mut buffers = Vec::with_capacity(commands.len());
+                if !commands.is_empty() {
+                    let WgpuState {
+                        device,
+                        queue,
+                        font_system,
+                        swash_cache,
+                        render_targets,
+                        ..
+                    } = state;
+                    let target = render_targets.get_mut(&pass.target_id).ok_or_else(|| {
+                        render_error(format!(
+                            "render target texture {} disappeared before text preparation",
+                            pass.target_id
+                        ))
+                    })?;
+                    prepare_text_areas(
+                        TextRenderResources {
+                            device,
+                            queue,
+                            font_system,
+                            swash_cache,
+                            text_atlas: &mut target.text_atlas,
+                            text_renderer: &mut target.text_renderer,
+                            text_viewport: &mut target.text_viewport,
+                        },
+                        commands,
+                        &mut buffers,
+                        target.width,
+                        target.height,
+                    )?;
+                }
+                render_target_text_buffers.push(buffers);
             }
             let prepared_particles =
                 prepare_gpu_particle_draws(state, particle_commands, self.width, self.height)?;
@@ -1430,6 +1520,13 @@ impl WgpuBackend {
                                 |batch| batch.first_sprite as usize >= target_pass.first_sprite
                             )
                     );
+                    debug_assert_eq!(
+                        render_target_text_commands[pass_index].len(),
+                        target_pass.text_count
+                    );
+                    debug_assert!(
+                        target_pass.text_count == 0 || target_pass.first_text < self.texts.len()
+                    );
                     let color_attachment = wgpu::RenderPassColorAttachment {
                         view: &target.color_view,
                         resolve_target: None,
@@ -1445,7 +1542,7 @@ impl WgpuBackend {
                         },
                     };
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("MiniForge Render Target 2D sprite pass"),
+                        label: Some("MiniForge Render Target 2D sprite and text pass"),
                         color_attachments: &[Some(color_attachment)],
                         ..Default::default()
                     });
@@ -1456,6 +1553,16 @@ impl WgpuBackend {
                         &render_target_batches[pass_index],
                         vertex_bytes,
                     );
+                    if !render_target_text_commands[pass_index].is_empty() {
+                        target
+                            .text_renderer
+                            .render(&target.text_atlas, &target.text_viewport, &mut pass)
+                            .map_err(|error| {
+                                render_error(format!(
+                                    "wgpu render-target text render failed: {error}"
+                                ))
+                            })?;
+                    }
                 }
                 {
                     let color_attachment = wgpu::RenderPassColorAttachment {
@@ -1498,7 +1605,7 @@ impl WgpuBackend {
                         pass.set_scissor_rect(0, 0, self.width.max(1), self.height.max(1));
                         pass.draw(0..6, 0..draw.capacity);
                     }
-                    if has_text {
+                    if has_main_text {
                         state
                             .text_renderer
                             .render(&state.text_atlas, &state.text_viewport, &mut pass)
@@ -1523,8 +1630,17 @@ impl WgpuBackend {
                         reconfiguration_count += 1;
                     }
                 }
-                if has_text {
+                if has_main_text {
                     state.text_atlas.trim();
+                }
+                for (target_pass, _commands) in render_target_passes
+                    .iter()
+                    .zip(render_target_text_commands.iter())
+                    .filter(|(_, commands)| !commands.is_empty())
+                {
+                    if let Some(target) = state.render_targets.get_mut(&target_pass.target_id) {
+                        target.text_atlas.trim();
+                    }
                 }
                 submitted = true;
             }
@@ -1541,17 +1657,22 @@ impl WgpuBackend {
             culled_sprites: self.culled_sprites,
             queued_text_areas: self.texts.len(),
             culled_text_areas: self.culled_text_areas,
+            render_target_text_areas,
             queued_particle_systems: self.particles.len(),
             gpu_particle_capacity,
             gpu_particle_spawned,
             particle_compute_dispatches,
-            gpu_draw_calls: batches.len() + self.particles.len() + usize::from(has_text),
+            gpu_draw_calls: batches.len()
+                + self.particles.len()
+                + usize::from(has_main_text)
+                + target_text_passes,
             texture_bind_changes: texture_bind_changes(&batches),
             normal_texture_bind_changes: normal_texture_bind_changes(&batches),
             render_target_passes: render_target_passes.len(),
             pipeline_changes: pipeline_changes(&batches)
                 + self.particles.len()
-                + usize::from(has_text),
+                + usize::from(has_main_text)
+                + target_text_passes,
             vertex_bytes_uploaded: vertex_bytes,
             vertex_buffer_capacity_bytes,
             vertex_buffer_reallocations: self.vertex_buffer_reallocations,
@@ -1642,7 +1763,7 @@ impl RenderBackend for WgpuBackend {
         if !self.frame_open {
             return Err(render_error("wgpu draw_sprite called outside a frame"));
         }
-        let (render_target_pass, viewport_size) = self.queued_sprite_target();
+        let (render_target_pass, viewport_size) = self.queued_draw_target();
         self.queue_sprite(QueuedSprite {
             sprite: command,
             uv_rect: [0.0, 0.0, 1.0, 1.0],
@@ -1685,7 +1806,7 @@ impl RenderBackend for WgpuBackend {
                 "wgpu sprite atlas UV rectangle must be finite and ordered",
             ));
         }
-        let (render_target_pass, viewport_size) = self.queued_sprite_target();
+        let (render_target_pass, viewport_size) = self.queued_draw_target();
         self.queue_sprite(QueuedSprite {
             sprite: command.sprite,
             uv_rect: command.uv_rect.map(|value| value.clamp(0.0, 1.0)),
@@ -1709,11 +1830,6 @@ impl RenderBackend for WgpuBackend {
     fn draw_text(&mut self, command: TextDrawCommand) -> MFResult<()> {
         if !self.frame_open {
             return Err(render_error("wgpu draw_text called outside a frame"));
-        }
-        if self.active_render_target.is_some() {
-            return Err(render_error(
-                "text inside a Render Target 2D pass is not supported yet; render world sprites first and composite UI on the main target",
-            ));
         }
         if command.text.is_empty() {
             return Ok(());
@@ -1743,19 +1859,23 @@ impl RenderBackend for WgpuBackend {
                 "wgpu text geometry and metrics must be finite and greater than zero",
             ));
         }
+        let (render_target_pass, viewport_size) = self.queued_draw_target();
         self.draw_calls += 1;
         if command.x + command.width < 0.0
             || command.y + command.height < 0.0
-            || command.x > self.width as f32
-            || command.y > self.height as f32
-            || command
-                .clip_rect
-                .is_some_and(|clip| normalize_clip_rect(clip, self.width, self.height).is_none())
+            || command.x > viewport_size[0] as f32
+            || command.y > viewport_size[1] as f32
+            || command.clip_rect.is_some_and(|clip| {
+                normalize_clip_rect(clip, viewport_size[0], viewport_size[1]).is_none()
+            })
         {
             self.culled_text_areas += 1;
             return Ok(());
         }
-        self.texts.push(command);
+        self.texts.push(QueuedText {
+            command,
+            render_target_pass,
+        });
         Ok(())
     }
 
@@ -1892,10 +2012,13 @@ impl RenderBackend for WgpuBackend {
             .as_mut()
             .ok_or_else(|| render_error("wgpu backend has not been initialized"))?;
         let target = create_render_target_texture(
-            &state.device,
-            &state.texture_layout,
-            &state.normal_texture_layout,
-            &state.sampler,
+            RenderTargetTextureResources {
+                device: &state.device,
+                queue: &state.queue,
+                color_layout: &state.texture_layout,
+                normal_layout: &state.normal_texture_layout,
+                sampler: &state.sampler,
+            },
             descriptor.width,
             descriptor.height,
             if descriptor.label.trim().is_empty() {
@@ -1939,12 +2062,24 @@ impl RenderBackend for WgpuBackend {
             .sprites
             .iter()
             .any(|sprite| sprite.render_target_pass.is_none())
-            || !self.texts.is_empty()
+            || self
+                .texts
+                .iter()
+                .any(|text| text.render_target_pass.is_none())
             || !self.particles.is_empty()
         {
             return Err(render_error(
                 "Render Target 2D passes must be queued before main-frame sprites, text and particles",
             ));
+        }
+        if self
+            .render_target_passes
+            .iter()
+            .any(|pass| pass.target_id == texture_id)
+        {
+            return Err(render_error(format!(
+                "render target texture {texture_id} can be written at most once per frame"
+            )));
         }
         if !self.render_target_descriptors.contains_key(&texture_id) {
             return Err(render_error(format!(
@@ -1955,6 +2090,7 @@ impl RenderBackend for WgpuBackend {
             target_id: texture_id,
             pass_index: self.render_target_passes.len(),
             first_sprite: self.sprites.len(),
+            first_text: self.texts.len(),
         });
         Ok(())
     }
@@ -1974,6 +2110,8 @@ impl RenderBackend for WgpuBackend {
             clear_color: descriptor.clear_color,
             first_sprite: active.first_sprite,
             sprite_count: self.sprites.len().saturating_sub(active.first_sprite),
+            first_text: active.first_text,
+            text_count: self.texts.len().saturating_sub(active.first_text),
         });
         Ok(())
     }
@@ -2303,14 +2441,24 @@ fn sprite_blend_state(blend_mode: SpriteBlendMode) -> wgpu::BlendState {
     }
 }
 
+struct TextRenderResources<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    font_system: &'a mut FontSystem,
+    swash_cache: &'a mut SwashCache,
+    text_atlas: &'a mut TextAtlas,
+    text_renderer: &'a mut TextRenderer,
+    text_viewport: &'a mut TextViewport,
+}
+
 fn prepare_text_areas(
-    state: &mut WgpuState,
+    resources: TextRenderResources<'_>,
     commands: &[TextDrawCommand],
     buffers: &mut Vec<TextBuffer>,
     width: u32,
     height: u32,
 ) -> MFResult<()> {
-    let WgpuState {
+    let TextRenderResources {
         device,
         queue,
         font_system,
@@ -2318,8 +2466,7 @@ fn prepare_text_areas(
         text_atlas,
         text_renderer,
         text_viewport,
-        ..
-    } = state;
+    } = resources;
     text_viewport.update(queue, TextResolution { width, height });
     for command in commands {
         let mut buffer = TextBuffer::new(
@@ -2438,10 +2585,13 @@ fn restore_render_targets(
     state.render_targets.reserve(descriptors.len());
     for (&texture_id, descriptor) in descriptors {
         let target = create_render_target_texture(
-            &state.device,
-            &state.texture_layout,
-            &state.normal_texture_layout,
-            &state.sampler,
+            RenderTargetTextureResources {
+                device: &state.device,
+                queue: &state.queue,
+                color_layout: &state.texture_layout,
+                normal_layout: &state.normal_texture_layout,
+                sampler: &state.sampler,
+            },
             descriptor.width,
             descriptor.height,
             if descriptor.label.trim().is_empty() {
@@ -2728,15 +2878,27 @@ fn create_sampled_texture(
     }
 }
 
+struct RenderTargetTextureResources<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    color_layout: &'a wgpu::BindGroupLayout,
+    normal_layout: &'a wgpu::BindGroupLayout,
+    sampler: &'a wgpu::Sampler,
+}
+
 fn create_render_target_texture(
-    device: &wgpu::Device,
-    color_layout: &wgpu::BindGroupLayout,
-    normal_layout: &wgpu::BindGroupLayout,
-    sampler: &wgpu::Sampler,
+    resources: RenderTargetTextureResources<'_>,
     width: u32,
     height: u32,
     label: &str,
 ) -> WgpuRenderTarget {
+    let RenderTargetTextureResources {
+        device,
+        queue,
+        color_layout,
+        normal_layout,
+        sampler,
+    } = resources;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
@@ -2791,11 +2953,23 @@ fn create_render_target_texture(
             },
         ],
     });
+    let text_cache = TextCache::new(device);
+    let text_viewport = TextViewport::new(device, &text_cache);
+    let mut text_atlas = TextAtlas::new(device, queue, &text_cache, SPRITE_COLOR_VIEW_FORMAT);
+    let text_renderer = TextRenderer::new(
+        &mut text_atlas,
+        device,
+        wgpu::MultisampleState::default(),
+        None,
+    );
     WgpuRenderTarget {
         texture,
         color_view,
         bind_group,
         normal_bind_group,
+        text_atlas,
+        text_renderer,
+        text_viewport,
         width,
         height,
     }
@@ -3104,6 +3278,40 @@ mod tests {
                 .draw_text(text_command("x".repeat(MAX_TEXT_BYTES_PER_AREA + 1)))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn text_queue_tracks_render_targets_and_rejects_duplicate_target_writes() {
+        let mut backend = WgpuBackend {
+            frame_open: true,
+            width: 100,
+            height: 50,
+            ..WgpuBackend::default()
+        };
+        for texture_id in [7, 8] {
+            backend.render_target_descriptors.insert(
+                texture_id,
+                RenderTargetDescriptor2D {
+                    texture_id,
+                    width: 32,
+                    height: 24,
+                    ..RenderTargetDescriptor2D::default()
+                },
+            );
+        }
+
+        backend.begin_render_target_2d(7).unwrap();
+        backend.draw_text(text_command("Target A")).unwrap();
+        backend.end_render_target_2d().unwrap();
+        assert_eq!(backend.texts[0].render_target_pass, Some(0));
+        assert_eq!(backend.render_target_passes[0].text_count, 1);
+        assert!(backend.begin_render_target_2d(7).is_err());
+
+        backend.begin_render_target_2d(8).unwrap();
+        backend.draw_text(text_command("Target B")).unwrap();
+        backend.end_render_target_2d().unwrap();
+        assert_eq!(backend.texts[1].render_target_pass, Some(1));
+        assert_eq!(backend.render_target_passes[1].text_count, 1);
     }
 
     #[test]

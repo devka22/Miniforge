@@ -629,7 +629,9 @@ Componentes principales:
 `runtime_render_target_cameras` convierte pares `Camera2D` + `RenderTexture2D` en cámaras sampleables
 con binding estable, resolución y política `always`, `once` o `manual`. Los backends de
 compatibilidad devuelven un error explícito; WGPU crea una textura GPU real que puede usarse en el
-mismo frame como color o normal map.
+mismo frame como color o normal map. `Camera2D.render_target_include_ui` incorpora UI legacy,
+Canvas y documentos UI retained, incluido texto Unicode mediante un atlas de glifos propio del
+target. Cada target admite una escritura por frame para evitar reemplazos ambiguos.
 
 Backends:
 
