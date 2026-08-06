@@ -1289,6 +1289,21 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "pixels_per_unit": 16.0,
             "viewport_width": 1280.0,
             "viewport_height": 720.0,
+            "render_target": null,
+            "render_target_update_mode": null,
+            "render_target_include_ui": false,
+            "render_target_include_lighting": true,
+        }),
+        "RenderTexture2D" => json!({
+            "name": "CameraTexture2D",
+            "width": 512,
+            "height": 512,
+            "format": "rgba8_srgb",
+            "clear_color": [0, 0, 0, 0],
+            "update_mode": "always",
+            "usage": "camera",
+            "texture_id": null,
+            "expose_as_texture": true,
         }),
         "Transform3D" => json!({
             "x": 0.0,
@@ -1358,12 +1373,24 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "sorting_bias": 0,
             "use_2d_animation": true,
         }),
+        "HybridAnchor2D3D" => json!({
+            "sync_mode": "from_2d",
+            "elevation": 0.0,
+            "depth_bias": 0.0,
+            "casts_shadow": true,
+            "receives_shadow": true,
+            "sync_rotation": false,
+            "sync_scale": true,
+        }),
         "HybridScene3D" => json!({
             "enabled": false,
             "render_2d_overlay": true,
             "depth_buffer": true,
             "physics_mode": "2d_gameplay",
             "world_scale": 1.0,
+            "ground_elevation": 0.0,
+            "camera_pitch_degrees": 58.0,
+            "camera_yaw_degrees": 35.0,
             "notes": "Preview 3D inicial; gameplay 2D sigue siendo la ruta estable.",
         }),
         "WorldPartition2D" => json!({
@@ -1610,6 +1637,11 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "pain": 0.0,
             "infection": 0.0,
             "bleeding": 0.0,
+            "stress": 0.0,
+            "morale": 100.0,
+            "hygiene": 100.0,
+            "sickness": 0.0,
+            "oxygen": 100.0,
             "hunger_decay_per_second": 0.015,
             "thirst_decay_per_second": 0.025,
             "energy_decay_per_second": 0.01,
@@ -1618,6 +1650,26 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "critical_damage_per_second": 2.0,
             "auto_update": true,
             "paused": false,
+        }),
+        "SurvivalEnvironment2D" => json!({
+            "ambient_temperature_c": 20.0,
+            "wind_speed": 0.0,
+            "precipitation": 0.0,
+            "shelter": 0.0,
+            "heat_source": 0.0,
+            "exertion": 0.0,
+            "air_quality": 1.0,
+            "pathogen_exposure": 0.0,
+            "daylight": 1.0,
+            "enabled": true,
+        }),
+        "BodyCondition2D" => json!({
+            "blood_volume": 100.0,
+            "core_temperature_c": 36.8,
+            "immunity": 1.0,
+            "injuries": [],
+            "next_injury_id": 1,
+            "auto_progress": true,
         }),
         "SurvivalUIBinding" => json!({
             "target_tag": "Player",
@@ -1810,9 +1862,25 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "respawn_elapsed": 0.0,
         }),
         "Equipment" => json!({
-            "slots": {"weapon": null, "armor": null, "trinket": null, "tool": null},
+            "slots": {
+                "primary": null,
+                "secondary": null,
+                "head": null,
+                "torso": null,
+                "hands": null,
+                "legs": null,
+                "feet": null,
+                "back": null,
+                "trinket": null,
+                "tool": null,
+                "weapon": null,
+                "armor": null
+            },
+            "equipped_items": {},
             "stat_bonuses": {},
             "locked_slots": [],
+            "quick_slots": [null, null, null, null, null, null],
+            "auto_return_displaced": true,
         }),
         "Ability" => json!({
             "ability_id": "ability",
@@ -2090,6 +2158,30 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "nearest_filter": true,
             "snap_uv": true,
         }),
+        "PostProcessVolume2D" => json!({
+            "enabled": true,
+            "global": true,
+            "priority": 0,
+            "weight": 1.0,
+            "preset": "cinematic",
+            "exposure": 1.0,
+            "contrast": 1.05,
+            "saturation": 1.0,
+            "gamma": 1.0,
+            "bloom_threshold": 0.78,
+            "bloom_intensity": 0.35,
+            "bloom_radius": 2.0,
+            "vignette_intensity": 0.22,
+            "vignette_softness": 0.45,
+            "chromatic_aberration": 0.0,
+            "pixel_size": 1.0,
+            "scanline_intensity": 0.0,
+            "tint": [255, 255, 255, 255],
+            "damage_flash": [255, 35, 24, 255],
+            "damage_strength": 0.0,
+            "fog_color": [95, 115, 140, 255],
+            "fog_density": 0.0,
+        }),
         "Material2D" => json!({
             "material": "Default",
             "material_path": null,
@@ -2344,12 +2436,14 @@ pub fn advanced_component_types() -> &'static [&'static str] {
         "VisualGraphComponent",
         "AudioSource2D",
         "Camera2D",
+        "RenderTexture2D",
         "Transform3D",
         "MeshRenderer3D",
         "Camera3D",
         "Light3D",
         "Material3D",
         "Billboard3D",
+        "HybridAnchor2D3D",
         "HybridScene3D",
         "WorldPartition2D",
         "StreamingChunk2D",
@@ -2372,6 +2466,8 @@ pub fn advanced_component_types() -> &'static [&'static str] {
         "Stats",
         "Inventory",
         "SurvivalNeeds",
+        "SurvivalEnvironment2D",
+        "BodyCondition2D",
         "SurvivalUIBinding",
         "LootContainer",
         "CraftingBook",
@@ -2432,6 +2528,7 @@ pub fn advanced_component_types() -> &'static [&'static str] {
         "GpuParticles2D",
         "DamageEffect2D",
         "PixelArtShader2D",
+        "PostProcessVolume2D",
         "Material2D",
         "ParticleEmitter",
         "ParallaxLayer",
@@ -2466,10 +2563,9 @@ pub fn advanced_component_category(component_type: &str) -> Option<&'static str>
         "AnimationBlueprint2D" | "Animator2D" | "AnimatedSprite" | "AnimationPlayer" => "Animation",
         "ScriptComponent" | "ScriptSchedule" | "VisualGraphComponent" => "Scripting",
         "AudioSource2D" => "Audio",
-        "Camera2D" => "Camera",
-        "Transform3D" | "MeshRenderer3D" | "Material3D" | "Billboard3D" | "HybridScene3D" => {
-            "Rendering3D"
-        }
+        "Camera2D" | "RenderTexture2D" => "Camera",
+        "Transform3D" | "MeshRenderer3D" | "Material3D" | "Billboard3D" | "HybridAnchor2D3D"
+        | "HybridScene3D" => "Rendering3D",
         "Camera3D" => "Camera",
         "Light3D" => "Lighting3D",
         "WorldPartition2D" | "StreamingChunk2D" => "WorldStreaming",
@@ -2491,8 +2587,14 @@ pub fn advanced_component_category(component_type: &str) -> Option<&'static str>
         | "Checkpoint"
         | "CharacterController2D"
         | "EconomyWallet" => "Gameplay",
-        "SurvivalNeeds" | "SurvivalUIBinding" | "LootContainer" | "CraftingBook"
-        | "CraftingStation" | "Harvestable" => "Survival",
+        "SurvivalNeeds"
+        | "SurvivalEnvironment2D"
+        | "BodyCondition2D"
+        | "SurvivalUIBinding"
+        | "LootContainer"
+        | "CraftingBook"
+        | "CraftingStation"
+        | "Harvestable" => "Survival",
         "AIController" => "AI",
         "RTSController"
         | "Commandable"
@@ -2517,8 +2619,17 @@ pub fn advanced_component_category(component_type: &str) -> Option<&'static str>
         "Light2D" | "ShadowCaster2D" | "NormalMap2D" | "Material2D" | "ParallaxLayer" => {
             "Rendering"
         }
-        "Water2D" | "Distortion2D" | "Fire2D" | "Fog2D" | "Outline2D" | "Bloom2D"
-        | "GpuParticles2D" | "DamageEffect2D" | "PixelArtShader2D" | "ParticleEmitter" => "Effects",
+        "Water2D"
+        | "Distortion2D"
+        | "Fire2D"
+        | "Fog2D"
+        | "Outline2D"
+        | "Bloom2D"
+        | "GpuParticles2D"
+        | "DamageEffect2D"
+        | "PixelArtShader2D"
+        | "PostProcessVolume2D"
+        | "ParticleEmitter" => "Effects",
         "TilemapCollider" => "Physics",
         "ObjectiveMarker" => "UI",
         _ => return None,

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,8 +10,10 @@ use miniforge::render::backend::{
     TextWrapMode, WgpuBackend,
 };
 use miniforge::render::runtime_scene_2d::{
-    RuntimeScene2DStats, RuntimeTexture2D, draw_engine_runtime_scene_2d, entity_normal_map_path,
-    entity_sprite_path, entity_ui_sprite_path, scene_ui_sprite_paths, ui_document_sprite_paths,
+    RenderTargetUpdateMode2D, RuntimeScene2DStats, RuntimeTexture2D, draw_engine_runtime_scene_2d,
+    draw_engine_runtime_world_to_render_target_2d, entity_normal_map_path, entity_sprite_path,
+    entity_ui_sprite_path, runtime_post_process_2d, runtime_render_target_cameras,
+    scene_ui_sprite_paths, ui_document_sprite_paths,
 };
 use miniforge::runtime::engine_runtime::EngineRuntime;
 use winit::application::ApplicationHandler;
@@ -37,6 +39,8 @@ struct PreviewApp {
     runtime: Option<EngineRuntime>,
     project_path: Option<PathBuf>,
     texture_ids: BTreeMap<String, RuntimeTexture2D>,
+    rendered_once_targets: BTreeSet<u64>,
+    observed_device_loss_recoveries: u64,
     last_scene_stats: RuntimeScene2DStats,
     previous_frame_at: Instant,
     input_left: bool,
@@ -69,6 +73,8 @@ impl PreviewApp {
             runtime,
             project_path,
             texture_ids: BTreeMap::new(),
+            rendered_once_targets: BTreeSet::new(),
+            observed_device_loss_recoveries: 0,
             last_scene_stats: RuntimeScene2DStats::default(),
             previous_frame_at: now,
             input_left: false,
@@ -114,6 +120,8 @@ impl PreviewApp {
             )
             .map_err(|error| error.to_string())?;
         self.load_project_textures(&mut backend)?;
+        self.rendered_once_targets.clear();
+        self.observed_device_loss_recoveries = backend.device_loss_recoveries;
 
         let api = backend
             .caps
@@ -145,6 +153,19 @@ impl PreviewApp {
         let Some(runtime) = self.runtime.as_ref() else {
             return Ok(());
         };
+        for camera in runtime_render_target_cameras(&runtime.runtime_world)? {
+            backend
+                .create_render_target_2d(camera.descriptor.clone())
+                .map_err(|error| error.to_string())?;
+            self.texture_ids.insert(
+                camera.binding_key,
+                RuntimeTexture2D {
+                    texture_id: camera.texture_id,
+                    width: camera.descriptor.width,
+                    height: camera.descriptor.height,
+                },
+            );
+        }
         let mut paths = runtime
             .runtime_world
             .units
@@ -213,6 +234,10 @@ impl PreviewApp {
                 .force_device_loss_for_testing()
                 .map_err(|error| error.to_string())?;
         }
+        if backend.device_loss_recoveries != self.observed_device_loss_recoveries {
+            self.rendered_once_targets.clear();
+            self.observed_device_loss_recoveries = backend.device_loss_recoveries;
+        }
         backend.begin_frame().map_err(|error| error.to_string())?;
         if let Some(runtime) = self.runtime.as_mut() {
             let movement = (
@@ -228,6 +253,43 @@ impl PreviewApp {
                 false,
             );
             runtime.run_headless_once(dt);
+            let target_cameras = runtime_render_target_cameras(&runtime.runtime_world)?;
+            for camera in target_cameras {
+                let should_render = match camera.update_mode {
+                    RenderTargetUpdateMode2D::Always => true,
+                    RenderTargetUpdateMode2D::Once => {
+                        !self.rendered_once_targets.contains(&camera.texture_id)
+                    }
+                    RenderTargetUpdateMode2D::Manual => false,
+                };
+                if !should_render {
+                    continue;
+                }
+                draw_engine_runtime_world_to_render_target_2d(
+                    backend,
+                    runtime,
+                    &self.texture_ids,
+                    camera.texture_id,
+                    camera.view,
+                )
+                .map_err(|error| error.to_string())?;
+                if camera.update_mode == RenderTargetUpdateMode2D::Once {
+                    self.rendered_once_targets.insert(camera.texture_id);
+                }
+            }
+            let post_processing_enabled = runtime
+                .engine_config
+                .data
+                .pointer("/rendering/post_processing")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true);
+            if post_processing_enabled
+                && let Some(command) = runtime_post_process_2d(&runtime.runtime_world, elapsed)
+            {
+                backend
+                    .set_post_process_2d(command)
+                    .map_err(|error| error.to_string())?;
+            }
             self.last_scene_stats =
                 draw_engine_runtime_scene_2d(backend, runtime, &self.texture_ids, width, height)
                     .map_err(|error| error.to_string())?;
@@ -242,7 +304,7 @@ impl PreviewApp {
                 || self.frames >= target.max(1).saturating_mul(120)
         }) {
             println!(
-                "MINIFORGE_WGPU_SURFACE_{} frames={} presented={} skipped={} reconfigured={} surface_loss_recoveries={} device_loss_recoveries={} logical_draws={} gpu_draws={} color_binds={} normal_binds={} pipelines={} vertex_bytes={} particle_emitters={} particle_capacity={} particle_spawned={} particle_dispatches={} entities={} textures={} normal_mapped={} lit={} ui_documents={} retained_ui_widgets={} retained_ui_quads={} api={:?}",
+                "MINIFORGE_WGPU_SURFACE_{} frames={} presented={} skipped={} reconfigured={} surface_loss_recoveries={} device_loss_recoveries={} logical_draws={} gpu_draws={} color_binds={} normal_binds={} render_target_passes={} post_process_passes={} post_process_effects={} pipelines={} vertex_bytes={} particle_emitters={} particle_capacity={} particle_spawned={} particle_dispatches={} entities={} textures={} normal_mapped={} lit={} ui_documents={} retained_ui_widgets={} retained_ui_quads={} api={:?}",
                 if backend.submitted_frames >= self.autotest_frames.unwrap_or(1).max(1) {
                     "OK"
                 } else {
@@ -258,6 +320,9 @@ impl PreviewApp {
                 backend.last_frame_diagnostics().gpu_draw_calls,
                 backend.last_frame_diagnostics().texture_bind_changes,
                 backend.last_frame_diagnostics().normal_texture_bind_changes,
+                backend.last_frame_diagnostics().render_target_passes,
+                backend.last_frame_diagnostics().post_process_passes,
+                backend.last_frame_diagnostics().post_process_effects,
                 backend.last_frame_diagnostics().pipeline_changes,
                 backend.last_frame_diagnostics().vertex_bytes_uploaded,
                 backend.last_frame_diagnostics().queued_particle_systems,

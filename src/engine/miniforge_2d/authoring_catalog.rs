@@ -225,7 +225,11 @@ impl AuthoringCatalog2D {
             .iter()
             .filter(|item| item.component == component_type)
         {
-            component.set(&item.property, item.value.clone());
+            if item.property == "enabled" {
+                component.enabled = item.value.as_bool().unwrap_or(component.enabled);
+            } else {
+                component.set(&item.property, item.value.clone());
+            }
             changed = true;
         }
         let parameters = parameters.and_then(Value::as_object);
@@ -242,7 +246,11 @@ impl AuthoringCatalog2D {
                 .iter()
                 .filter(|binding| binding.component == component_type)
             {
-                component.set(&binding.property, value.clone());
+                if binding.property == "enabled" {
+                    component.enabled = value.as_bool().unwrap_or(component.enabled);
+                } else {
+                    component.set(&binding.property, value.clone());
+                }
                 changed = true;
             }
         }
@@ -642,6 +650,7 @@ fn builtin_presets() -> Vec<AuthoringPreset2D> {
             &[
                 "Health",
                 "SurvivalNeeds",
+                "BodyCondition2D",
                 "Inventory",
                 "Equipment",
                 "CraftingBook",
@@ -653,6 +662,33 @@ fn builtin_presets() -> Vec<AuthoringPreset2D> {
             &["needs", "inventory", "crafting"],
         )
         .aliases(&["survival"]),
+        preset(
+            "survival_environment",
+            "Survival Environment 2D",
+            "Survival",
+            AuthoringPresetKind2D::World,
+            "Weather and exposure sample for temperature, wind, rain, shelter, air quality and infection pressure.",
+            &["SurvivalEnvironment2D", "Saveable"],
+            &[],
+            &["survival", "horror", "simulation", "open-world"],
+            &["weather", "temperature", "exposure", "survival"],
+        )
+        .aliases(&["survival_weather", "exposure_zone"]),
+        preset(
+            "survival_loadout",
+            "Advanced Survival Loadout",
+            "Survival",
+            AuthoringPresetKind2D::Gameplay,
+            "Weighted inventory, atomic multi-slot equipment, durability, protection and body condition with no custom code.",
+            &["Inventory", "Equipment", "Stats", "BodyCondition2D", "Saveable"],
+            &[
+                ov("Inventory", "capacity", json!(32)),
+                ov("Inventory", "max_weight", json!(35.0)),
+            ],
+            &["survival", "rpg", "action"],
+            &["inventory", "equipment", "durability", "injuries", "loadout"],
+        )
+        .aliases(&["equipment_loadout", "advanced_inventory"]),
         preset(
             "enemy_ai",
             "Enemy AI",
@@ -1022,6 +1058,142 @@ fn builtin_presets() -> Vec<AuthoringPreset2D> {
             &["camera", "follow", "shake"],
         )
         .aliases(&["camera"]),
+        preset(
+            "render_target_camera",
+            "Camera to Texture 2D",
+            "Presentation",
+            AuthoringPresetKind2D::Effects,
+            "Off-screen WGPU camera target that can be sampled by sprites for monitors, portals, minimaps and composition.",
+            &["Camera2D", "RenderTexture2D"],
+            &[
+                ov("Camera2D", "active", json!(false)),
+                ov("Camera2D", "render_target_update_mode", json!("always")),
+                ov("RenderTexture2D", "format", json!("rgba8_srgb")),
+                ov("RenderTexture2D", "update_mode", json!("always")),
+            ],
+            &["all"],
+            &["camera", "render-target", "portal", "minimap", "wgpu"],
+        )
+        .aliases(&["camera_texture", "render_texture_camera"]),
+        preset(
+            "hybrid_world_2d3d",
+            "Hybrid 2D + 3D World",
+            "Presentation",
+            AuthoringPresetKind2D::World,
+            "A 3D camera, light and depth world driven by authoritative 2D gameplay coordinates.",
+            &["HybridScene3D", "Camera3D", "Light3D"],
+            &[
+                ov("HybridScene3D", "enabled", json!(true)),
+                ov("HybridScene3D", "physics_mode", json!("2d_gameplay")),
+                ov("HybridScene3D", "render_2d_overlay", json!(true)),
+                ov("Camera3D", "active", json!(true)),
+                ov("Camera3D", "projection", json!("perspective")),
+                ov("Light3D", "light_type", json!("directional")),
+            ],
+            &["all", "survival", "rpg", "strategy"],
+            &["hybrid", "2d", "3d", "billboard", "depth"],
+        )
+        .aliases(&["hybrid_world", "2d3d_world", "two_point_five_d"]),
+        preset(
+            "hybrid_billboard_actor",
+            "Hybrid Billboard Actor",
+            "Presentation",
+            AuthoringPresetKind2D::Actor,
+            "Animated 2D actor synchronized into 3D X/Z space while retaining 2D collision and navigation.",
+            &[
+                "Actor2D",
+                "HybridAnchor2D3D",
+                "Billboard3D",
+                "Animator2D",
+                "Collider2D",
+            ],
+            &[
+                ov("HybridAnchor2D3D", "sync_mode", json!("from_2d")),
+                ov("Billboard3D", "face_camera", json!(true)),
+                ov("Billboard3D", "lock_y_axis", json!(true)),
+                ov("Billboard3D", "use_2d_animation", json!(true)),
+            ],
+            &["all", "survival", "rpg", "action"],
+            &["hybrid", "billboard", "actor", "animation", "2d", "3d"],
+        )
+        .aliases(&["billboard_actor", "sprite3d_actor"]),
+        preset(
+            "post_process_cinematic",
+            "Cinematic Post Process 2D",
+            "Presentation",
+            AuthoringPresetKind2D::Effects,
+            "Global WGPU color grade with restrained bloom and vignette, ready without shader code.",
+            &["PostProcessVolume2D"],
+            &[
+                ov("PostProcessVolume2D", "preset", json!("cinematic")),
+                ov("PostProcessVolume2D", "contrast", json!(1.08)),
+                ov("PostProcessVolume2D", "bloom_intensity", json!(0.35)),
+                ov("PostProcessVolume2D", "vignette_intensity", json!(0.22)),
+            ],
+            &["all", "adventure", "narrative"],
+            &["post-process", "color-grading", "bloom", "wgpu"],
+        )
+        .aliases(&["post_fx", "cinematic_grade"]),
+        preset(
+            "post_process_horror",
+            "Horror Survival Grade 2D",
+            "Presentation",
+            AuthoringPresetKind2D::Effects,
+            "Cold desaturated survival-horror grade with dense edge falloff and subtle lens separation.",
+            &["PostProcessVolume2D"],
+            &[
+                ov("PostProcessVolume2D", "preset", json!("horror_survival")),
+                ov("PostProcessVolume2D", "contrast", json!(1.18)),
+                ov("PostProcessVolume2D", "saturation", json!(0.68)),
+                ov("PostProcessVolume2D", "gamma", json!(0.92)),
+                ov("PostProcessVolume2D", "bloom_intensity", json!(0.18)),
+                ov("PostProcessVolume2D", "vignette_intensity", json!(0.52)),
+                ov("PostProcessVolume2D", "chromatic_aberration", json!(0.003)),
+                ov("PostProcessVolume2D", "tint", json!([215, 228, 245, 255])),
+                ov("PostProcessVolume2D", "fog_density", json!(0.08)),
+                ov("PostProcessVolume2D", "fog_color", json!([58, 72, 88, 255])),
+            ],
+            &["survival", "horror", "stealth"],
+            &["post-process", "horror", "fog", "vignette", "wgpu"],
+        )
+        .aliases(&["horror_grade", "survival_grade"]),
+        preset(
+            "post_process_pixel",
+            "Pixel Presentation 2D",
+            "Presentation",
+            AuthoringPresetKind2D::Effects,
+            "Crisp low-resolution presentation with controllable pixel blocks and subtle scanlines.",
+            &["PostProcessVolume2D"],
+            &[
+                ov("PostProcessVolume2D", "preset", json!("pixel_crisp")),
+                ov("PostProcessVolume2D", "saturation", json!(1.08)),
+                ov("PostProcessVolume2D", "pixel_size", json!(3.0)),
+                ov("PostProcessVolume2D", "scanline_intensity", json!(0.08)),
+                ov("PostProcessVolume2D", "vignette_intensity", json!(0.1)),
+                ov("PostProcessVolume2D", "bloom_intensity", json!(0.08)),
+            ],
+            &["pixel-art", "retro", "all"],
+            &["post-process", "pixel", "scanlines", "wgpu"],
+        )
+        .aliases(&["pixel_grade", "retro_grade"]),
+        preset(
+            "post_process_damage",
+            "Damage Impact Screen 2D",
+            "Presentation",
+            AuthoringPresetKind2D::Effects,
+            "Reusable full-screen damage feedback with red flash, lens separation and vignette pressure.",
+            &["PostProcessVolume2D"],
+            &[
+                ov("PostProcessVolume2D", "preset", json!("damage_impact")),
+                ov("PostProcessVolume2D", "damage_strength", json!(0.65)),
+                ov("PostProcessVolume2D", "chromatic_aberration", json!(0.012)),
+                ov("PostProcessVolume2D", "vignette_intensity", json!(0.62)),
+                ov("PostProcessVolume2D", "bloom_intensity", json!(0.12)),
+            ],
+            &["action", "survival", "horror"],
+            &["post-process", "damage", "feedback", "wgpu"],
+        )
+        .aliases(&["damage_screen", "hit_post_fx"]),
         preset(
             "audio_emitter",
             "Spatial Audio Emitter",
@@ -1683,6 +1855,62 @@ fn automatic_parameters(components: &[String]) -> Vec<PresetParameter2D> {
             "Number of inventory slots.",
             &[("Inventory", "capacity")],
         ));
+        parameters.push(number_parameter(
+            "inventory_weight_limit",
+            "Weight Limit",
+            35.0,
+            0.0,
+            1_000_000.0,
+            "Maximum carried weight; zero disables the weight limit.",
+            &[("Inventory", "max_weight")],
+        ));
+    }
+    if has(components, "SurvivalEnvironment2D") {
+        parameters.push(number_parameter(
+            "ambient_temperature",
+            "Ambient Temperature °C",
+            20.0,
+            -100.0,
+            100.0,
+            "Ambient air temperature used by the thermal model.",
+            &[("SurvivalEnvironment2D", "ambient_temperature_c")],
+        ));
+        parameters.push(number_parameter(
+            "wind_speed",
+            "Wind Speed",
+            0.0,
+            0.0,
+            250.0,
+            "Wind exposure used for chill and drying.",
+            &[("SurvivalEnvironment2D", "wind_speed")],
+        ));
+        parameters.push(number_parameter(
+            "precipitation",
+            "Precipitation",
+            0.0,
+            0.0,
+            1.0,
+            "Normalized rain or snow intensity.",
+            &[("SurvivalEnvironment2D", "precipitation")],
+        ));
+        parameters.push(number_parameter(
+            "shelter",
+            "Shelter",
+            0.0,
+            0.0,
+            1.0,
+            "Protection from wind and precipitation.",
+            &[("SurvivalEnvironment2D", "shelter")],
+        ));
+        parameters.push(number_parameter(
+            "pathogen_exposure",
+            "Pathogen Exposure",
+            0.0,
+            0.0,
+            1.0,
+            "Environmental infection pressure applied to exposed actors.",
+            &[("SurvivalEnvironment2D", "pathogen_exposure")],
+        ));
     }
     if has(components, "GpuParticles2D") {
         parameters.push(integer_parameter(
@@ -1731,6 +1959,192 @@ fn automatic_parameters(components: &[String]) -> Vec<PresetParameter2D> {
             1.0,
             "Tangent-space normal influence used by the WGPU sprite shader.",
             &[("NormalMap2D", "strength")],
+        ));
+    }
+    if has(components, "RenderTexture2D") {
+        parameters.push(integer_parameter(
+            "render_target_width",
+            "Target Width",
+            512,
+            1,
+            i64::from(crate::render::backend::MAX_RENDER_TARGET_SIZE_2D),
+            "Off-screen target width in pixels.",
+            &[("RenderTexture2D", "width")],
+        ));
+        parameters.push(integer_parameter(
+            "render_target_height",
+            "Target Height",
+            512,
+            1,
+            i64::from(crate::render::backend::MAX_RENDER_TARGET_SIZE_2D),
+            "Off-screen target height in pixels.",
+            &[("RenderTexture2D", "height")],
+        ));
+        if has(components, "Camera2D") {
+            parameters.push(boolean_parameter(
+                "render_target_include_ui",
+                "Include UI",
+                false,
+                "Render legacy UI, scene canvases and retained UI text into the camera texture.",
+                &[("Camera2D", "render_target_include_ui")],
+            ));
+        }
+    }
+    if has(components, "HybridScene3D") {
+        parameters.push(number_parameter(
+            "hybrid_world_scale",
+            "3D World Scale",
+            1.0,
+            0.001,
+            10_000.0,
+            "Conversion scale from 2D gameplay units to 3D X/Z coordinates.",
+            &[("HybridScene3D", "world_scale")],
+        ));
+        parameters.push(number_parameter(
+            "hybrid_camera_pitch",
+            "Camera Pitch",
+            58.0,
+            -89.0,
+            89.0,
+            "Presentation camera pitch in degrees.",
+            &[("HybridScene3D", "camera_pitch_degrees")],
+        ));
+        parameters.push(number_parameter(
+            "hybrid_camera_yaw",
+            "Camera Yaw",
+            35.0,
+            -360.0,
+            360.0,
+            "Presentation camera yaw in degrees.",
+            &[("HybridScene3D", "camera_yaw_degrees")],
+        ));
+        parameters.push(boolean_parameter(
+            "hybrid_2d_overlay",
+            "Render 2D Overlay",
+            true,
+            "Composite 2D world-space and UI layers after the 3D depth pass.",
+            &[("HybridScene3D", "render_2d_overlay")],
+        ));
+    }
+    if has(components, "HybridAnchor2D3D") {
+        parameters.push(number_parameter(
+            "hybrid_elevation",
+            "3D Elevation",
+            0.0,
+            -100_000.0,
+            100_000.0,
+            "Vertical elevation above the synchronized 2D ground point.",
+            &[("HybridAnchor2D3D", "elevation")],
+        ));
+    }
+    if has(components, "Billboard3D") {
+        parameters.push(number_parameter(
+            "billboard_width",
+            "Billboard Width",
+            1.0,
+            0.001,
+            100_000.0,
+            "World-space billboard width.",
+            &[("Billboard3D", "width")],
+        ));
+        parameters.push(number_parameter(
+            "billboard_height",
+            "Billboard Height",
+            1.0,
+            0.001,
+            100_000.0,
+            "World-space billboard height.",
+            &[("Billboard3D", "height")],
+        ));
+    }
+    if has(components, "PostProcessVolume2D") {
+        parameters.push(number_parameter(
+            "post_exposure",
+            "Exposure",
+            1.0,
+            0.0,
+            8.0,
+            "Scene exposure multiplier applied by the WGPU composite pass.",
+            &[("PostProcessVolume2D", "exposure")],
+        ));
+        parameters.push(number_parameter(
+            "post_contrast",
+            "Contrast",
+            1.05,
+            0.0,
+            4.0,
+            "Contrast around middle gray.",
+            &[("PostProcessVolume2D", "contrast")],
+        ));
+        parameters.push(number_parameter(
+            "post_saturation",
+            "Saturation",
+            1.0,
+            0.0,
+            4.0,
+            "Global color saturation.",
+            &[("PostProcessVolume2D", "saturation")],
+        ));
+        parameters.push(number_parameter(
+            "post_bloom",
+            "Bloom Intensity",
+            0.35,
+            0.0,
+            4.0,
+            "Threshold bloom contribution from bright pixels.",
+            &[("PostProcessVolume2D", "bloom_intensity")],
+        ));
+        parameters.push(number_parameter(
+            "post_vignette",
+            "Vignette Intensity",
+            0.22,
+            0.0,
+            1.0,
+            "Screen-edge darkening strength.",
+            &[("PostProcessVolume2D", "vignette_intensity")],
+        ));
+        parameters.push(number_parameter(
+            "post_chromatic_aberration",
+            "Chromatic Aberration",
+            0.0,
+            0.0,
+            0.05,
+            "Normalized RGB lens separation in screen space.",
+            &[("PostProcessVolume2D", "chromatic_aberration")],
+        ));
+        parameters.push(integer_parameter(
+            "post_pixel_size",
+            "Pixel Size",
+            1,
+            1,
+            256,
+            "Screen-space pixel block size; one disables pixelation.",
+            &[("PostProcessVolume2D", "pixel_size")],
+        ));
+        parameters.push(number_parameter(
+            "post_fog_density",
+            "Fog Density",
+            0.0,
+            0.0,
+            1.0,
+            "Animated full-screen fog blend.",
+            &[("PostProcessVolume2D", "fog_density")],
+        ));
+        parameters.push(number_parameter(
+            "post_weight",
+            "Volume Weight",
+            1.0,
+            0.0,
+            1.0,
+            "Blend weight used when multiple global volumes are active.",
+            &[("PostProcessVolume2D", "weight")],
+        ));
+        parameters.push(boolean_parameter(
+            "post_global",
+            "Global Volume",
+            true,
+            "Apply the volume to the entire frame.",
+            &[("PostProcessVolume2D", "global")],
         ));
     }
     parameters
@@ -1790,6 +2204,31 @@ fn number_parameter(
     }
 }
 
+fn boolean_parameter(
+    id: &str,
+    label: &str,
+    default_value: bool,
+    description: &str,
+    bindings: &[(&str, &str)],
+) -> PresetParameter2D {
+    PresetParameter2D {
+        id: id.to_string(),
+        label: label.to_string(),
+        value_type: "bool".to_string(),
+        default_value: json!(default_value),
+        minimum: None,
+        maximum: None,
+        description: description.to_string(),
+        bindings: bindings
+            .iter()
+            .map(|(component, property)| PresetParameterBinding2D {
+                component: (*component).to_string(),
+                property: (*property).to_string(),
+            })
+            .collect(),
+    }
+}
+
 fn automatic_requirements(components: &[String]) -> Vec<String> {
     let mut requirements = Vec::new();
     if has(components, "InputActions2D") || has(components, "PlayerController2D") {
@@ -1822,6 +2261,18 @@ fn automatic_requirements(components: &[String]) -> Vec<String> {
     if has(components, "NormalMap2D") {
         requirements.push(
             "Assign a tangent-space normal texture to NormalMap2D; color and normal textures share the standard asset workflow"
+                .to_string(),
+        );
+    }
+    if has(components, "RenderTexture2D") {
+        requirements.push(
+            "Use the WGPU renderer for GPU render-target allocation and sampling; compatibility backends report the unsupported operation explicitly"
+                .to_string(),
+        );
+    }
+    if has(components, "PostProcessVolume2D") {
+        requirements.push(
+            "Use the WGPU renderer; compatibility backends reject screen-space post processing explicitly"
                 .to_string(),
         );
     }
@@ -1864,6 +2315,26 @@ fn automatic_workflow_steps(kind: AuthoringPresetKind2D, components: &[String]) 
                 .to_string(),
         );
     }
+    if has(components, "RenderTexture2D") {
+        steps.push(
+            "Choose target resolution, update mode and whether the camera should include UI"
+                .to_string(),
+        );
+        steps.push(
+            "Use the persistent render-target:// binding from a SpriteRenderer or Material2D texture slot"
+                .to_string(),
+        );
+    }
+    if has(components, "PostProcessVolume2D") {
+        steps.push(
+            "Tune grade, bloom, lens, pixel, damage and fog groups directly in the Inspector"
+                .to_string(),
+        );
+        steps.push(
+            "Use Render Diagnostics to verify the composite pass and active effect count"
+                .to_string(),
+        );
+    }
     steps.push("Play the scene and inspect Runtime Health".to_string());
     steps
 }
@@ -1881,6 +2352,9 @@ fn automatic_recommendations(kind: AuthoringPresetKind2D, components: &[String])
     }
     if kind == AuthoringPresetKind2D::Physics {
         recommendations.push("camera_rig".to_string());
+    }
+    if has(components, "PostProcessVolume2D") {
+        recommendations.push("lighting_rig".to_string());
     }
     recommendations.sort();
     recommendations.dedup();
@@ -1915,6 +2389,15 @@ mod tests {
             "physics_wind_zone",
             "gpu_particle_emitter",
             "lit_sprite",
+            "render_target_camera",
+            "post_process_cinematic",
+            "post_process_horror",
+            "post_process_pixel",
+            "post_process_damage",
+            "survival_environment",
+            "survival_loadout",
+            "hybrid_world_2d3d",
+            "hybrid_billboard_actor",
         ] {
             assert!(catalog.resolve(expected).is_some(), "{expected}");
         }
@@ -1941,6 +2424,117 @@ mod tests {
             .find(|component| component.component_type == "Rigidbody2D")
             .unwrap();
         assert!(!rigidbody.get_bool("use_gravity", true));
+    }
+
+    #[test]
+    fn render_target_preset_exposes_scriptless_ui_capture() {
+        let catalog = AuthoringCatalog2D::builtin();
+        let parameters = json!({
+            "render_target_width": 640,
+            "render_target_height": 360,
+            "render_target_include_ui": true,
+        });
+        let plan = catalog
+            .application_plan("render_target_camera", ["Transform"], Some(&parameters))
+            .unwrap();
+        let camera = plan
+            .configured_components
+            .iter()
+            .find(|component| component.component_type == "Camera2D")
+            .unwrap();
+        let texture = plan
+            .configured_components
+            .iter()
+            .find(|component| component.component_type == "RenderTexture2D")
+            .unwrap();
+        assert!(camera.get_bool("render_target_include_ui", false));
+        assert_eq!(texture.get_usize("width", 0), 640);
+        assert_eq!(texture.get_usize("height", 0), 360);
+    }
+
+    #[test]
+    fn post_process_presets_expose_tunable_scriptless_wgpu_effects() {
+        let catalog = AuthoringCatalog2D::builtin();
+        let plan = catalog
+            .application_plan(
+                "horror_grade",
+                std::iter::empty::<&str>(),
+                Some(&json!({
+                    "post_bloom": 0.42,
+                    "post_vignette": 0.7,
+                    "post_fog_density": 0.2,
+                    "post_global": true,
+                })),
+            )
+            .unwrap();
+        let volume = plan
+            .configured_components
+            .iter()
+            .find(|component| component.component_type == "PostProcessVolume2D")
+            .unwrap();
+        assert_eq!(volume.get_string("preset", ""), "horror_survival");
+        assert_eq!(volume.get_f64("bloom_intensity", 0.0), 0.42);
+        assert_eq!(volume.get_f64("vignette_intensity", 0.0), 0.7);
+        assert_eq!(volume.get_f64("fog_density", 0.0), 0.2);
+        assert!(volume.get_bool("global", false));
+        assert!(
+            catalog
+                .resolve("post_process_pixel")
+                .unwrap()
+                .requirements
+                .iter()
+                .any(|requirement| requirement.contains("WGPU"))
+        );
+    }
+
+    #[test]
+    fn hybrid_presets_enable_the_world_and_expose_2d_3d_sync_controls() {
+        let catalog = AuthoringCatalog2D::builtin();
+        let world = catalog
+            .application_plan(
+                "hybrid_world",
+                std::iter::empty::<&str>(),
+                Some(&json!({
+                    "hybrid_world_scale": 2.5,
+                    "hybrid_camera_pitch": 62.0,
+                    "hybrid_camera_yaw": -25.0,
+                })),
+            )
+            .unwrap();
+        let settings = world
+            .configured_components
+            .iter()
+            .find(|component| component.component_type == "HybridScene3D")
+            .unwrap();
+        assert!(settings.enabled);
+        assert_eq!(settings.get_f64("world_scale", 0.0), 2.5);
+        assert_eq!(settings.get_f64("camera_pitch_degrees", 0.0), 62.0);
+        assert_eq!(settings.get_f64("camera_yaw_degrees", 0.0), -25.0);
+
+        let actor = catalog
+            .application_plan(
+                "sprite3d_actor",
+                std::iter::empty::<&str>(),
+                Some(&json!({
+                    "hybrid_elevation": 1.25,
+                    "billboard_width": 0.8,
+                    "billboard_height": 1.6,
+                })),
+            )
+            .unwrap();
+        let anchor = actor
+            .configured_components
+            .iter()
+            .find(|component| component.component_type == "HybridAnchor2D3D")
+            .unwrap();
+        let billboard = actor
+            .configured_components
+            .iter()
+            .find(|component| component.component_type == "Billboard3D")
+            .unwrap();
+        assert_eq!(anchor.get_f64("elevation", 0.0), 1.25);
+        assert_eq!(billboard.get_f64("width", 0.0), 0.8);
+        assert_eq!(billboard.get_f64("height", 0.0), 1.6);
     }
 
     #[test]

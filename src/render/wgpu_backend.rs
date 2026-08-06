@@ -22,9 +22,10 @@ use crate::engine::error_handler::{MFResult, MiniForgeError};
 use super::backend::{
     BUILTIN_FLAT_NORMAL_TEXTURE_ID, BUILTIN_RADIAL_LIGHT_TEXTURE_ID,
     BUILTIN_RADIAL_LIGHT_TEXTURE_SIZE, CameraCommand3D, GraphicsApi, LightDrawCommand3D,
-    MeshDrawCommand3D, ParticleDrawCommand, RenderBackend, RenderDeviceCaps, SpriteBlendMode,
-    SpriteDrawCommand, SpriteDrawOptions, SpriteMaterialEffect, SpriteRegionDrawCommand,
-    TextDrawCommand, TextWrapMode, TilemapDrawCommand, UiDrawCommand, radial_light_texture_rgba8,
+    MAX_RENDER_TARGET_SIZE_2D, MeshDrawCommand3D, ParticleDrawCommand, PostProcessCommand2D,
+    RenderBackend, RenderDeviceCaps, RenderTargetDescriptor2D, SpriteBlendMode, SpriteDrawCommand,
+    SpriteDrawOptions, SpriteMaterialEffect, SpriteRegionDrawCommand, TextDrawCommand,
+    TextWrapMode, TilemapDrawCommand, UiDrawCommand, radial_light_texture_rgba8,
 };
 
 const OFFSCREEN_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -297,6 +298,118 @@ fn fs_particle(in: ParticleVertexOut) -> @location(0) vec4<f32> {
 }
 "#;
 
+const POST_PROCESS_SHADER: &str = r#"
+struct PostProcessParams {
+    resolution_time: vec4<f32>,
+    color_grade: vec4<f32>,
+    bloom: vec4<f32>,
+    vignette: vec4<f32>,
+    screen_fx: vec4<f32>,
+    tint: vec4<f32>,
+    damage_flash: vec4<f32>,
+    damage_fog: vec4<f32>,
+    fog_color: vec4<f32>,
+};
+
+struct PostProcessVertexOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@group(0) @binding(0) var scene_color: texture_2d<f32>;
+@group(0) @binding(1) var scene_sampler: sampler;
+@group(1) @binding(0) var<uniform> params: PostProcessParams;
+
+@vertex
+fn vs_post_process(@builtin(vertex_index) vertex_index: u32) -> PostProcessVertexOut {
+    let positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    let uvs = array<vec2<f32>, 3>(
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(2.0, 1.0),
+        vec2<f32>(0.0, -1.0),
+    );
+    var out: PostProcessVertexOut;
+    out.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
+    out.uv = uvs[vertex_index];
+    return out;
+}
+
+fn luminance(color: vec3<f32>) -> f32 {
+    return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+fn sample_bloom(uv: vec2<f32>, texel: vec2<f32>, radius: f32, threshold: f32) -> vec3<f32> {
+    let offsets = array<vec2<f32>, 8>(
+        vec2<f32>(-1.0, 0.0), vec2<f32>(1.0, 0.0),
+        vec2<f32>(0.0, -1.0), vec2<f32>(0.0, 1.0),
+        vec2<f32>(-0.707, -0.707), vec2<f32>(0.707, -0.707),
+        vec2<f32>(-0.707, 0.707), vec2<f32>(0.707, 0.707),
+    );
+    var result = vec3<f32>(0.0);
+    for (var index = 0u; index < 8u; index = index + 1u) {
+        let sampled = textureSample(scene_color, scene_sampler, uv + offsets[index] * texel * radius).rgb;
+        let contribution = smoothstep(threshold, 1.0, luminance(sampled));
+        result = result + sampled * contribution;
+    }
+    return result * 0.125;
+}
+
+fn noise(uv: vec2<f32>) -> f32 {
+    return fract(sin(dot(uv, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+}
+
+@fragment
+fn fs_post_process(in: PostProcessVertexOut) -> @location(0) vec4<f32> {
+    let resolution = max(params.resolution_time.xy, vec2<f32>(1.0));
+    let texel = 1.0 / resolution;
+    let pixel_size = max(params.screen_fx.y, 1.0);
+    var uv = clamp(in.uv, vec2<f32>(0.0), vec2<f32>(1.0));
+    if pixel_size > 1.001 {
+        uv = (floor(uv * resolution / pixel_size) + vec2<f32>(0.5)) * pixel_size / resolution;
+    }
+
+    let chromatic = max(params.screen_fx.x, 0.0);
+    let red = textureSample(scene_color, scene_sampler, uv + vec2<f32>(chromatic, 0.0)).r;
+    let center = textureSample(scene_color, scene_sampler, uv);
+    let blue = textureSample(scene_color, scene_sampler, uv - vec2<f32>(chromatic, 0.0)).b;
+    var color = vec3<f32>(red, center.g, blue);
+
+    if params.bloom.y > 0.0001 {
+        color = color + sample_bloom(uv, texel, max(params.bloom.z, 0.5), params.bloom.x)
+            * params.bloom.y;
+    }
+
+    color = color * max(params.color_grade.x, 0.0);
+    color = (color - vec3<f32>(0.5)) * params.color_grade.y + vec3<f32>(0.5);
+    let gray = vec3<f32>(luminance(color));
+    color = mix(gray, color, params.color_grade.z);
+    color = pow(max(color, vec3<f32>(0.0)), vec3<f32>(1.0 / max(params.color_grade.w, 0.05)));
+    color = color * params.tint.rgb;
+
+    let fog_noise = noise(uv * resolution * 0.0125 + params.resolution_time.zz);
+    let fog_amount = clamp(
+        params.damage_fog.y * (0.35 + uv.y * 0.65) * mix(0.82, 1.18, fog_noise),
+        0.0,
+        1.0,
+    );
+    color = mix(color, params.fog_color.rgb, fog_amount * params.fog_color.a);
+    color = mix(color, params.damage_flash.rgb, params.damage_fog.x * params.damage_flash.a);
+
+    let scanline = 0.5 + 0.5 * sin(uv.y * resolution.y * 3.14159265);
+    color = color * (1.0 - clamp(params.screen_fx.z, 0.0, 1.0) * scanline);
+
+    let aspect = resolution.x / resolution.y;
+    let centered = (uv - vec2<f32>(0.5)) * vec2<f32>(aspect, 1.0);
+    let vignette_edge = smoothstep(params.vignette.y, 0.92, length(centered));
+    color = color * (1.0 - clamp(params.vignette.x, 0.0, 1.0) * vignette_edge);
+    return vec4<f32>(clamp(color, vec3<f32>(0.0), vec3<f32>(8.0)), center.a * params.tint.a);
+}
+"#;
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct SpriteVertex {
@@ -344,6 +457,20 @@ struct GpuParticleParams {
     _padding: [u32; 2],
 }
 
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct GpuPostProcessParams {
+    resolution_time: [f32; 4],
+    color_grade: [f32; 4],
+    bloom: [f32; 4],
+    vignette: [f32; 4],
+    screen_fx: [f32; 4],
+    tint: [f32; 4],
+    damage_flash: [f32; 4],
+    damage_fog: [f32; 4],
+    fog_color: [f32; 4],
+}
+
 #[derive(Clone, Copy)]
 struct QueuedSprite {
     sprite: SpriteDrawCommand,
@@ -358,12 +485,21 @@ struct QueuedSprite {
     light_direction: [i16; 2],
     light_color: [u8; 3],
     ambient_light: u8,
+    render_target_pass: Option<usize>,
+    viewport_size: [u32; 2],
+}
+
+#[derive(Debug, Clone)]
+struct QueuedText {
+    command: TextDrawCommand,
+    render_target_pass: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SpriteBatch {
     texture_id: u64,
     normal_texture_id: u64,
+    render_target_pass: Option<usize>,
     clip_rect: [u32; 4],
     blend_mode: SpriteBlendMode,
     first_sprite: u32,
@@ -378,6 +514,8 @@ pub struct WgpuFrameDiagnostics {
     pub culled_sprites: usize,
     pub queued_text_areas: usize,
     pub culled_text_areas: usize,
+    #[serde(default)]
+    pub render_target_text_areas: usize,
     pub queued_particle_systems: usize,
     pub gpu_particle_capacity: usize,
     pub gpu_particle_spawned: usize,
@@ -386,6 +524,12 @@ pub struct WgpuFrameDiagnostics {
     pub texture_bind_changes: usize,
     #[serde(default)]
     pub normal_texture_bind_changes: usize,
+    #[serde(default)]
+    pub render_target_passes: usize,
+    #[serde(default)]
+    pub post_process_passes: usize,
+    #[serde(default)]
+    pub post_process_effects: usize,
     pub pipeline_changes: usize,
     pub vertex_bytes_uploaded: u64,
     pub vertex_buffer_capacity_bytes: u64,
@@ -413,6 +557,51 @@ struct WgpuTexture {
     _texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
     normal_bind_group: wgpu::BindGroup,
+}
+
+struct WgpuRenderTarget {
+    texture: wgpu::Texture,
+    color_view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+    normal_bind_group: wgpu::BindGroup,
+    text_atlas: TextAtlas,
+    text_renderer: TextRenderer,
+    text_viewport: TextViewport,
+    width: u32,
+    height: u32,
+}
+
+struct WgpuPostProcess {
+    scene_texture: wgpu::Texture,
+    scene_view: wgpu::TextureView,
+    scene_bind_group: wgpu::BindGroup,
+    sampler: wgpu::Sampler,
+    uniform_buffer: wgpu::Buffer,
+    uniform_bind_group: wgpu::BindGroup,
+    pipeline: wgpu::RenderPipeline,
+    text_atlas: TextAtlas,
+    text_renderer: TextRenderer,
+    text_viewport: TextViewport,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ActiveRenderTargetPass {
+    target_id: u64,
+    pass_index: usize,
+    first_sprite: usize,
+    first_text: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct QueuedRenderTargetPass {
+    target_id: u64,
+    clear_color: [f64; 4],
+    first_sprite: usize,
+    sprite_count: usize,
+    first_text: usize,
+    text_count: usize,
 }
 
 struct GpuParticleSystem {
@@ -452,6 +641,7 @@ struct WgpuState {
     device_loss_rx: mpsc::Receiver<DeviceLossNotice>,
     queue: wgpu::Queue,
     pipelines: HashMap<SpriteBlendMode, wgpu::RenderPipeline>,
+    render_target_pipelines: HashMap<SpriteBlendMode, wgpu::RenderPipeline>,
     target: Option<wgpu::Texture>,
     surface: Option<wgpu::Surface<'static>>,
     surface_config: Option<wgpu::SurfaceConfiguration>,
@@ -460,13 +650,16 @@ struct WgpuState {
     sampler: wgpu::Sampler,
     white_texture: WgpuTexture,
     textures: HashMap<u64, WgpuTexture>,
+    render_targets: HashMap<u64, WgpuRenderTarget>,
     vertex_buffer: wgpu::Buffer,
     vertex_buffer_capacity_bytes: u64,
     particle_compute_bind_group_layout: wgpu::BindGroupLayout,
     particle_render_bind_group_layout: wgpu::BindGroupLayout,
     particle_compute_pipeline: wgpu::ComputePipeline,
     particle_render_pipelines: HashMap<SpriteBlendMode, wgpu::RenderPipeline>,
+    post_process_particle_pipelines: HashMap<SpriteBlendMode, wgpu::RenderPipeline>,
     particle_systems: HashMap<u64, GpuParticleSystem>,
+    post_process: WgpuPostProcess,
     font_system: FontSystem,
     swash_cache: SwashCache,
     text_atlas: TextAtlas,
@@ -494,8 +687,12 @@ pub struct WgpuBackend {
     frame_open: bool,
     clear_color: [f64; 4],
     sprites: Vec<QueuedSprite>,
-    texts: Vec<TextDrawCommand>,
+    texts: Vec<QueuedText>,
     particles: Vec<ParticleDrawCommand>,
+    render_target_descriptors: HashMap<u64, RenderTargetDescriptor2D>,
+    render_target_passes: Vec<QueuedRenderTargetPass>,
+    active_render_target: Option<ActiveRenderTargetPass>,
+    post_process_command: Option<PostProcessCommand2D>,
     culled_sprites: usize,
     culled_text_areas: usize,
     last_frame_diagnostics: WgpuFrameDiagnostics,
@@ -526,6 +723,7 @@ impl fmt::Debug for WgpuBackend {
             )
             .field("last_frame_diagnostics", &self.last_frame_diagnostics)
             .field("last_device_loss", &self.last_device_loss)
+            .field("post_process_command", &self.post_process_command)
             .field("has_surface", &self.has_surface())
             .field("frame_open", &self.frame_open)
             .finish_non_exhaustive()
@@ -555,6 +753,10 @@ impl Default for WgpuBackend {
             sprites: Vec::new(),
             texts: Vec::new(),
             particles: Vec::new(),
+            render_target_descriptors: HashMap::new(),
+            render_target_passes: Vec::new(),
+            active_render_target: None,
+            post_process_command: None,
             culled_sprites: 0,
             culled_text_areas: 0,
             last_frame_diagnostics: WgpuFrameDiagnostics::default(),
@@ -621,6 +823,11 @@ impl WgpuBackend {
                 "texture id is reserved for a MiniForge built-in texture",
             ));
         }
+        if self.render_target_descriptors.contains_key(&texture_id) {
+            return Err(render_error(format!(
+                "texture id {texture_id} is already used by a Render Target 2D"
+            )));
+        }
         let width = width.max(1);
         let height = height.max(1);
         let expected = width as usize * height as usize * 4;
@@ -684,6 +891,10 @@ impl WgpuBackend {
             .count()
     }
 
+    pub fn render_target_count(&self) -> usize {
+        self.render_target_descriptors.len()
+    }
+
     pub fn last_frame_diagnostics(&self) -> &WgpuFrameDiagnostics {
         &self.last_frame_diagnostics
     }
@@ -695,74 +906,15 @@ impl WgpuBackend {
         let target = state.target.as_ref().ok_or_else(|| {
             render_error("readback is only available for the off-screen wgpu target")
         })?;
-        let unpadded_bytes_per_row = self.width.saturating_mul(4);
-        let alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(alignment) * alignment;
-        let buffer_size = u64::from(padded_bytes_per_row) * u64::from(self.height);
-        let readback = state.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("MiniForge wgpu 2D readback"),
-            size: buffer_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        readback_texture_rgba8(state, target, self.width, self.height)
+    }
 
-        let mut encoder = state
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("MiniForge wgpu 2D readback encoder"),
-            });
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: target,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_bytes_per_row),
-                    rows_per_image: Some(self.height),
-                },
-            },
-            wgpu::Extent3d {
-                width: self.width,
-                height: self.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        state.queue.submit([encoder.finish()]);
-
-        let slice = readback.slice(..);
-        let (sender, receiver) = mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
-        });
-        state
-            .device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|error| render_error(format!("wgpu readback poll failed: {error}")))?;
-        receiver
-            .recv()
-            .map_err(|error| render_error(format!("wgpu readback callback failed: {error}")))?
-            .map_err(|error| render_error(format!("wgpu readback map failed: {error}")))?;
-
-        let mapped = slice
-            .get_mapped_range()
-            .map_err(|error| render_error(format!("wgpu readback range failed: {error}")))?;
-        let mut pixels = vec![0; unpadded_bytes_per_row as usize * self.height as usize];
-        for row in 0..self.height as usize {
-            let source_start = row * padded_bytes_per_row as usize;
-            let destination_start = row * unpadded_bytes_per_row as usize;
-            pixels[destination_start..destination_start + unpadded_bytes_per_row as usize]
-                .copy_from_slice(
-                    &mapped[source_start..source_start + unpadded_bytes_per_row as usize],
-                );
-        }
-        drop(mapped);
-        readback.unmap();
-        Ok(pixels)
+    pub fn readback_render_target_rgba8(&self, texture_id: u64) -> MFResult<Vec<u8>> {
+        let state = self.state()?;
+        let target = state.render_targets.get(&texture_id).ok_or_else(|| {
+            render_error(format!("render target texture {texture_id} does not exist"))
+        })?;
+        readback_texture_rgba8(state, &target.texture, target.width, target.height)
     }
 
     fn create_instance(&self) -> wgpu::Instance {
@@ -922,6 +1074,27 @@ impl WgpuBackend {
             )
         })
         .collect();
+        let render_target_pipelines = [
+            SpriteBlendMode::Alpha,
+            SpriteBlendMode::PremultipliedAlpha,
+            SpriteBlendMode::Additive,
+            SpriteBlendMode::Multiply,
+            SpriteBlendMode::Screen,
+        ]
+        .into_iter()
+        .map(|blend_mode| {
+            (
+                blend_mode,
+                create_sprite_pipeline(
+                    &device,
+                    &shader,
+                    &pipeline_layout,
+                    SPRITE_COLOR_VIEW_FORMAT,
+                    blend_mode,
+                ),
+            )
+        })
+        .collect();
         let particle_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("MiniForge GPU particle compute and render shader"),
             source: wgpu::ShaderSource::Wgsl(GPU_PARTICLE_SHADER.into()),
@@ -1020,6 +1193,27 @@ impl WgpuBackend {
             )
         })
         .collect();
+        let post_process_particle_pipelines = [
+            SpriteBlendMode::Alpha,
+            SpriteBlendMode::PremultipliedAlpha,
+            SpriteBlendMode::Additive,
+            SpriteBlendMode::Multiply,
+            SpriteBlendMode::Screen,
+        ]
+        .into_iter()
+        .map(|blend_mode| {
+            (
+                blend_mode,
+                create_particle_render_pipeline(
+                    &device,
+                    &particle_shader,
+                    &particle_render_pipeline_layout,
+                    SPRITE_COLOR_VIEW_FORMAT,
+                    blend_mode,
+                ),
+            )
+        })
+        .collect();
         let font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
         let text_cache = TextCache::new(&device);
@@ -1030,6 +1224,16 @@ impl WgpuBackend {
             &device,
             wgpu::MultisampleState::default(),
             None,
+        );
+        let post_process = create_post_process_resources(
+            PostProcessCreateResources {
+                device: &device,
+                queue: &queue,
+                texture_layout: &texture_layout,
+            },
+            self.width,
+            self.height,
+            target_format,
         );
         let target = surface
             .is_none()
@@ -1052,6 +1256,7 @@ impl WgpuBackend {
                 device_loss_rx,
                 queue,
                 pipelines,
+                render_target_pipelines,
                 target,
                 surface,
                 surface_config,
@@ -1060,13 +1265,16 @@ impl WgpuBackend {
                 sampler,
                 white_texture,
                 textures: HashMap::new(),
+                render_targets: HashMap::new(),
                 vertex_buffer,
                 vertex_buffer_capacity_bytes: INITIAL_VERTEX_BUFFER_BYTES,
                 particle_compute_bind_group_layout,
                 particle_render_bind_group_layout,
                 particle_compute_pipeline,
                 particle_render_pipelines,
+                post_process_particle_pipelines,
                 particle_systems: HashMap::new(),
+                post_process,
                 font_system,
                 swash_cache,
                 text_atlas,
@@ -1092,6 +1300,7 @@ impl WgpuBackend {
         match self.create_state(instance, surface) {
             Ok((mut state, caps)) => {
                 restore_texture_backups(&mut state, &self.texture_backups);
+                restore_render_targets(&mut state, &self.render_target_descriptors);
                 self.state = Some(state);
                 self.caps = Some(caps);
                 self.initialized = true;
@@ -1135,6 +1344,7 @@ impl WgpuBackend {
         match self.create_state(&instance, surface) {
             Ok((mut state, caps)) => {
                 restore_texture_backups(&mut state, &self.texture_backups);
+                restore_render_targets(&mut state, &self.render_target_descriptors);
                 self.state = Some(state);
                 self.caps = Some(caps);
                 self.initialized = true;
@@ -1185,8 +1395,29 @@ impl WgpuBackend {
             .ok_or_else(|| render_error("wgpu backend has not been initialized"))
     }
 
+    fn queued_draw_target(&self) -> (Option<usize>, [u32; 2]) {
+        let Some(active) = self.active_render_target else {
+            return (None, [self.width.max(1), self.height.max(1)]);
+        };
+        let descriptor = self
+            .render_target_descriptors
+            .get(&active.target_id)
+            .expect("active render target descriptor must remain registered");
+        (
+            Some(active.pass_index),
+            [descriptor.width.max(1), descriptor.height.max(1)],
+        )
+    }
+
     fn queue_sprite(&mut self, mut queued: QueuedSprite) -> MFResult<()> {
         let sprite = &mut queued.sprite;
+        if self.active_render_target.is_some_and(|active| {
+            sprite.texture_id == active.target_id || queued.normal_texture_id == active.target_id
+        }) {
+            return Err(render_error(
+                "a render target pass cannot sample from the texture it is currently writing",
+            ));
+        }
         if [
             sprite.x,
             sprite.y,
@@ -1209,10 +1440,11 @@ impl WgpuBackend {
         }
         sprite.color = sprite.color.map(|channel| channel.clamp(0.0, 1.0));
         self.draw_calls += 1;
-        if !sprite_intersects_viewport(sprite, self.width, self.height)
-            || queued
-                .clip_rect
-                .is_some_and(|clip| normalize_clip_rect(clip, self.width, self.height).is_none())
+        if !sprite_intersects_viewport(sprite, queued.viewport_size[0], queued.viewport_size[1])
+            || queued.clip_rect.is_some_and(|clip| {
+                normalize_clip_rect(clip, queued.viewport_size[0], queued.viewport_size[1])
+                    .is_none()
+            })
         {
             self.culled_sprites += 1;
             return Ok(());
@@ -1222,12 +1454,50 @@ impl WgpuBackend {
     }
 
     fn render_frame(&mut self) -> MFResult<WgpuFrameDiagnostics> {
-        let vertices = sprites_to_vertices(&self.sprites, self.width, self.height);
-        let batches = build_sprite_batches(&self.sprites, self.width, self.height);
-        let text_commands = &self.texts;
+        let vertices = sprites_to_vertices(&self.sprites);
+        let batches = build_sprite_batches(&self.sprites);
+        let post_process_command = self.post_process_command.clone();
+        let has_post_process = post_process_command.is_some();
+        let post_process_effects = post_process_command
+            .as_ref()
+            .map_or(0, PostProcessCommand2D::active_effect_count);
+        let render_target_passes = self.render_target_passes.clone();
+        let render_target_batches = (0..render_target_passes.len())
+            .map(|pass_index| {
+                batches
+                    .iter()
+                    .filter(|batch| batch.render_target_pass == Some(pass_index))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let main_batches = batches
+            .iter()
+            .filter(|batch| batch.render_target_pass.is_none())
+            .collect::<Vec<_>>();
+        let render_target_text_commands = (0..render_target_passes.len())
+            .map(|pass_index| {
+                self.texts
+                    .iter()
+                    .filter(|queued| queued.render_target_pass == Some(pass_index))
+                    .map(|queued| queued.command.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let main_text_commands = self
+            .texts
+            .iter()
+            .filter(|queued| queued.render_target_pass.is_none())
+            .map(|queued| queued.command.clone())
+            .collect::<Vec<_>>();
         let particle_commands = &self.particles;
-        let has_text = !text_commands.is_empty();
-        let mut text_buffers = Vec::with_capacity(text_commands.len());
+        let has_main_text = !main_text_commands.is_empty();
+        let target_text_passes = render_target_text_commands
+            .iter()
+            .filter(|commands| !commands.is_empty())
+            .count();
+        let render_target_text_areas = render_target_text_commands.iter().map(Vec::len).sum();
+        let mut main_text_buffers = Vec::with_capacity(main_text_commands.len());
+        let mut render_target_text_buffers = Vec::with_capacity(render_target_text_commands.len());
         let vertex_bytes = std::mem::size_of_val(vertices.as_slice()) as u64;
         let clear_color = self.clear_color;
         let mut reallocated = false;
@@ -1256,17 +1526,107 @@ impl WgpuBackend {
                     .queue
                     .write_buffer(&state.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
             }
-            if has_text {
-                prepare_text_areas(
-                    state,
-                    text_commands,
-                    &mut text_buffers,
-                    self.width,
-                    self.height,
-                )?;
+            if has_main_text {
+                if has_post_process {
+                    let WgpuState {
+                        device,
+                        queue,
+                        font_system,
+                        swash_cache,
+                        post_process,
+                        ..
+                    } = state;
+                    prepare_text_areas(
+                        TextRenderResources {
+                            device,
+                            queue,
+                            font_system,
+                            swash_cache,
+                            text_atlas: &mut post_process.text_atlas,
+                            text_renderer: &mut post_process.text_renderer,
+                            text_viewport: &mut post_process.text_viewport,
+                        },
+                        &main_text_commands,
+                        &mut main_text_buffers,
+                        self.width,
+                        self.height,
+                    )?;
+                } else {
+                    let WgpuState {
+                        device,
+                        queue,
+                        font_system,
+                        swash_cache,
+                        text_atlas,
+                        text_renderer,
+                        text_viewport,
+                        ..
+                    } = state;
+                    prepare_text_areas(
+                        TextRenderResources {
+                            device,
+                            queue,
+                            font_system,
+                            swash_cache,
+                            text_atlas,
+                            text_renderer,
+                            text_viewport,
+                        },
+                        &main_text_commands,
+                        &mut main_text_buffers,
+                        self.width,
+                        self.height,
+                    )?;
+                }
+            }
+            for (pass, commands) in render_target_passes
+                .iter()
+                .zip(render_target_text_commands.iter())
+            {
+                let mut buffers = Vec::with_capacity(commands.len());
+                if !commands.is_empty() {
+                    let WgpuState {
+                        device,
+                        queue,
+                        font_system,
+                        swash_cache,
+                        render_targets,
+                        ..
+                    } = state;
+                    let target = render_targets.get_mut(&pass.target_id).ok_or_else(|| {
+                        render_error(format!(
+                            "render target texture {} disappeared before text preparation",
+                            pass.target_id
+                        ))
+                    })?;
+                    prepare_text_areas(
+                        TextRenderResources {
+                            device,
+                            queue,
+                            font_system,
+                            swash_cache,
+                            text_atlas: &mut target.text_atlas,
+                            text_renderer: &mut target.text_renderer,
+                            text_viewport: &mut target.text_viewport,
+                        },
+                        commands,
+                        &mut buffers,
+                        target.width,
+                        target.height,
+                    )?;
+                }
+                render_target_text_buffers.push(buffers);
             }
             let prepared_particles =
                 prepare_gpu_particle_draws(state, particle_commands, self.width, self.height)?;
+            if let Some(command) = post_process_command.as_ref() {
+                let params = post_process_gpu_params(command, self.width, self.height);
+                state.queue.write_buffer(
+                    &state.post_process.uniform_buffer,
+                    0,
+                    bytemuck::bytes_of(&params),
+                );
+            }
             gpu_particle_capacity = prepared_particles
                 .iter()
                 .map(|draw| draw.capacity as usize)
@@ -1358,9 +1718,82 @@ impl WgpuBackend {
                     }
                     particle_compute_dispatches = prepared_particles.len();
                 }
-                {
+                for (pass_index, target_pass) in render_target_passes.iter().enumerate() {
+                    let target = state
+                        .render_targets
+                        .get(&target_pass.target_id)
+                        .ok_or_else(|| {
+                            render_error(format!(
+                                "render target texture {} disappeared before submission",
+                                target_pass.target_id
+                            ))
+                        })?;
+                    debug_assert_eq!(
+                        render_target_batches[pass_index]
+                            .iter()
+                            .map(|batch| batch.sprite_count as usize)
+                            .sum::<usize>(),
+                        target_pass.sprite_count
+                    );
+                    debug_assert!(
+                        render_target_batches[pass_index]
+                            .first()
+                            .is_none_or(
+                                |batch| batch.first_sprite as usize >= target_pass.first_sprite
+                            )
+                    );
+                    debug_assert_eq!(
+                        render_target_text_commands[pass_index].len(),
+                        target_pass.text_count
+                    );
+                    debug_assert!(
+                        target_pass.text_count == 0 || target_pass.first_text < self.texts.len()
+                    );
                     let color_attachment = wgpu::RenderPassColorAttachment {
-                        view: &view,
+                        view: &target.color_view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: target_pass.clear_color[0],
+                                g: target_pass.clear_color[1],
+                                b: target_pass.clear_color[2],
+                                a: target_pass.clear_color[3],
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    };
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("MiniForge Render Target 2D sprite and text pass"),
+                        color_attachments: &[Some(color_attachment)],
+                        ..Default::default()
+                    });
+                    draw_sprite_batches(
+                        &mut pass,
+                        state,
+                        &state.render_target_pipelines,
+                        &render_target_batches[pass_index],
+                        vertex_bytes,
+                    );
+                    if !render_target_text_commands[pass_index].is_empty() {
+                        target
+                            .text_renderer
+                            .render(&target.text_atlas, &target.text_viewport, &mut pass)
+                            .map_err(|error| {
+                                render_error(format!(
+                                    "wgpu render-target text render failed: {error}"
+                                ))
+                            })?;
+                    }
+                }
+                {
+                    let main_view = if has_post_process {
+                        &state.post_process.scene_view
+                    } else {
+                        &view
+                    };
+                    let color_attachment = wgpu::RenderPassColorAttachment {
+                        view: main_view,
                         resolve_target: None,
                         depth_slice: None,
                         ops: wgpu::Operations {
@@ -1378,47 +1811,24 @@ impl WgpuBackend {
                         color_attachments: &[Some(color_attachment)],
                         ..Default::default()
                     });
-                    if !batches.is_empty() {
-                        pass.set_vertex_buffer(0, state.vertex_buffer.slice(..vertex_bytes));
-                        let mut bound_pipeline = None;
-                        let mut bound_texture = None;
-                        let mut bound_normal_texture = None;
-                        for batch in &batches {
-                            if bound_pipeline != Some(batch.blend_mode) {
-                                let pipeline = state
-                                    .pipelines
-                                    .get(&batch.blend_mode)
-                                    .expect("every sprite blend mode must have a pipeline");
-                                pass.set_pipeline(pipeline);
-                                bound_pipeline = Some(batch.blend_mode);
-                            }
-                            if bound_texture != Some(batch.texture_id) {
-                                let texture = state
-                                    .textures
-                                    .get(&batch.texture_id)
-                                    .unwrap_or(&state.white_texture);
-                                pass.set_bind_group(0, &texture.bind_group, &[]);
-                                bound_texture = Some(batch.texture_id);
-                            }
-                            if bound_normal_texture != Some(batch.normal_texture_id) {
-                                let normal_texture = state
-                                    .textures
-                                    .get(&batch.normal_texture_id)
-                                    .or_else(|| state.textures.get(&BUILTIN_FLAT_NORMAL_TEXTURE_ID))
-                                    .unwrap_or(&state.white_texture);
-                                pass.set_bind_group(1, &normal_texture.normal_bind_group, &[]);
-                                bound_normal_texture = Some(batch.normal_texture_id);
-                            }
-                            let [x, y, clip_width, clip_height] = batch.clip_rect;
-                            pass.set_scissor_rect(x, y, clip_width, clip_height);
-                            let first_vertex = batch.first_sprite * 6;
-                            let vertex_count = batch.sprite_count * 6;
-                            pass.draw(first_vertex..first_vertex + vertex_count, 0..1);
-                        }
-                    }
+                    draw_sprite_batches(
+                        &mut pass,
+                        state,
+                        if has_post_process {
+                            &state.render_target_pipelines
+                        } else {
+                            &state.pipelines
+                        },
+                        &main_batches,
+                        vertex_bytes,
+                    );
                     for draw in &prepared_particles {
-                        let pipeline = state
-                            .particle_render_pipelines
+                        let pipelines = if has_post_process {
+                            &state.post_process_particle_pipelines
+                        } else {
+                            &state.particle_render_pipelines
+                        };
+                        let pipeline = pipelines
                             .get(&draw.blend_mode)
                             .expect("every particle blend mode must have a pipeline");
                         let particle_system = state
@@ -1430,14 +1840,50 @@ impl WgpuBackend {
                         pass.set_scissor_rect(0, 0, self.width.max(1), self.height.max(1));
                         pass.draw(0..6, 0..draw.capacity);
                     }
-                    if has_text {
-                        state
-                            .text_renderer
-                            .render(&state.text_atlas, &state.text_viewport, &mut pass)
-                            .map_err(|error| {
-                                render_error(format!("wgpu text render failed: {error}"))
-                            })?;
+                    if has_main_text {
+                        if has_post_process {
+                            state
+                                .post_process
+                                .text_renderer
+                                .render(
+                                    &state.post_process.text_atlas,
+                                    &state.post_process.text_viewport,
+                                    &mut pass,
+                                )
+                                .map_err(|error| {
+                                    render_error(format!(
+                                        "wgpu post-process scene text render failed: {error}"
+                                    ))
+                                })?;
+                        } else {
+                            state
+                                .text_renderer
+                                .render(&state.text_atlas, &state.text_viewport, &mut pass)
+                                .map_err(|error| {
+                                    render_error(format!("wgpu text render failed: {error}"))
+                                })?;
+                        }
                     }
+                }
+                if has_post_process {
+                    let color_attachment = wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    };
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("MiniForge WGPU post-process composite"),
+                        color_attachments: &[Some(color_attachment)],
+                        ..Default::default()
+                    });
+                    pass.set_pipeline(&state.post_process.pipeline);
+                    pass.set_bind_group(0, &state.post_process.scene_bind_group, &[]);
+                    pass.set_bind_group(1, &state.post_process.uniform_bind_group, &[]);
+                    pass.draw(0..3, 0..1);
                 }
                 state.queue.submit([encoder.finish()]);
                 if let Some(output) = surface_output.take() {
@@ -1455,8 +1901,21 @@ impl WgpuBackend {
                         reconfiguration_count += 1;
                     }
                 }
-                if has_text {
-                    state.text_atlas.trim();
+                if has_main_text {
+                    if has_post_process {
+                        state.post_process.text_atlas.trim();
+                    } else {
+                        state.text_atlas.trim();
+                    }
+                }
+                for (target_pass, _commands) in render_target_passes
+                    .iter()
+                    .zip(render_target_text_commands.iter())
+                    .filter(|(_, commands)| !commands.is_empty())
+                {
+                    if let Some(target) = state.render_targets.get_mut(&target_pass.target_id) {
+                        target.text_atlas.trim();
+                    }
                 }
                 submitted = true;
             }
@@ -1473,16 +1932,26 @@ impl WgpuBackend {
             culled_sprites: self.culled_sprites,
             queued_text_areas: self.texts.len(),
             culled_text_areas: self.culled_text_areas,
+            render_target_text_areas,
             queued_particle_systems: self.particles.len(),
             gpu_particle_capacity,
             gpu_particle_spawned,
             particle_compute_dispatches,
-            gpu_draw_calls: batches.len() + self.particles.len() + usize::from(has_text),
+            gpu_draw_calls: batches.len()
+                + self.particles.len()
+                + usize::from(has_main_text)
+                + target_text_passes
+                + usize::from(has_post_process),
             texture_bind_changes: texture_bind_changes(&batches),
             normal_texture_bind_changes: normal_texture_bind_changes(&batches),
+            render_target_passes: render_target_passes.len(),
+            post_process_passes: usize::from(has_post_process),
+            post_process_effects,
             pipeline_changes: pipeline_changes(&batches)
                 + self.particles.len()
-                + usize::from(has_text),
+                + usize::from(has_main_text)
+                + target_text_passes
+                + usize::from(has_post_process),
             vertex_bytes_uploaded: vertex_bytes,
             vertex_buffer_capacity_bytes,
             vertex_buffer_reallocations: self.vertex_buffer_reallocations,
@@ -1513,6 +1982,9 @@ impl RenderBackend for WgpuBackend {
         self.sprites.clear();
         self.texts.clear();
         self.particles.clear();
+        self.render_target_passes.clear();
+        self.active_render_target = None;
+        self.post_process_command = None;
         self.draw_calls = 0;
         self.culled_sprites = 0;
         self.culled_text_areas = 0;
@@ -1523,6 +1995,11 @@ impl RenderBackend for WgpuBackend {
     fn end_frame(&mut self) -> MFResult<()> {
         if !self.frame_open {
             return Err(render_error("wgpu end_frame called without begin_frame"));
+        }
+        if self.active_render_target.is_some() {
+            return Err(render_error(
+                "wgpu end_frame called before end_render_target_2d",
+            ));
         }
         let diagnostics = self.render_frame();
         self.frame_open = false;
@@ -1550,6 +2027,13 @@ impl RenderBackend for WgpuBackend {
             } else {
                 state.target = Some(create_target(&state.device, self.width, self.height));
             }
+            resize_post_process_scene(
+                &state.device,
+                &state.texture_layout,
+                &mut state.post_process,
+                self.width,
+                self.height,
+            );
         }
         Ok(())
     }
@@ -1566,6 +2050,7 @@ impl RenderBackend for WgpuBackend {
         if !self.frame_open {
             return Err(render_error("wgpu draw_sprite called outside a frame"));
         }
+        let (render_target_pass, viewport_size) = self.queued_draw_target();
         self.queue_sprite(QueuedSprite {
             sprite: command,
             uv_rect: [0.0, 0.0, 1.0, 1.0],
@@ -1581,6 +2066,8 @@ impl RenderBackend for WgpuBackend {
             light_direction: options.light_direction,
             light_color: options.light_color,
             ambient_light: options.ambient_light,
+            render_target_pass,
+            viewport_size,
         })
     }
 
@@ -1606,6 +2093,7 @@ impl RenderBackend for WgpuBackend {
                 "wgpu sprite atlas UV rectangle must be finite and ordered",
             ));
         }
+        let (render_target_pass, viewport_size) = self.queued_draw_target();
         self.queue_sprite(QueuedSprite {
             sprite: command.sprite,
             uv_rect: command.uv_rect.map(|value| value.clamp(0.0, 1.0)),
@@ -1621,6 +2109,8 @@ impl RenderBackend for WgpuBackend {
             light_direction: options.light_direction,
             light_color: options.light_color,
             ambient_light: options.ambient_light,
+            render_target_pass,
+            viewport_size,
         })
     }
 
@@ -1656,23 +2146,32 @@ impl RenderBackend for WgpuBackend {
                 "wgpu text geometry and metrics must be finite and greater than zero",
             ));
         }
+        let (render_target_pass, viewport_size) = self.queued_draw_target();
         self.draw_calls += 1;
         if command.x + command.width < 0.0
             || command.y + command.height < 0.0
-            || command.x > self.width as f32
-            || command.y > self.height as f32
-            || command
-                .clip_rect
-                .is_some_and(|clip| normalize_clip_rect(clip, self.width, self.height).is_none())
+            || command.x > viewport_size[0] as f32
+            || command.y > viewport_size[1] as f32
+            || command.clip_rect.is_some_and(|clip| {
+                normalize_clip_rect(clip, viewport_size[0], viewport_size[1]).is_none()
+            })
         {
             self.culled_text_areas += 1;
             return Ok(());
         }
-        self.texts.push(command);
+        self.texts.push(QueuedText {
+            command,
+            render_target_pass,
+        });
         Ok(())
     }
 
     fn draw_tilemap(&mut self, _command: TilemapDrawCommand) -> MFResult<()> {
+        if self.active_render_target.is_some() {
+            return Err(render_error(
+                "native tilemap commands inside a Render Target 2D pass are not supported; expand visible tiles to sprite quads",
+            ));
+        }
         self.draw_calls += 1;
         Ok(())
     }
@@ -1680,6 +2179,11 @@ impl RenderBackend for WgpuBackend {
     fn draw_particles(&mut self, mut command: ParticleDrawCommand) -> MFResult<()> {
         if !self.frame_open {
             return Err(render_error("wgpu draw_particles called outside a frame"));
+        }
+        if self.active_render_target.is_some() {
+            return Err(render_error(
+                "compute particles inside a Render Target 2D pass are not supported yet",
+            ));
         }
         if command.system_id == 0 {
             return Err(render_error("wgpu particle system id must be non-zero"));
@@ -1720,6 +2224,11 @@ impl RenderBackend for WgpuBackend {
     }
 
     fn draw_ui(&mut self, _command: UiDrawCommand) -> MFResult<()> {
+        if self.active_render_target.is_some() {
+            return Err(render_error(
+                "legacy UI commands inside a Render Target 2D pass are not supported",
+            ));
+        }
         self.draw_calls += 1;
         Ok(())
     }
@@ -1735,6 +2244,246 @@ impl RenderBackend for WgpuBackend {
 
     fn draw_light_3d(&mut self, _command: LightDrawCommand3D) -> MFResult<()> {
         Ok(())
+    }
+
+    fn create_render_target_2d(
+        &mut self,
+        mut descriptor: RenderTargetDescriptor2D,
+    ) -> MFResult<()> {
+        if self.frame_open {
+            return Err(render_error(
+                "render targets must be created outside an open frame",
+            ));
+        }
+        if matches!(
+            descriptor.texture_id,
+            0 | BUILTIN_RADIAL_LIGHT_TEXTURE_ID | BUILTIN_FLAT_NORMAL_TEXTURE_ID
+        ) {
+            return Err(render_error(
+                "render target texture id is reserved by MiniForge",
+            ));
+        }
+        if self.texture_backups.contains_key(&descriptor.texture_id) {
+            return Err(render_error(format!(
+                "render target texture id {} is already used by an uploaded texture",
+                descriptor.texture_id
+            )));
+        }
+        let device_limit = self
+            .caps
+            .as_ref()
+            .map_or(MAX_RENDER_TARGET_SIZE_2D, |caps| caps.max_texture_size)
+            .min(MAX_RENDER_TARGET_SIZE_2D);
+        if descriptor.width == 0
+            || descriptor.height == 0
+            || descriptor.width > device_limit
+            || descriptor.height > device_limit
+        {
+            return Err(render_error(format!(
+                "render target {} dimensions must be between 1 and {device_limit}; got {}x{}",
+                descriptor.texture_id, descriptor.width, descriptor.height
+            )));
+        }
+        if descriptor
+            .clear_color
+            .iter()
+            .any(|channel| !channel.is_finite())
+        {
+            return Err(render_error("render target clear color must be finite"));
+        }
+        descriptor.clear_color = descriptor
+            .clear_color
+            .map(|channel| channel.clamp(0.0, 1.0));
+        let state = self
+            .state
+            .as_mut()
+            .ok_or_else(|| render_error("wgpu backend has not been initialized"))?;
+        let target = create_render_target_texture(
+            RenderTargetTextureResources {
+                device: &state.device,
+                queue: &state.queue,
+                color_layout: &state.texture_layout,
+                normal_layout: &state.normal_texture_layout,
+                sampler: &state.sampler,
+            },
+            descriptor.width,
+            descriptor.height,
+            if descriptor.label.trim().is_empty() {
+                "MiniForge Render Target 2D"
+            } else {
+                &descriptor.label
+            },
+        );
+        state.render_targets.insert(descriptor.texture_id, target);
+        self.render_target_descriptors
+            .insert(descriptor.texture_id, descriptor);
+        Ok(())
+    }
+
+    fn remove_render_target_2d(&mut self, texture_id: u64) -> MFResult<bool> {
+        if self.frame_open {
+            return Err(render_error(
+                "render targets must be removed outside an open frame",
+            ));
+        }
+        let removed_gpu = self
+            .state
+            .as_mut()
+            .is_some_and(|state| state.render_targets.remove(&texture_id).is_some());
+        let removed_descriptor = self.render_target_descriptors.remove(&texture_id).is_some();
+        Ok(removed_gpu || removed_descriptor)
+    }
+
+    fn begin_render_target_2d(&mut self, texture_id: u64) -> MFResult<()> {
+        if !self.frame_open {
+            return Err(render_error(
+                "begin_render_target_2d called outside a frame",
+            ));
+        }
+        if self.active_render_target.is_some() {
+            return Err(render_error(
+                "nested Render Target 2D passes are not supported",
+            ));
+        }
+        if self
+            .sprites
+            .iter()
+            .any(|sprite| sprite.render_target_pass.is_none())
+            || self
+                .texts
+                .iter()
+                .any(|text| text.render_target_pass.is_none())
+            || !self.particles.is_empty()
+        {
+            return Err(render_error(
+                "Render Target 2D passes must be queued before main-frame sprites, text and particles",
+            ));
+        }
+        if self
+            .render_target_passes
+            .iter()
+            .any(|pass| pass.target_id == texture_id)
+        {
+            return Err(render_error(format!(
+                "render target texture {texture_id} can be written at most once per frame"
+            )));
+        }
+        if !self.render_target_descriptors.contains_key(&texture_id) {
+            return Err(render_error(format!(
+                "render target texture {texture_id} does not exist"
+            )));
+        }
+        self.active_render_target = Some(ActiveRenderTargetPass {
+            target_id: texture_id,
+            pass_index: self.render_target_passes.len(),
+            first_sprite: self.sprites.len(),
+            first_text: self.texts.len(),
+        });
+        Ok(())
+    }
+
+    fn end_render_target_2d(&mut self) -> MFResult<()> {
+        let Some(active) = self.active_render_target.take() else {
+            return Err(render_error(
+                "end_render_target_2d called without an active target",
+            ));
+        };
+        let descriptor = self
+            .render_target_descriptors
+            .get(&active.target_id)
+            .expect("active render target descriptor must remain registered");
+        self.render_target_passes.push(QueuedRenderTargetPass {
+            target_id: active.target_id,
+            clear_color: descriptor.clear_color,
+            first_sprite: active.first_sprite,
+            sprite_count: self.sprites.len().saturating_sub(active.first_sprite),
+            first_text: active.first_text,
+            text_count: self.texts.len().saturating_sub(active.first_text),
+        });
+        Ok(())
+    }
+
+    fn set_post_process_2d(&mut self, command: PostProcessCommand2D) -> MFResult<()> {
+        if !self.frame_open {
+            return Err(render_error(
+                "wgpu set_post_process_2d called outside a frame",
+            ));
+        }
+        if self.active_render_target.is_some() {
+            return Err(render_error(
+                "post-processing config cannot change inside a Render Target 2D pass",
+            ));
+        }
+        let command = sanitize_post_process_command(command)?;
+        self.post_process_command =
+            (command.enabled && command.active_effect_count() > 0).then_some(command);
+        Ok(())
+    }
+}
+
+fn draw_sprite_batches<'pass>(
+    pass: &mut wgpu::RenderPass<'pass>,
+    state: &'pass WgpuState,
+    pipelines: &'pass HashMap<SpriteBlendMode, wgpu::RenderPipeline>,
+    batches: &[&SpriteBatch],
+    vertex_bytes: u64,
+) {
+    if batches.is_empty() {
+        return;
+    }
+    pass.set_vertex_buffer(0, state.vertex_buffer.slice(..vertex_bytes));
+    let mut bound_pipeline = None;
+    let mut bound_texture = None;
+    let mut bound_normal_texture = None;
+    for batch in batches {
+        if bound_pipeline != Some(batch.blend_mode) {
+            let pipeline = pipelines
+                .get(&batch.blend_mode)
+                .expect("every sprite blend mode must have a pipeline");
+            pass.set_pipeline(pipeline);
+            bound_pipeline = Some(batch.blend_mode);
+        }
+        if bound_texture != Some(batch.texture_id) {
+            let bind_group = state
+                .textures
+                .get(&batch.texture_id)
+                .map(|texture| &texture.bind_group)
+                .or_else(|| {
+                    state
+                        .render_targets
+                        .get(&batch.texture_id)
+                        .map(|target| &target.bind_group)
+                })
+                .unwrap_or(&state.white_texture.bind_group);
+            pass.set_bind_group(0, bind_group, &[]);
+            bound_texture = Some(batch.texture_id);
+        }
+        if bound_normal_texture != Some(batch.normal_texture_id) {
+            let bind_group = state
+                .textures
+                .get(&batch.normal_texture_id)
+                .map(|texture| &texture.normal_bind_group)
+                .or_else(|| {
+                    state
+                        .render_targets
+                        .get(&batch.normal_texture_id)
+                        .map(|target| &target.normal_bind_group)
+                })
+                .or_else(|| {
+                    state
+                        .textures
+                        .get(&BUILTIN_FLAT_NORMAL_TEXTURE_ID)
+                        .map(|texture| &texture.normal_bind_group)
+                })
+                .unwrap_or(&state.white_texture.normal_bind_group);
+            pass.set_bind_group(1, bind_group, &[]);
+            bound_normal_texture = Some(batch.normal_texture_id);
+        }
+        let [x, y, clip_width, clip_height] = batch.clip_rect;
+        pass.set_scissor_rect(x, y, clip_width, clip_height);
+        let first_vertex = batch.first_sprite * 6;
+        let vertex_count = batch.sprite_count * 6;
+        pass.draw(first_vertex..first_vertex + vertex_count, 0..1);
     }
 }
 
@@ -1996,14 +2745,24 @@ fn sprite_blend_state(blend_mode: SpriteBlendMode) -> wgpu::BlendState {
     }
 }
 
+struct TextRenderResources<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    font_system: &'a mut FontSystem,
+    swash_cache: &'a mut SwashCache,
+    text_atlas: &'a mut TextAtlas,
+    text_renderer: &'a mut TextRenderer,
+    text_viewport: &'a mut TextViewport,
+}
+
 fn prepare_text_areas(
-    state: &mut WgpuState,
+    resources: TextRenderResources<'_>,
     commands: &[TextDrawCommand],
     buffers: &mut Vec<TextBuffer>,
     width: u32,
     height: u32,
 ) -> MFResult<()> {
-    let WgpuState {
+    let TextRenderResources {
         device,
         queue,
         font_system,
@@ -2011,8 +2770,7 @@ fn prepare_text_areas(
         text_atlas,
         text_renderer,
         text_viewport,
-        ..
-    } = state;
+    } = resources;
     text_viewport.update(queue, TextResolution { width, height });
     for command in commands {
         let mut buffer = TextBuffer::new(
@@ -2124,6 +2882,32 @@ fn restore_texture_backups(
     }
 }
 
+fn restore_render_targets(
+    state: &mut WgpuState,
+    descriptors: &HashMap<u64, RenderTargetDescriptor2D>,
+) {
+    state.render_targets.reserve(descriptors.len());
+    for (&texture_id, descriptor) in descriptors {
+        let target = create_render_target_texture(
+            RenderTargetTextureResources {
+                device: &state.device,
+                queue: &state.queue,
+                color_layout: &state.texture_layout,
+                normal_layout: &state.normal_texture_layout,
+                sampler: &state.sampler,
+            },
+            descriptor.width,
+            descriptor.height,
+            if descriptor.label.trim().is_empty() {
+                "MiniForge Render Target 2D"
+            } else {
+                &descriptor.label
+            },
+        );
+        state.render_targets.insert(texture_id, target);
+    }
+}
+
 fn normalize_clip_rect(clip: [u32; 4], width: u32, height: u32) -> Option<[u32; 4]> {
     let x = clip[0].min(width.saturating_sub(1));
     let y = clip[1].min(height.saturating_sub(1));
@@ -2132,19 +2916,22 @@ fn normalize_clip_rect(clip: [u32; 4], width: u32, height: u32) -> Option<[u32; 
     (clip_width > 0 && clip_height > 0).then_some([x, y, clip_width, clip_height])
 }
 
-fn build_sprite_batches(sprites: &[QueuedSprite], width: u32, height: u32) -> Vec<SpriteBatch> {
+fn build_sprite_batches(sprites: &[QueuedSprite]) -> Vec<SpriteBatch> {
     let mut batches: Vec<SpriteBatch> = Vec::new();
     for (index, queued) in sprites.iter().enumerate() {
         let Some(clip_rect) = normalize_clip_rect(
-            queued.clip_rect.unwrap_or([0, 0, width, height]),
-            width,
-            height,
+            queued
+                .clip_rect
+                .unwrap_or([0, 0, queued.viewport_size[0], queued.viewport_size[1]]),
+            queued.viewport_size[0],
+            queued.viewport_size[1],
         ) else {
             continue;
         };
         if let Some(batch) = batches.last_mut()
             && batch.texture_id == queued.sprite.texture_id
             && batch.normal_texture_id == queued.normal_texture_id
+            && batch.render_target_pass == queued.render_target_pass
             && batch.clip_rect == clip_rect
             && batch.blend_mode == queued.blend_mode
             && batch.first_sprite + batch.sprite_count == index as u32
@@ -2155,6 +2942,7 @@ fn build_sprite_batches(sprites: &[QueuedSprite], width: u32, height: u32) -> Ve
         batches.push(SpriteBatch {
             texture_id: queued.sprite.texture_id,
             normal_texture_id: queued.normal_texture_id,
+            render_target_pass: queued.render_target_pass,
             clip_rect,
             blend_mode: queued.blend_mode,
             first_sprite: index as u32,
@@ -2228,6 +3016,360 @@ fn create_target(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Textur
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     })
+}
+
+fn sanitize_post_process_command(
+    mut command: PostProcessCommand2D,
+) -> MFResult<PostProcessCommand2D> {
+    let scalar_values = [
+        command.time_seconds,
+        command.exposure,
+        command.contrast,
+        command.saturation,
+        command.gamma,
+        command.bloom_threshold,
+        command.bloom_intensity,
+        command.bloom_radius,
+        command.vignette_intensity,
+        command.vignette_softness,
+        command.chromatic_aberration,
+        command.pixel_size,
+        command.scanline_intensity,
+        command.damage_strength,
+        command.fog_density,
+    ];
+    if scalar_values
+        .into_iter()
+        .chain(command.tint)
+        .chain(command.damage_flash)
+        .chain(command.fog_color)
+        .any(|value| !value.is_finite())
+    {
+        return Err(render_error(
+            "wgpu post-process values and colors must be finite",
+        ));
+    }
+    command.time_seconds = command.time_seconds.max(0.0);
+    command.exposure = command.exposure.clamp(0.0, 8.0);
+    command.contrast = command.contrast.clamp(0.0, 4.0);
+    command.saturation = command.saturation.clamp(0.0, 4.0);
+    command.gamma = command.gamma.clamp(0.05, 5.0);
+    command.bloom_threshold = command.bloom_threshold.clamp(0.0, 0.999);
+    command.bloom_intensity = command.bloom_intensity.clamp(0.0, 4.0);
+    command.bloom_radius = command.bloom_radius.clamp(0.5, 32.0);
+    command.vignette_intensity = command.vignette_intensity.clamp(0.0, 1.0);
+    command.vignette_softness = command.vignette_softness.clamp(0.0, 0.9);
+    command.chromatic_aberration = command.chromatic_aberration.clamp(0.0, 0.05);
+    command.pixel_size = command.pixel_size.clamp(1.0, 256.0);
+    command.scanline_intensity = command.scanline_intensity.clamp(0.0, 1.0);
+    command.tint = command.tint.map(|channel| channel.clamp(0.0, 2.0));
+    command.damage_flash = command.damage_flash.map(|channel| channel.clamp(0.0, 1.0));
+    command.damage_strength = command.damage_strength.clamp(0.0, 1.0);
+    command.fog_color = command.fog_color.map(|channel| channel.clamp(0.0, 1.0));
+    command.fog_density = command.fog_density.clamp(0.0, 1.0);
+    Ok(command)
+}
+
+fn post_process_gpu_params(
+    command: &PostProcessCommand2D,
+    width: u32,
+    height: u32,
+) -> GpuPostProcessParams {
+    GpuPostProcessParams {
+        resolution_time: [
+            width.max(1) as f32,
+            height.max(1) as f32,
+            command.time_seconds,
+            0.0,
+        ],
+        color_grade: [
+            command.exposure,
+            command.contrast,
+            command.saturation,
+            command.gamma,
+        ],
+        bloom: [
+            command.bloom_threshold,
+            command.bloom_intensity,
+            command.bloom_radius,
+            0.0,
+        ],
+        vignette: [
+            command.vignette_intensity,
+            command.vignette_softness,
+            0.0,
+            0.0,
+        ],
+        screen_fx: [
+            command.chromatic_aberration,
+            command.pixel_size,
+            command.scanline_intensity,
+            0.0,
+        ],
+        tint: command.tint,
+        damage_flash: command.damage_flash,
+        damage_fog: [command.damage_strength, command.fog_density, 0.0, 0.0],
+        fog_color: command.fog_color,
+    }
+}
+
+struct PostProcessCreateResources<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    texture_layout: &'a wgpu::BindGroupLayout,
+}
+
+fn create_post_process_resources(
+    resources: PostProcessCreateResources<'_>,
+    width: u32,
+    height: u32,
+    output_format: wgpu::TextureFormat,
+) -> WgpuPostProcess {
+    let PostProcessCreateResources {
+        device,
+        queue,
+        texture_layout,
+    } = resources;
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("MiniForge post-process linear sampler"),
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        ..Default::default()
+    });
+    let (scene_texture, scene_view, scene_bind_group) =
+        create_post_process_scene_target(device, texture_layout, &sampler, width, height);
+    let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("MiniForge post-process parameters"),
+        size: std::mem::size_of::<GpuPostProcessParams>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("MiniForge post-process uniform layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("MiniForge post-process uniform binding"),
+        layout: &uniform_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buffer.as_entire_binding(),
+        }],
+    });
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("MiniForge post-process shader"),
+        source: wgpu::ShaderSource::Wgsl(POST_PROCESS_SHADER.into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("MiniForge post-process pipeline layout"),
+        bind_group_layouts: &[Some(texture_layout), Some(&uniform_layout)],
+        immediate_size: 0,
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("MiniForge post-process composite pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_post_process"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_post_process"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: output_format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    let text_cache = TextCache::new(device);
+    let text_viewport = TextViewport::new(device, &text_cache);
+    let mut text_atlas = TextAtlas::new(device, queue, &text_cache, SPRITE_COLOR_VIEW_FORMAT);
+    let text_renderer = TextRenderer::new(
+        &mut text_atlas,
+        device,
+        wgpu::MultisampleState::default(),
+        None,
+    );
+    WgpuPostProcess {
+        scene_texture,
+        scene_view,
+        scene_bind_group,
+        sampler,
+        uniform_buffer,
+        uniform_bind_group,
+        pipeline,
+        text_atlas,
+        text_renderer,
+        text_viewport,
+        width: width.max(1),
+        height: height.max(1),
+    }
+}
+
+fn create_post_process_scene_target(
+    device: &wgpu::Device,
+    texture_layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup) {
+    let width = width.max(1);
+    let height = height.max(1);
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("MiniForge post-process scene color"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: SPRITE_TEXTURE_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[SPRITE_COLOR_VIEW_FORMAT],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("MiniForge post-process scene color sRGB view"),
+        format: Some(SPRITE_COLOR_VIEW_FORMAT),
+        ..Default::default()
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("MiniForge post-process scene color binding"),
+        layout: texture_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    });
+    (texture, view, bind_group)
+}
+
+fn resize_post_process_scene(
+    device: &wgpu::Device,
+    texture_layout: &wgpu::BindGroupLayout,
+    post_process: &mut WgpuPostProcess,
+    width: u32,
+    height: u32,
+) {
+    let (texture, view, bind_group) = create_post_process_scene_target(
+        device,
+        texture_layout,
+        &post_process.sampler,
+        width,
+        height,
+    );
+    post_process.scene_texture = texture;
+    post_process.scene_view = view;
+    post_process.scene_bind_group = bind_group;
+    post_process.width = width.max(1);
+    post_process.height = height.max(1);
+}
+
+fn readback_texture_rgba8(
+    state: &WgpuState,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> MFResult<Vec<u8>> {
+    let unpadded_bytes_per_row = width.saturating_mul(4);
+    let alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(alignment) * alignment;
+    let buffer_size = u64::from(padded_bytes_per_row) * u64::from(height);
+    let readback = state.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("MiniForge wgpu 2D readback"),
+        size: buffer_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    let mut encoder = state
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("MiniForge wgpu 2D readback encoder"),
+        });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bytes_per_row),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    state.queue.submit([encoder.finish()]);
+
+    let slice = readback.slice(..);
+    let (sender, receiver) = mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = sender.send(result);
+    });
+    state
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .map_err(|error| render_error(format!("wgpu readback poll failed: {error}")))?;
+    receiver
+        .recv()
+        .map_err(|error| render_error(format!("wgpu readback callback failed: {error}")))?
+        .map_err(|error| render_error(format!("wgpu readback map failed: {error}")))?;
+
+    let mapped = slice
+        .get_mapped_range()
+        .map_err(|error| render_error(format!("wgpu readback range failed: {error}")))?;
+    let mut pixels = vec![0; unpadded_bytes_per_row as usize * height as usize];
+    for row in 0..height as usize {
+        let source_start = row * padded_bytes_per_row as usize;
+        let destination_start = row * unpadded_bytes_per_row as usize;
+        pixels[destination_start..destination_start + unpadded_bytes_per_row as usize]
+            .copy_from_slice(&mapped[source_start..source_start + unpadded_bytes_per_row as usize]);
+    }
+    drop(mapped);
+    readback.unmap();
+    Ok(pixels)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2320,10 +3462,109 @@ fn create_sampled_texture(
     }
 }
 
-fn sprites_to_vertices(commands: &[QueuedSprite], width: u32, height: u32) -> Vec<SpriteVertex> {
+struct RenderTargetTextureResources<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    color_layout: &'a wgpu::BindGroupLayout,
+    normal_layout: &'a wgpu::BindGroupLayout,
+    sampler: &'a wgpu::Sampler,
+}
+
+fn create_render_target_texture(
+    resources: RenderTargetTextureResources<'_>,
+    width: u32,
+    height: u32,
+    label: &str,
+) -> WgpuRenderTarget {
+    let RenderTargetTextureResources {
+        device,
+        queue,
+        color_layout,
+        normal_layout,
+        sampler,
+    } = resources;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: SPRITE_TEXTURE_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[SPRITE_COLOR_VIEW_FORMAT],
+    });
+    let color_view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("MiniForge Render Target 2D sRGB view"),
+        format: Some(SPRITE_COLOR_VIEW_FORMAT),
+        ..Default::default()
+    });
+    let normal_view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("MiniForge Render Target 2D linear view"),
+        format: Some(SPRITE_TEXTURE_FORMAT),
+        ..Default::default()
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("MiniForge Render Target 2D sampled color"),
+        layout: color_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&color_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    });
+    let normal_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("MiniForge Render Target 2D sampled linear"),
+        layout: normal_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&normal_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    });
+    let text_cache = TextCache::new(device);
+    let text_viewport = TextViewport::new(device, &text_cache);
+    let mut text_atlas = TextAtlas::new(device, queue, &text_cache, SPRITE_COLOR_VIEW_FORMAT);
+    let text_renderer = TextRenderer::new(
+        &mut text_atlas,
+        device,
+        wgpu::MultisampleState::default(),
+        None,
+    );
+    WgpuRenderTarget {
+        texture,
+        color_view,
+        bind_group,
+        normal_bind_group,
+        text_atlas,
+        text_renderer,
+        text_viewport,
+        width,
+        height,
+    }
+}
+
+fn sprites_to_vertices(commands: &[QueuedSprite]) -> Vec<SpriteVertex> {
     let mut vertices = Vec::with_capacity(commands.len() * 6);
     for queued in commands {
         let command = queued.sprite;
+        let width = queued.viewport_size[0];
+        let height = queued.viewport_size[1];
         let center_x = command.x + command.width * 0.5;
         let center_y = command.y + command.height * 0.5;
         let half_width = command.width * 0.5;
@@ -2393,6 +3634,52 @@ fn render_error(message: impl Into<String>) -> MiniForgeError {
 mod tests {
     use super::*;
 
+    #[test]
+    fn post_process_uniform_abi_and_validation_are_gpu_safe() {
+        assert_eq!(std::mem::size_of::<GpuPostProcessParams>(), 144);
+        assert_eq!(std::mem::align_of::<GpuPostProcessParams>(), 16);
+
+        let mut backend = WgpuBackend::default();
+        assert!(
+            backend
+                .set_post_process_2d(PostProcessCommand2D::default())
+                .is_err()
+        );
+        backend.frame_open = true;
+        let mut command = PostProcessCommand2D {
+            exposure: 99.0,
+            gamma: 0.0,
+            bloom_intensity: 8.0,
+            chromatic_aberration: 2.0,
+            tint: [3.0, -1.0, 0.5, 1.0],
+            ..PostProcessCommand2D::default()
+        };
+        backend.set_post_process_2d(command.clone()).unwrap();
+        let sanitized = backend.post_process_command.as_ref().unwrap();
+        assert_eq!(sanitized.exposure, 8.0);
+        assert_eq!(sanitized.gamma, 0.05);
+        assert_eq!(sanitized.bloom_intensity, 4.0);
+        assert_eq!(sanitized.chromatic_aberration, 0.05);
+        assert_eq!(sanitized.tint, [2.0, 0.0, 0.5, 1.0]);
+
+        command.exposure = f32::NAN;
+        assert!(backend.set_post_process_2d(command).is_err());
+        backend.active_render_target = Some(ActiveRenderTargetPass {
+            target_id: 7,
+            pass_index: 0,
+            first_sprite: 0,
+            first_text: 0,
+        });
+        assert!(
+            backend
+                .set_post_process_2d(PostProcessCommand2D {
+                    bloom_intensity: 1.0,
+                    ..PostProcessCommand2D::default()
+                })
+                .is_err()
+        );
+    }
+
     fn queued(texture_id: u64, clip_rect: Option<[u32; 4]>) -> QueuedSprite {
         QueuedSprite {
             sprite: SpriteDrawCommand {
@@ -2416,6 +3703,8 @@ mod tests {
             light_direction: [0, -i16::MAX],
             light_color: [u8::MAX; 3],
             ambient_light: u8::MAX,
+            render_target_pass: None,
+            viewport_size: [100, 100],
         }
     }
 
@@ -2468,33 +3757,31 @@ mod tests {
 
     #[test]
     fn sprite_vertices_cover_requested_pixel_rect() {
-        let vertices = sprites_to_vertices(
-            &[QueuedSprite {
-                sprite: SpriteDrawCommand {
-                    entity_id: 1,
-                    texture_id: 0,
-                    x: 0.0,
-                    y: 0.0,
-                    width: 50.0,
-                    height: 25.0,
-                    rotation: 0.0,
-                    color: [1.0, 0.0, 0.0, 1.0],
-                },
-                uv_rect: [0.25, 0.5, 0.75, 1.0],
-                clip_rect: None,
-                blend_mode: SpriteBlendMode::Alpha,
-                material_effect: SpriteMaterialEffect::Sepia,
-                effect_strength: 128,
-                normal_texture_id: BUILTIN_FLAT_NORMAL_TEXTURE_ID,
-                normal_strength: 192,
-                normal_flip_y: true,
-                light_direction: [i16::MAX, 0],
-                light_color: [255, 128, 64],
-                ambient_light: 32,
-            }],
-            100,
-            100,
-        );
+        let vertices = sprites_to_vertices(&[QueuedSprite {
+            sprite: SpriteDrawCommand {
+                entity_id: 1,
+                texture_id: 0,
+                x: 0.0,
+                y: 0.0,
+                width: 50.0,
+                height: 25.0,
+                rotation: 0.0,
+                color: [1.0, 0.0, 0.0, 1.0],
+            },
+            uv_rect: [0.25, 0.5, 0.75, 1.0],
+            clip_rect: None,
+            blend_mode: SpriteBlendMode::Alpha,
+            material_effect: SpriteMaterialEffect::Sepia,
+            effect_strength: 128,
+            normal_texture_id: BUILTIN_FLAT_NORMAL_TEXTURE_ID,
+            normal_strength: 192,
+            normal_flip_y: true,
+            light_direction: [i16::MAX, 0],
+            light_color: [255, 128, 64],
+            ambient_light: 32,
+            render_target_pass: None,
+            viewport_size: [100, 100],
+        }]);
         assert_eq!(vertices.len(), 6);
         assert_eq!(vertices[0].position, [-1.0, 1.0]);
         assert_eq!(vertices[2].position, [0.0, 0.5]);
@@ -2522,7 +3809,7 @@ mod tests {
             queued(2, Some([0, 0, 50, 50])),
             queued(1, None),
         ];
-        let batches = build_sprite_batches(&sprites, 100, 100);
+        let batches = build_sprite_batches(&sprites);
         assert_eq!(batches.len(), 4);
         assert_eq!(batches[0].sprite_count, 2);
         assert_eq!(batches[1].sprite_count, 1);
@@ -2536,7 +3823,7 @@ mod tests {
         let alpha = queued(1, None);
         let mut additive = queued(1, None);
         additive.blend_mode = SpriteBlendMode::Additive;
-        let batches = build_sprite_batches(&[alpha, additive, additive, alpha], 100, 100);
+        let batches = build_sprite_batches(&[alpha, additive, additive, alpha]);
         assert_eq!(batches.len(), 3);
         assert_eq!(batches[1].sprite_count, 2);
         assert_eq!(pipeline_changes(&batches), 3);
@@ -2558,7 +3845,7 @@ mod tests {
         let first = queued(8, None);
         let mut lit = queued(8, None);
         lit.normal_texture_id = 91;
-        let batches = build_sprite_batches(&[first, lit, lit, first], 100, 100);
+        let batches = build_sprite_batches(&[first, lit, lit, first]);
         assert_eq!(batches.len(), 3);
         assert_eq!(batches[1].sprite_count, 2);
         assert_eq!(texture_bind_changes(&batches), 1);
@@ -2624,6 +3911,40 @@ mod tests {
     }
 
     #[test]
+    fn text_queue_tracks_render_targets_and_rejects_duplicate_target_writes() {
+        let mut backend = WgpuBackend {
+            frame_open: true,
+            width: 100,
+            height: 50,
+            ..WgpuBackend::default()
+        };
+        for texture_id in [7, 8] {
+            backend.render_target_descriptors.insert(
+                texture_id,
+                RenderTargetDescriptor2D {
+                    texture_id,
+                    width: 32,
+                    height: 24,
+                    ..RenderTargetDescriptor2D::default()
+                },
+            );
+        }
+
+        backend.begin_render_target_2d(7).unwrap();
+        backend.draw_text(text_command("Target A")).unwrap();
+        backend.end_render_target_2d().unwrap();
+        assert_eq!(backend.texts[0].render_target_pass, Some(0));
+        assert_eq!(backend.render_target_passes[0].text_count, 1);
+        assert!(backend.begin_render_target_2d(7).is_err());
+
+        backend.begin_render_target_2d(8).unwrap();
+        backend.draw_text(text_command("Target B")).unwrap();
+        backend.end_render_target_2d().unwrap();
+        assert_eq!(backend.texts[1].render_target_pass, Some(1));
+        assert_eq!(backend.render_target_passes[1].text_count, 1);
+    }
+
+    #[test]
     fn text_bounds_clamp_to_area_clip_and_viewport() {
         let mut command = text_command("bounds");
         command.x = -8.0;
@@ -2660,6 +3981,15 @@ mod tests {
         backend
             .upload_texture_rgba8(7, 2, 2, &[255, 40, 20, 255].repeat(4))
             .unwrap();
+        backend
+            .create_render_target_2d(RenderTargetDescriptor2D {
+                texture_id: 8,
+                width: 16,
+                height: 16,
+                clear_color: [0.0, 0.0, 0.0, 1.0],
+                label: "Recovered target".to_string(),
+            })
+            .unwrap();
         backend.force_device_loss_for_testing().unwrap();
         for _ in 0..8 {
             backend.recover_device_if_needed().unwrap();
@@ -2669,8 +3999,23 @@ mod tests {
         }
         assert_eq!(backend.device_loss_recoveries, 1);
         assert_eq!(backend.texture_count(), 1);
+        assert_eq!(backend.render_target_count(), 1);
 
         backend.begin_frame().unwrap();
+        backend.begin_render_target_2d(8).unwrap();
+        backend
+            .draw_sprite(SpriteDrawCommand {
+                entity_id: 8,
+                texture_id: 7,
+                x: 0.0,
+                y: 0.0,
+                width: 16.0,
+                height: 16.0,
+                rotation: 0.0,
+                color: [1.0; 4],
+            })
+            .unwrap();
+        backend.end_render_target_2d().unwrap();
         backend
             .draw_sprite(SpriteDrawCommand {
                 entity_id: 1,
@@ -2702,6 +4047,8 @@ mod tests {
         backend.end_frame().unwrap();
         let pixels = backend.readback_rgba8().unwrap();
         assert!(pixels.chunks_exact(4).any(|pixel| pixel[0] > 200));
+        let target_pixels = backend.readback_render_target_rgba8(8).unwrap();
+        assert!(target_pixels.chunks_exact(4).any(|pixel| pixel[0] > 200));
         assert_eq!(backend.last_frame_diagnostics().queued_text_areas, 1);
     }
 }

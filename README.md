@@ -351,9 +351,13 @@ La configuración vive en `settings/runtime_config.json` bajo `stability_guard`.
 
 ### Render y plataformas
 
-Macroquad es el backend gráfico y de ventana actual del juego. El runtime incluye sprites,
-tilemaps, materiales, cámaras 2D, UI, luces/sombras 2D, partículas y culling/budgets configurables.
-WGPU/Metal y 3D existen como foundations experimentales, no como pipeline completo de producción.
+Macroquad sigue siendo el backend de exportación predeterminado. La migración WGPU ya dispone de
+surface Metal/Vulkan/DX12/WebGPU, sprites/atlas y batching persistente, cinco modos de mezcla, texto
+Unicode, UI 2D, materiales WGSL integrados, normal maps iluminados, partículas compute, cámaras a
+texturas sampleables y postproceso físico creado sin código desde el editor. El compositor incluye
+exposición, contraste, saturación, gamma, bloom, viñeta, aberración cromática, pixelado, scanlines,
+tinte, fog y flash de daño. Macroquad se conserva como fallback hasta cerrar shaders personalizados,
+golden images multiplataforma y partículas compute en render targets.
 
 ## Estructura de un proyecto
 
@@ -577,7 +581,8 @@ proyectos críticos sin una fase propia de estabilización.
 Límites conocidos:
 
 - APIs y schemas todavía pueden evolucionar antes de 1.0;
-- el render principal sigue siendo Macroquad; WGPU/3D no están completos;
+- la exportación predeterminada sigue usando Macroquad mientras WGPU termina shaders
+  personalizados, golden images multiplataforma y partículas compute dentro de render targets;
 - el debugger Luau es callback-level;
 - la UI runtime conserva modelos legacy y canvas nuevos durante la migración;
 - distribución firmada/notarizada y matrices completas de CI multiplataforma siguen pendientes;
@@ -589,6 +594,8 @@ Límites conocidos:
 - [Editor y flujo de uso](docs/EDITOR_Y_FLUJO_DE_USO.md)
 - [Arquitectura y runtime](docs/ARQUITECTURA_Y_RUNTIME.md)
 - [Datos, scripting y APIs](docs/DATOS_SCRIPTING_Y_APIS.md)
+- [Escenas híbridas 2D + 3D](docs/HYBRID_2D_3D.md)
+- [Componentes de supervivencia](docs/SURVIVAL_COMPONENTS.md)
 - [Desarrollo, build y extensión](docs/DESARROLLO_BUILD_Y_EXTENSION.md)
 - [Migración definitiva al editor Qt](docs/QT_EDITOR_MIGRATION.md)
 - [Backlog y feedback técnico](docs/MINIFORGE_MCP_FEEDBACK.md)

@@ -1,12 +1,21 @@
 use serde::{Deserialize, Serialize};
 
-use crate::engine::error_handler::MFResult;
+use crate::engine::error_handler::{MFResult, MiniForgeError};
 
 pub use super::wgpu_backend::WgpuBackend;
 
 pub const BUILTIN_RADIAL_LIGHT_TEXTURE_ID: u64 = u64::MAX - 1;
 pub const BUILTIN_RADIAL_LIGHT_TEXTURE_SIZE: u32 = 64;
 pub const BUILTIN_FLAT_NORMAL_TEXTURE_ID: u64 = u64::MAX - 2;
+pub const MAX_RENDER_TARGET_SIZE_2D: u32 = 16_384;
+/// High-bit namespace used by scene-authored render targets so their sampleable
+/// texture handles cannot collide with sequentially imported asset textures.
+pub const RENDER_TARGET_TEXTURE_ID_NAMESPACE: u64 = 1 << 62;
+
+pub fn namespaced_render_target_texture_id(entity_id: u64) -> u64 {
+    let local_id = (entity_id & (RENDER_TARGET_TEXTURE_ID_NAMESPACE - 1)).max(1);
+    RENDER_TARGET_TEXTURE_ID_NAMESPACE | local_id
+}
 
 pub fn radial_light_texture_rgba8(size: u32) -> Vec<u8> {
     let size = size.clamp(2, 512);
@@ -94,6 +103,105 @@ pub struct SpriteRegionDrawCommand {
     pub uv_rect: [f32; 4],
     /// Optional pixel-space clip rectangle: `[x, y, width, height]`.
     pub clip_rect: Option<[u32; 4]>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RenderTargetDescriptor2D {
+    pub texture_id: u64,
+    pub width: u32,
+    pub height: u32,
+    #[serde(default = "default_render_target_clear_color")]
+    pub clear_color: [f64; 4],
+    #[serde(default)]
+    pub label: String,
+}
+
+impl Default for RenderTargetDescriptor2D {
+    fn default() -> Self {
+        Self {
+            texture_id: 1,
+            width: 512,
+            height: 512,
+            clear_color: default_render_target_clear_color(),
+            label: "Render Target 2D".to_string(),
+        }
+    }
+}
+
+fn default_render_target_clear_color() -> [f64; 4] {
+    [0.0, 0.0, 0.0, 0.0]
+}
+
+/// Backend-independent full-frame color grading and screen-space effects.
+///
+/// Zero-strength effects are skipped by the GPU shader. The command is kept
+/// compact enough to update once per frame while still covering common 2D
+/// presentation needs without game-specific renderer code.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PostProcessCommand2D {
+    pub enabled: bool,
+    pub time_seconds: f32,
+    pub exposure: f32,
+    pub contrast: f32,
+    pub saturation: f32,
+    pub gamma: f32,
+    pub bloom_threshold: f32,
+    pub bloom_intensity: f32,
+    pub bloom_radius: f32,
+    pub vignette_intensity: f32,
+    pub vignette_softness: f32,
+    pub chromatic_aberration: f32,
+    pub pixel_size: f32,
+    pub scanline_intensity: f32,
+    pub tint: [f32; 4],
+    pub damage_flash: [f32; 4],
+    pub damage_strength: f32,
+    pub fog_color: [f32; 4],
+    pub fog_density: f32,
+}
+
+impl Default for PostProcessCommand2D {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            time_seconds: 0.0,
+            exposure: 1.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            gamma: 1.0,
+            bloom_threshold: 0.8,
+            bloom_intensity: 0.0,
+            bloom_radius: 2.0,
+            vignette_intensity: 0.0,
+            vignette_softness: 0.45,
+            chromatic_aberration: 0.0,
+            pixel_size: 1.0,
+            scanline_intensity: 0.0,
+            tint: [1.0; 4],
+            damage_flash: [1.0, 0.12, 0.08, 1.0],
+            damage_strength: 0.0,
+            fog_color: [0.37, 0.45, 0.55, 1.0],
+            fog_density: 0.0,
+        }
+    }
+}
+
+impl PostProcessCommand2D {
+    pub fn active_effect_count(&self) -> usize {
+        usize::from((self.exposure - 1.0).abs() > f32::EPSILON)
+            + usize::from((self.contrast - 1.0).abs() > f32::EPSILON)
+            + usize::from((self.saturation - 1.0).abs() > f32::EPSILON)
+            + usize::from((self.gamma - 1.0).abs() > f32::EPSILON)
+            + usize::from(self.bloom_intensity > 0.0)
+            + usize::from(self.vignette_intensity > 0.0)
+            + usize::from(self.chromatic_aberration > 0.0)
+            + usize::from(self.pixel_size > 1.0)
+            + usize::from(self.scanline_intensity > 0.0)
+            + usize::from(self.tint != [1.0; 4])
+            + usize::from(self.damage_strength > 0.0)
+            + usize::from(self.fog_density > 0.0)
+    }
 }
 
 /// Stable, backend-independent blend modes for sprites, UI geometry and particles.
@@ -414,6 +522,33 @@ pub trait RenderBackend {
     fn set_camera_3d(&mut self, cmd: CameraCommand3D) -> MFResult<()>;
     fn draw_mesh_3d(&mut self, cmd: MeshDrawCommand3D) -> MFResult<()>;
     fn draw_light_3d(&mut self, cmd: LightDrawCommand3D) -> MFResult<()>;
+    fn create_render_target_2d(&mut self, _descriptor: RenderTargetDescriptor2D) -> MFResult<()> {
+        Err(MiniForgeError::RenderError(format!(
+            "{} does not support render targets",
+            self.name()
+        )))
+    }
+    fn remove_render_target_2d(&mut self, _texture_id: u64) -> MFResult<bool> {
+        Ok(false)
+    }
+    fn begin_render_target_2d(&mut self, _texture_id: u64) -> MFResult<()> {
+        Err(MiniForgeError::RenderError(format!(
+            "{} does not support render targets",
+            self.name()
+        )))
+    }
+    fn end_render_target_2d(&mut self) -> MFResult<()> {
+        Err(MiniForgeError::RenderError(format!(
+            "{} does not support render targets",
+            self.name()
+        )))
+    }
+    fn set_post_process_2d(&mut self, _command: PostProcessCommand2D) -> MFResult<()> {
+        Err(MiniForgeError::RenderError(format!(
+            "{} does not support post-processing",
+            self.name()
+        )))
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -624,7 +759,29 @@ impl RenderBackend for MacroquadBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::{SpriteBlendMode, SpriteMaterialEffect, radial_light_texture_rgba8};
+    use super::{
+        PostProcessCommand2D, SpriteBlendMode, SpriteMaterialEffect, radial_light_texture_rgba8,
+    };
+
+    #[test]
+    fn post_process_command_reports_only_visible_effects() {
+        let mut command = PostProcessCommand2D::default();
+        assert_eq!(command.active_effect_count(), 0);
+
+        command.exposure = 1.2;
+        command.bloom_intensity = 0.4;
+        command.pixel_size = 4.0;
+        command.tint = [1.0, 0.8, 0.7, 1.0];
+        command.fog_density = 0.2;
+        assert_eq!(command.active_effect_count(), 5);
+
+        command.enabled = false;
+        assert_eq!(
+            command.active_effect_count(),
+            5,
+            "effect diagnostics stay descriptive even when a volume is disabled"
+        );
+    }
 
     #[test]
     fn sprite_blend_mode_accepts_editor_and_asset_aliases() {

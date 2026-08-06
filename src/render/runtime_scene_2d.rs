@@ -8,6 +8,7 @@ use crate::engine::error_handler::MFResult;
 use crate::engine::miniforge_2d::ui_framework::{
     UiCanvas2D, UiRect2D, UiResolvedWidget2D, UiStyle2D, UiWidget2D,
 };
+use crate::engine::render_2d::RenderTexture2D;
 use crate::engine::tilemap_layers::{TileLayer, TilemapLayers};
 use crate::engine::ui_canvas::{UiCanvasElement, layout_element_pixels, ui_canvases_from_value};
 use crate::engine::world::RuntimeWorld;
@@ -17,9 +18,10 @@ use crate::runtime::engine_runtime::{EngineRuntime, RuntimeUiDocument2D};
 use crate::systems::particle_system::ParticleSystem;
 
 use super::backend::{
-    BUILTIN_RADIAL_LIGHT_TEXTURE_ID, ParticleDrawCommand, RenderBackend, SpriteBlendMode,
-    SpriteDrawCommand, SpriteDrawOptions, SpriteMaterialEffect, SpriteRegionDrawCommand,
-    TextDrawCommand, TextWrapMode,
+    BUILTIN_RADIAL_LIGHT_TEXTURE_ID, ParticleDrawCommand, PostProcessCommand2D, RenderBackend,
+    RenderTargetDescriptor2D, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions,
+    SpriteMaterialEffect, SpriteRegionDrawCommand, TextDrawCommand, TextWrapMode,
+    namespaced_render_target_texture_id,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -56,6 +58,306 @@ pub struct RuntimeScene2DStats {
     pub ambient_light_quads: usize,
     pub directional_light_quads: usize,
     pub shadow_quads: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct RenderTargetCameraView2D {
+    pub world_x: f32,
+    pub world_y: f32,
+    pub zoom: f32,
+    pub width: u32,
+    pub height: u32,
+    #[serde(default = "default_true")]
+    pub include_lighting: bool,
+    #[serde(default)]
+    pub include_ui: bool,
+}
+
+impl Default for RenderTargetCameraView2D {
+    fn default() -> Self {
+        Self {
+            world_x: 0.0,
+            world_y: 0.0,
+            zoom: 1.0,
+            width: 512,
+            height: 512,
+            include_lighting: true,
+            include_ui: false,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderTargetUpdateMode2D {
+    #[default]
+    Always,
+    Once,
+    Manual,
+}
+
+impl RenderTargetUpdateMode2D {
+    pub fn from_name(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "always" | "every_frame" | "realtime" => Ok(Self::Always),
+            "once" | "on_load" | "initial" => Ok(Self::Once),
+            "manual" | "on_demand" => Ok(Self::Manual),
+            other => Err(format!(
+                "unsupported render target update mode '{other}'; use always, once or manual"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuntimeRenderTargetCamera2D {
+    pub entity_id: u64,
+    pub texture_id: u64,
+    pub binding_key: String,
+    pub descriptor: RenderTargetDescriptor2D,
+    pub view: RenderTargetCameraView2D,
+    pub update_mode: RenderTargetUpdateMode2D,
+}
+
+pub fn render_target_binding_key(name: &str) -> String {
+    format!("render-target://{}", name.trim())
+}
+
+/// Resolves global post-process volumes and legacy effect components into one
+/// backend-independent command. Volumes are blended in priority/entity order,
+/// which keeps authored output deterministic across editor and exported builds.
+pub fn runtime_post_process_2d(
+    world: &RuntimeWorld,
+    elapsed_seconds: f32,
+) -> Option<PostProcessCommand2D> {
+    let mut volumes = world
+        .units
+        .iter()
+        .filter(|entity| entity.enabled)
+        .filter_map(|entity| {
+            let volume = entity
+                .get_component("PostProcessVolume2D")
+                .filter(|component| {
+                    component.enabled
+                        && component.get_bool("enabled", true)
+                        && component.get_bool("global", true)
+                });
+            let command = post_process_command_from_entity(entity, volume, elapsed_seconds)?;
+            let priority = volume.map_or(0, |component| component.get_i64("priority", 0));
+            let weight = volume.map_or(1.0, |component| {
+                component_f32(component, "weight", 1.0).clamp(0.0, 1.0)
+            });
+            (weight > 0.0).then_some((priority, entity.id, weight, command))
+        })
+        .collect::<Vec<_>>();
+    volumes.sort_by_key(|(priority, entity_id, _, _)| (*priority, *entity_id));
+    let mut resolved = PostProcessCommand2D {
+        enabled: true,
+        time_seconds: elapsed_seconds.max(0.0),
+        ..PostProcessCommand2D::default()
+    };
+    let mut found = false;
+    for (_, _, weight, volume) in volumes {
+        blend_post_process_command(&mut resolved, &volume, weight);
+        found = true;
+    }
+    (found && resolved.active_effect_count() > 0).then_some(resolved)
+}
+
+fn post_process_command_from_entity(
+    entity: &GameObject,
+    volume: Option<&Component>,
+    elapsed_seconds: f32,
+) -> Option<PostProcessCommand2D> {
+    let mut command = PostProcessCommand2D {
+        time_seconds: elapsed_seconds.max(0.0),
+        ..PostProcessCommand2D::default()
+    };
+    let mut found = false;
+    if let Some(component) = volume {
+        found = true;
+        command.exposure = component_f32(component, "exposure", 1.0);
+        command.contrast = component_f32(component, "contrast", 1.0);
+        command.saturation = component_f32(component, "saturation", 1.0);
+        command.gamma = component_f32(component, "gamma", 1.0);
+        command.bloom_threshold = component_f32(component, "bloom_threshold", 0.8);
+        command.bloom_intensity = component_f32(component, "bloom_intensity", 0.0);
+        command.bloom_radius = component_f32(component, "bloom_radius", 2.0);
+        command.vignette_intensity = component_f32(component, "vignette_intensity", 0.0);
+        command.vignette_softness = component_f32(component, "vignette_softness", 0.45);
+        command.chromatic_aberration = component_f32(component, "chromatic_aberration", 0.0);
+        command.pixel_size = component_f32(component, "pixel_size", 1.0);
+        command.scanline_intensity = component_f32(component, "scanline_intensity", 0.0);
+        command.tint = component_color(component.get("tint"), [255; 4], 1.0);
+        command.damage_flash =
+            component_color(component.get("damage_flash"), [255, 35, 24, 255], 1.0);
+        command.damage_strength = component_f32(component, "damage_strength", 0.0);
+        command.fog_color = component_color(component.get("fog_color"), [95, 115, 140, 255], 1.0);
+        command.fog_density = component_f32(component, "fog_density", 0.0);
+    }
+    if let Some(bloom) = entity
+        .get_component("Bloom2D")
+        .filter(|component| component.enabled)
+    {
+        found = true;
+        command.bloom_threshold = component_f32(bloom, "threshold", command.bloom_threshold);
+        command.bloom_intensity = component_f32(bloom, "intensity", command.bloom_intensity);
+        command.bloom_radius = component_f32(bloom, "radius", command.bloom_radius);
+    }
+    if let Some(fog) = entity
+        .get_component("Fog2D")
+        .filter(|component| component.enabled)
+    {
+        found = true;
+        command.fog_density = component_f32(fog, "density", command.fog_density);
+        command.fog_color = component_color(fog.get("color"), [95, 115, 140, 150], 1.0);
+    }
+    if let Some(damage) = entity
+        .get_component("DamageEffect2D")
+        .filter(|component| component.enabled)
+    {
+        found = true;
+        command.chromatic_aberration =
+            component_f32(damage, "chromatic_aberration", command.chromatic_aberration);
+        command.vignette_intensity = component_f32(damage, "vignette", command.vignette_intensity);
+        command.damage_flash = component_color(damage.get("flash_color"), [255, 65, 65, 255], 1.0);
+        command.damage_strength = component_f32(damage, "strength", command.damage_strength);
+    }
+    if let Some(pixel) = entity
+        .get_component("PixelArtShader2D")
+        .filter(|component| component.enabled)
+    {
+        found = true;
+        command.pixel_size = component_f32(pixel, "pixel_scale", command.pixel_size);
+    }
+    if let Some(distortion) = entity
+        .get_component("Distortion2D")
+        .filter(|component| component.enabled)
+    {
+        found = true;
+        command.chromatic_aberration = command
+            .chromatic_aberration
+            .max(component_f32(distortion, "strength", 0.0).clamp(0.0, 1.0) * 0.025);
+    }
+    found.then_some(command)
+}
+
+fn blend_post_process_command(
+    output: &mut PostProcessCommand2D,
+    target: &PostProcessCommand2D,
+    weight: f32,
+) {
+    let blend = |from: f32, to: f32| from + (to - from) * weight;
+    output.exposure = blend(output.exposure, target.exposure);
+    output.contrast = blend(output.contrast, target.contrast);
+    output.saturation = blend(output.saturation, target.saturation);
+    output.gamma = blend(output.gamma, target.gamma);
+    output.bloom_threshold = blend(output.bloom_threshold, target.bloom_threshold);
+    output.bloom_intensity = blend(output.bloom_intensity, target.bloom_intensity);
+    output.bloom_radius = blend(output.bloom_radius, target.bloom_radius);
+    output.vignette_intensity = blend(output.vignette_intensity, target.vignette_intensity);
+    output.vignette_softness = blend(output.vignette_softness, target.vignette_softness);
+    output.chromatic_aberration = blend(output.chromatic_aberration, target.chromatic_aberration);
+    output.pixel_size = blend(output.pixel_size, target.pixel_size);
+    output.scanline_intensity = blend(output.scanline_intensity, target.scanline_intensity);
+    output.damage_strength = blend(output.damage_strength, target.damage_strength);
+    output.fog_density = blend(output.fog_density, target.fog_density);
+    for index in 0..4 {
+        output.tint[index] = blend(output.tint[index], target.tint[index]);
+        output.damage_flash[index] = blend(output.damage_flash[index], target.damage_flash[index]);
+        output.fog_color[index] = blend(output.fog_color[index], target.fog_color[index]);
+    }
+}
+
+fn component_f32(component: &Component, key: &str, fallback: f32) -> f32 {
+    let value = component.get_f64(key, f64::from(fallback));
+    if value.is_finite() {
+        finite_f64_to_f32(value)
+    } else {
+        fallback
+    }
+}
+
+/// Extracts valid, sampleable camera targets from ordinary scene components.
+/// This is the no-code bridge shared by the editor preview and exported WGPU
+/// players; authored targets use a separate texture-ID namespace by default.
+pub fn runtime_render_target_cameras(
+    world: &RuntimeWorld,
+) -> Result<Vec<RuntimeRenderTargetCamera2D>, String> {
+    let mut cameras = Vec::new();
+    let mut texture_ids = std::collections::BTreeSet::new();
+    let mut binding_keys = std::collections::BTreeSet::new();
+    for entity in world.units.iter().filter(|entity| entity.enabled) {
+        let Some(camera) = entity
+            .get_component("Camera2D")
+            .filter(|component| component.enabled)
+        else {
+            continue;
+        };
+        let Some(target_component) = entity
+            .get_component("RenderTexture2D")
+            .filter(|component| component.enabled && component.get_bool("expose_as_texture", true))
+        else {
+            continue;
+        };
+        let render_texture = RenderTexture2D::from_component(target_component)?;
+        let texture_id = target_component
+            .get("texture_id")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_else(|| namespaced_render_target_texture_id(entity.id));
+        let descriptor = render_texture.to_backend_descriptor(texture_id)?;
+        let target_name = if descriptor.label.trim().is_empty() {
+            format!("CameraTexture_{}", entity.id)
+        } else {
+            descriptor.label.clone()
+        };
+        let camera_target_name = camera.get_string("render_target", "");
+        if !camera_target_name.trim().is_empty() && camera_target_name != target_name {
+            return Err(format!(
+                "Camera2D render_target '{}' on entity {} does not match RenderTexture2D name '{}'",
+                camera_target_name, entity.id, target_name
+            ));
+        }
+        let binding_key = render_target_binding_key(&target_name);
+        if !texture_ids.insert(texture_id) {
+            return Err(format!(
+                "duplicate RenderTexture2D texture_id {texture_id}; each camera target needs a unique ID"
+            ));
+        }
+        if !binding_keys.insert(binding_key.clone()) {
+            return Err(format!(
+                "duplicate RenderTexture2D name '{target_name}'; each sampleable target needs a unique name"
+            ));
+        }
+        cameras.push(RuntimeRenderTargetCamera2D {
+            entity_id: entity.id,
+            texture_id,
+            binding_key,
+            descriptor,
+            view: RenderTargetCameraView2D {
+                world_x: finite_f64_to_f32(entity.x),
+                world_y: finite_f64_to_f32(entity.y),
+                zoom: finite_f64_to_f32(camera.get_f64("zoom", 1.0)).clamp(0.1, 8.0),
+                width: render_texture.width,
+                height: render_texture.height,
+                include_lighting: camera.get_bool("render_target_include_lighting", true),
+                include_ui: camera.get_bool("render_target_include_ui", false),
+            },
+            update_mode: RenderTargetUpdateMode2D::from_name(
+                camera
+                    .get("render_target_update_mode")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|mode| !mode.trim().is_empty())
+                    .unwrap_or(&render_texture.update_mode),
+            )?,
+        });
+    }
+    cameras.sort_by_key(|camera| (camera.texture_id, camera.entity_id));
+    Ok(cameras)
 }
 
 #[derive(Debug, Clone)]
@@ -227,6 +529,7 @@ pub fn draw_engine_runtime_scene_2d<B: RenderBackend>(
         width,
         height,
         EntityPass::BehindTiles,
+        None,
         &mut stats,
     )?;
     draw_tile_layers(
@@ -251,6 +554,7 @@ pub fn draw_engine_runtime_scene_2d<B: RenderBackend>(
         width,
         height,
         EntityPass::InFrontOfTiles,
+        None,
         &mut stats,
     )?;
     draw_particles(
@@ -316,6 +620,137 @@ pub fn draw_engine_runtime_scene_2d<B: RenderBackend>(
         height,
         &mut stats,
     )?;
+    Ok(stats)
+}
+
+/// Renders the world layers of an exported runtime into a sampleable 2D target.
+///
+/// The pass includes tile layers, entities, normal-mapped materials,
+/// ambient/directional lights, point lights and bounded shadows. When the camera
+/// opts into UI, legacy UI elements, scene canvases and retained UI documents
+/// are rendered with target-local clipping and glyph atlases. Persistent compute
+/// particles remain a main-frame-only path.
+pub fn draw_engine_runtime_world_to_render_target_2d<B: RenderBackend>(
+    backend: &mut B,
+    runtime: &EngineRuntime,
+    textures: &BTreeMap<String, RuntimeTexture2D>,
+    texture_id: u64,
+    view: RenderTargetCameraView2D,
+) -> MFResult<RuntimeScene2DStats> {
+    let width = view.width.max(1) as f32;
+    let height = view.height.max(1) as f32;
+    let zoom = view.zoom.clamp(0.1, 8.0);
+    let tile = (runtime.grid.tile_size.max(1) as f32 * zoom).max(1.0);
+    let origin_x = width * 0.5 - view.world_x * tile;
+    let origin_y = height * 0.5 - view.world_y * tile;
+    let normal_lighting = RuntimeNormalLighting2D::from_world(&runtime.runtime_world);
+    let mut stats = RuntimeScene2DStats::default();
+
+    backend.begin_render_target_2d(texture_id)?;
+    let draw_result = (|| {
+        draw_grid_base(
+            backend,
+            &runtime.grid,
+            origin_x,
+            origin_y,
+            tile,
+            width,
+            height,
+            &mut stats,
+        )?;
+        draw_entities(
+            backend,
+            &runtime.runtime_world,
+            textures,
+            &normal_lighting,
+            origin_x,
+            origin_y,
+            tile,
+            width,
+            height,
+            EntityPass::BehindTiles,
+            Some(texture_id),
+            &mut stats,
+        )?;
+        draw_tile_layers(
+            backend,
+            &runtime.tilemap_layers,
+            origin_x,
+            origin_y,
+            tile,
+            width,
+            height,
+            false,
+            &mut stats,
+        )?;
+        draw_entities(
+            backend,
+            &runtime.runtime_world,
+            textures,
+            &normal_lighting,
+            origin_x,
+            origin_y,
+            tile,
+            width,
+            height,
+            EntityPass::InFrontOfTiles,
+            Some(texture_id),
+            &mut stats,
+        )?;
+        draw_tile_layers(
+            backend,
+            &runtime.tilemap_layers,
+            origin_x,
+            origin_y,
+            tile,
+            width,
+            height,
+            true,
+            &mut stats,
+        )?;
+        if view.include_lighting {
+            draw_runtime_lights(
+                backend,
+                &runtime.runtime_world,
+                origin_x,
+                origin_y,
+                tile,
+                width,
+                height,
+                &mut stats,
+            )?;
+        }
+        if view.include_ui {
+            draw_runtime_ui(
+                backend,
+                &runtime.runtime_world,
+                &runtime.tilemap_layers,
+                textures,
+                width,
+                height,
+                &mut stats,
+            )?;
+            draw_scene_ui_canvases(
+                backend,
+                &runtime.ui_canvases,
+                textures,
+                width,
+                height,
+                &mut stats,
+            )?;
+            draw_runtime_ui_documents(
+                backend,
+                &runtime.ui_documents,
+                textures,
+                width,
+                height,
+                &mut stats,
+            )?;
+        }
+        Ok(())
+    })();
+    let end_result = backend.end_render_target_2d();
+    draw_result.and(end_result)?;
     Ok(stats)
 }
 
@@ -867,6 +1302,7 @@ fn draw_entities<B: RenderBackend>(
     screen_width: f32,
     screen_height: f32,
     pass: EntityPass,
+    excluded_texture_id: Option<u64>,
     stats: &mut RuntimeScene2DStats,
 ) -> MFResult<()> {
     let mut entities = world
@@ -912,6 +1348,9 @@ fn draw_entities<B: RenderBackend>(
             continue;
         }
         let binding = entity_sprite_path(entity).and_then(|path| textures.get(path));
+        if binding.is_some_and(|binding| Some(binding.texture_id) == excluded_texture_id) {
+            continue;
+        }
         let sprite = SpriteDrawCommand {
             entity_id: entity.id,
             texture_id: binding.map_or(0, |binding| binding.texture_id),
@@ -922,7 +1361,11 @@ fn draw_entities<B: RenderBackend>(
             rotation: (entity.rotation as f32).to_radians(),
             color: entity_tint(entity),
         };
-        let options = entity_sprite_options(entity, textures, normal_lighting);
+        let mut options = entity_sprite_options(entity, textures, normal_lighting);
+        if options.normal_texture_id == excluded_texture_id {
+            options.normal_texture_id = None;
+            options.normal_strength = 0;
+        }
         if let Some((binding, uv_rect)) = binding
             .and_then(|binding| entity_source_uv(entity, binding).map(|uv_rect| (binding, uv_rect)))
         {
@@ -2737,6 +3180,132 @@ mod tests {
     use crate::entities::game_object::GameObject;
     use crate::render::backend::MacroquadBackend;
     use serde_json::json;
+
+    #[test]
+    fn post_process_volume_extracts_a_backend_independent_command() {
+        let mut entity = GameObject::new(0.0, 0.0, Some("World grading".to_string()));
+        let mut volume = default_component("PostProcessVolume2D").unwrap();
+        volume.set("exposure", json!(1.25));
+        volume.set("bloom_intensity", json!(0.7));
+        volume.set("vignette_intensity", json!(0.4));
+        volume.set("tint", json!([255, 192, 128, 255]));
+        entity.add_component(volume);
+
+        let command = runtime_post_process_2d(&RuntimeWorld::new(vec![entity]), 2.5)
+            .expect("authored volume should produce an active command");
+        assert_eq!(command.time_seconds, 2.5);
+        assert!((command.exposure - 1.25).abs() < 0.001);
+        assert!((command.bloom_intensity - 0.7).abs() < 0.001);
+        assert!((command.vignette_intensity - 0.4).abs() < 0.001);
+        assert!((command.tint[1] - 192.0 / 255.0).abs() < 0.001);
+        assert!(command.active_effect_count() >= 4);
+    }
+
+    #[test]
+    fn post_process_volumes_blend_in_priority_order_and_respect_weight() {
+        let mut base = GameObject::new(0.0, 0.0, Some("Base grade".to_string()));
+        let mut base_volume = default_component("PostProcessVolume2D").unwrap();
+        base_volume.set("priority", json!(0));
+        base_volume.set("exposure", json!(2.0));
+        base_volume.set("bloom_intensity", json!(1.0));
+        base.add_component(base_volume);
+
+        let mut override_entity = GameObject::new(0.0, 0.0, Some("Interior override".to_string()));
+        let mut override_volume = default_component("PostProcessVolume2D").unwrap();
+        override_volume.set("priority", json!(10));
+        override_volume.set("weight", json!(0.5));
+        override_volume.set("exposure", json!(1.0));
+        override_volume.set("bloom_intensity", json!(0.0));
+        override_entity.add_component(override_volume);
+
+        let command =
+            runtime_post_process_2d(&RuntimeWorld::new(vec![override_entity, base]), -4.0)
+                .expect("two visible volumes should resolve");
+        assert_eq!(command.time_seconds, 0.0);
+        assert!((command.exposure - 1.5).abs() < 0.001);
+        assert!((command.bloom_intensity - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn legacy_effect_components_feed_the_shared_post_process_path() {
+        let mut entity = GameObject::new(0.0, 0.0, Some("Legacy effects".to_string()));
+        let mut bloom = default_component("Bloom2D").unwrap();
+        bloom.set("intensity", json!(1.25));
+        bloom.set("threshold", json!(0.6));
+        let mut fog = default_component("Fog2D").unwrap();
+        fog.set("density", json!(0.3));
+        fog.set("color", json!([20, 40, 60, 255]));
+        entity.add_component(bloom);
+        entity.add_component(fog);
+
+        let command = runtime_post_process_2d(&RuntimeWorld::new(vec![entity]), 1.0)
+            .expect("legacy effects should migrate without scripts");
+        assert!((command.bloom_intensity - 1.25).abs() < 0.001);
+        assert!((command.bloom_threshold - 0.6).abs() < 0.001);
+        assert!((command.fog_density - 0.3).abs() < 0.001);
+        assert!((command.fog_color[2] - 60.0 / 255.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn scene_components_extract_namespaced_no_code_camera_targets() {
+        let mut camera_entity = GameObject::new(3.0, 4.0, Some("Security Camera".to_string()));
+        let mut camera = default_component("Camera2D").unwrap();
+        camera.set("zoom", json!(2.0));
+        camera.set("render_target", json!("SecurityFeed"));
+        camera.set("render_target_include_ui", json!(true));
+        let mut target = default_component("RenderTexture2D").unwrap();
+        target.set("name", json!("SecurityFeed"));
+        target.set("width", json!(320));
+        target.set("height", json!(180));
+        target.set("update_mode", json!("once"));
+        camera_entity.add_component(camera);
+        camera_entity.add_component(target);
+        let expected_id = namespaced_render_target_texture_id(camera_entity.id);
+
+        let cameras = runtime_render_target_cameras(&RuntimeWorld::new(vec![camera_entity]))
+            .expect("valid target camera");
+        assert_eq!(cameras.len(), 1);
+        assert_eq!(cameras[0].texture_id, expected_id);
+        assert_eq!(cameras[0].binding_key, "render-target://SecurityFeed");
+        assert_eq!(cameras[0].descriptor.width, 320);
+        assert_eq!(cameras[0].descriptor.height, 180);
+        assert_eq!(cameras[0].view.world_x, 3.0);
+        assert_eq!(cameras[0].view.world_y, 4.0);
+        assert_eq!(cameras[0].view.zoom, 2.0);
+        assert!(cameras[0].view.include_ui);
+        assert_eq!(cameras[0].update_mode, RenderTargetUpdateMode2D::Once);
+    }
+
+    #[test]
+    fn camera_target_extraction_rejects_ambiguous_bindings_and_modes() {
+        let target_entity = |name: &str, mode: &str| {
+            let mut entity = GameObject::new(0.0, 0.0, Some(name.to_string()));
+            let mut camera = default_component("Camera2D").unwrap();
+            camera.set("render_target", json!("Shared"));
+            let mut target = default_component("RenderTexture2D").unwrap();
+            target.set("name", json!("Shared"));
+            target.set("update_mode", json!(mode));
+            entity.add_component(camera);
+            entity.add_component(target);
+            entity
+        };
+        let invalid_mode = RuntimeWorld::new(vec![target_entity("Bad", "sometimes")]);
+        assert!(
+            runtime_render_target_cameras(&invalid_mode)
+                .unwrap_err()
+                .contains("unsupported render target update mode")
+        );
+
+        let duplicates = RuntimeWorld::new(vec![
+            target_entity("First", "always"),
+            target_entity("Second", "manual"),
+        ]);
+        assert!(
+            runtime_render_target_cameras(&duplicates)
+                .unwrap_err()
+                .contains("duplicate RenderTexture2D name")
+        );
+    }
 
     #[test]
     fn material_and_sprite_components_select_reusable_blend_modes() {

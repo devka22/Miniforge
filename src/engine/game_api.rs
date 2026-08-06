@@ -9,7 +9,10 @@ use crate::engine::asset_tools::AssetTools;
 use crate::engine::build_placement::{BuildFootprint, BuildPlacement, PlacementResult};
 use crate::engine::component::{Component, component_from_data, default_component};
 use crate::engine::spatial_index::{SpatialEntry, SpatialIndex};
-use crate::engine::survival_systems::{CraftResult, SurvivalInteractionResult, SurvivalSystems};
+use crate::engine::survival_systems::{
+    CraftResult, EquipmentChangeResult, EquipmentSummary, InjuryResult, SurvivalEnvironment2D,
+    SurvivalInteractionResult, SurvivalSystems, SurvivalTickReport,
+};
 use crate::entities::game_object::GameObject;
 use crate::map::flow_field::FlowField;
 use crate::map::grid::Grid;
@@ -619,6 +622,18 @@ impl GameAPI {
         SurvivalSystems::state(entity)
     }
 
+    pub fn tick_survival(entity: &mut GameObject, dt: f64) -> SurvivalTickReport {
+        SurvivalSystems::tick_entity(entity, dt)
+    }
+
+    pub fn tick_survival_in_environment(
+        entity: &mut GameObject,
+        dt: f64,
+        environment: &SurvivalEnvironment2D,
+    ) -> SurvivalTickReport {
+        SurvivalSystems::tick_entity_in_environment(entity, dt, environment)
+    }
+
     pub fn set_survival_need(entity: &mut GameObject, name: &str, value: f64) -> bool {
         SurvivalSystems::set_need(entity, name, value)
     }
@@ -689,6 +704,43 @@ impl GameAPI {
         entity
             .get_component_mut("Equipment")
             .and_then(|equipment| equipment.equipment_unequip(slot))
+    }
+
+    pub fn equip_inventory_item(
+        entity: &mut GameObject,
+        item_id: &str,
+        preferred_slot: Option<&str>,
+    ) -> EquipmentChangeResult {
+        SurvivalSystems::equip_from_inventory(entity, item_id, preferred_slot)
+    }
+
+    pub fn unequip_to_inventory(entity: &mut GameObject, slot: &str) -> EquipmentChangeResult {
+        SurvivalSystems::unequip_to_inventory(entity, slot)
+    }
+
+    pub fn equipment_summary(entity: &GameObject) -> EquipmentSummary {
+        SurvivalSystems::equipment_summary(entity)
+    }
+
+    pub fn effective_stat(entity: &GameObject, stat: &str) -> f64 {
+        SurvivalSystems::effective_stat(entity, stat)
+    }
+
+    pub fn degrade_equipment(entity: &mut GameObject, slot: &str, amount: f64) -> Option<f64> {
+        SurvivalSystems::degrade_equipped_item(entity, slot, amount)
+    }
+
+    pub fn apply_injury(
+        entity: &mut GameObject,
+        region: &str,
+        injury_type: &str,
+        severity: f64,
+    ) -> InjuryResult {
+        SurvivalSystems::apply_injury(entity, region, injury_type, severity)
+    }
+
+    pub fn treat_injury(entity: &mut GameObject, injury_id: u64, item_id: &str) -> InjuryResult {
+        SurvivalSystems::treat_injury_with_item(entity, injury_id, item_id)
     }
 
     pub fn add_resource(entity: &mut GameObject, resource_type: &str, amount: f64) -> Option<f64> {

@@ -302,6 +302,12 @@ pub unsafe extern "C" fn mf_editor_project_path(
 }
 
 #[unsafe(no_mangle)]
+/// Writes the open project's editable settings bundle as JSON.
+///
+/// # Safety
+/// `handle` must be a valid immutable editor handle. `data` must point to
+/// `capacity` writable bytes when `capacity > 0`; `required` and `error`, when
+/// non-null, must point to writable storage.
 pub unsafe extern "C" fn mf_editor_project_settings_json(
     handle: *const MfEditorHandle,
     data: *mut c_char,
@@ -317,6 +323,11 @@ pub unsafe extern "C" fn mf_editor_project_settings_json(
 }
 
 #[unsafe(no_mangle)]
+/// Validates and persists the engine settings JSON for the open project.
+///
+/// # Safety
+/// `handle` must be valid and exclusively borrowed. `source` must point to a
+/// valid null-terminated UTF-8 string; `error`, when non-null, must be writable.
 pub unsafe extern "C" fn mf_editor_save_engine_settings_json(
     handle: *mut MfEditorHandle,
     source: *const c_char,
@@ -338,6 +349,11 @@ pub unsafe extern "C" fn mf_editor_save_engine_settings_json(
 }
 
 #[unsafe(no_mangle)]
+/// Validates and persists the input-map JSON for the open project.
+///
+/// # Safety
+/// `handle` must be valid and exclusively borrowed. `source` must point to a
+/// valid null-terminated UTF-8 string; `error`, when non-null, must be writable.
 pub unsafe extern "C" fn mf_editor_save_input_map_json(
     handle: *mut MfEditorHandle,
     source: *const c_char,
@@ -359,6 +375,11 @@ pub unsafe extern "C" fn mf_editor_save_input_map_json(
 }
 
 #[unsafe(no_mangle)]
+/// Validates and persists the tag and layer definitions for the open project.
+///
+/// # Safety
+/// `handle` must be valid and exclusively borrowed. `source` must point to a
+/// valid null-terminated UTF-8 string; `error`, when non-null, must be writable.
 pub unsafe extern "C" fn mf_editor_save_tags_layers_json(
     handle: *mut MfEditorHandle,
     source: *const c_char,
@@ -380,6 +401,12 @@ pub unsafe extern "C" fn mf_editor_save_tags_layers_json(
 }
 
 #[unsafe(no_mangle)]
+/// Writes a launcher snapshot for projects under `workspace_root` as JSON.
+///
+/// # Safety
+/// `handle` must be a valid immutable editor handle and `workspace_root` a
+/// valid null-terminated UTF-8 string. Output buffer pointers follow
+/// `mf_editor_project_path` semantics.
 pub unsafe extern "C" fn mf_editor_launcher_snapshot_json(
     handle: *const MfEditorHandle,
     workspace_root: *const c_char,
@@ -410,6 +437,12 @@ pub unsafe extern "C" fn mf_editor_launcher_snapshot_json(
 }
 
 #[unsafe(no_mangle)]
+/// Creates a project from a launcher template and writes its path to `data`.
+///
+/// # Safety
+/// `handle` must be a valid immutable editor handle. All input string pointers
+/// must reference valid null-terminated UTF-8 strings. Output buffer pointers
+/// follow `mf_editor_project_path` semantics.
 pub unsafe extern "C" fn mf_editor_launcher_create_project(
     handle: *const MfEditorHandle,
     workspace_root: *const c_char,
@@ -445,6 +478,12 @@ pub unsafe extern "C" fn mf_editor_launcher_create_project(
 }
 
 #[unsafe(no_mangle)]
+/// Repairs launcher metadata for a project and writes the repair report as JSON.
+///
+/// # Safety
+/// `handle` must be a valid immutable editor handle. `workspace_root` and
+/// `project_path` must reference valid null-terminated UTF-8 strings. Output
+/// buffer pointers follow `mf_editor_project_path` semantics.
 pub unsafe extern "C" fn mf_editor_launcher_repair_project_json(
     handle: *const MfEditorHandle,
     workspace_root: *const c_char,
@@ -968,6 +1007,11 @@ pub unsafe extern "C" fn mf_editor_scene_state_json(
 }
 
 #[unsafe(no_mangle)]
+/// Writes the current Scene Browser state as JSON.
+///
+/// # Safety
+/// `handle` must be a valid immutable editor handle. Output buffer pointers
+/// follow `mf_editor_project_path` semantics.
 pub unsafe extern "C" fn mf_editor_scene_browser_state_json(
     handle: *const MfEditorHandle,
     data: *mut c_char,
@@ -983,6 +1027,12 @@ pub unsafe extern "C" fn mf_editor_scene_browser_state_json(
 }
 
 #[unsafe(no_mangle)]
+/// Executes a Scene Browser action and writes the resulting state as JSON.
+///
+/// # Safety
+/// `handle` must be valid and exclusively borrowed. `action` and `payload_json`
+/// must reference valid null-terminated UTF-8 strings. Output buffer pointers
+/// follow `mf_editor_project_path` semantics.
 pub unsafe extern "C" fn mf_editor_scene_browser_action_json(
     handle: *mut MfEditorHandle,
     action: *const c_char,
@@ -2273,6 +2323,11 @@ pub unsafe extern "C" fn mf_editor_luau_save(
 }
 
 #[unsafe(no_mangle)]
+/// Writes the current Luau debugger state as JSON.
+///
+/// # Safety
+/// `handle` must be a valid immutable editor handle. Output buffer pointers
+/// follow `mf_editor_project_path` semantics.
 pub unsafe extern "C" fn mf_editor_luau_debug_state_json(
     handle: *const MfEditorHandle,
     data: *mut c_char,
@@ -2295,6 +2350,12 @@ pub unsafe extern "C" fn mf_editor_luau_debug_state_json(
 }
 
 #[unsafe(no_mangle)]
+/// Replaces all Luau debugger breakpoints from a JSON array.
+///
+/// # Safety
+/// `handle` must be valid and exclusively borrowed. `breakpoints_json` must
+/// reference a valid null-terminated UTF-8 string; `error`, when non-null, must
+/// be writable.
 pub unsafe extern "C" fn mf_editor_luau_set_breakpoints_json(
     handle: *mut MfEditorHandle,
     breakpoints_json: *const c_char,
@@ -2320,6 +2381,11 @@ pub unsafe extern "C" fn mf_editor_luau_set_breakpoints_json(
 }
 
 #[unsafe(no_mangle)]
+/// Applies one command to the Luau debugger.
+///
+/// # Safety
+/// `handle` must be valid and exclusively borrowed. `command` must reference a
+/// valid null-terminated UTF-8 string; `error`, when non-null, must be writable.
 pub unsafe extern "C" fn mf_editor_luau_debug_command(
     handle: *mut MfEditorHandle,
     command: *const c_char,
@@ -2341,6 +2407,12 @@ pub unsafe extern "C" fn mf_editor_luau_debug_command(
 }
 
 #[unsafe(no_mangle)]
+/// Evaluates Luau watch expressions and writes their values as JSON.
+///
+/// # Safety
+/// `handle` must be a valid immutable editor handle. `expressions_json` must
+/// reference a valid null-terminated UTF-8 string. Output buffer pointers follow
+/// `mf_editor_project_path` semantics.
 pub unsafe extern "C" fn mf_editor_luau_watches_json(
     handle: *const MfEditorHandle,
     expressions_json: *const c_char,
@@ -2376,6 +2448,12 @@ pub unsafe extern "C" fn mf_editor_luau_watches_json(
 }
 
 #[unsafe(no_mangle)]
+/// Validates a visual-graph source and writes the diagnostics as JSON.
+///
+/// # Safety
+/// `handle` must be a valid immutable editor handle. `relative_path` and
+/// `source` must reference valid null-terminated UTF-8 strings. Output buffer
+/// pointers follow `mf_editor_project_path` semantics.
 pub unsafe extern "C" fn mf_editor_visual_graph_validate_json(
     handle: *const MfEditorHandle,
     relative_path: *const c_char,
@@ -2408,6 +2486,12 @@ pub unsafe extern "C" fn mf_editor_visual_graph_validate_json(
 }
 
 #[unsafe(no_mangle)]
+/// Validates and persists a visual-graph source file.
+///
+/// # Safety
+/// `handle` must be valid and exclusively borrowed. `relative_path` and `source`
+/// must reference valid null-terminated UTF-8 strings; `error`, when non-null,
+/// must be writable.
 pub unsafe extern "C" fn mf_editor_visual_graph_save(
     handle: *mut MfEditorHandle,
     relative_path: *const c_char,
@@ -2430,6 +2514,11 @@ pub unsafe extern "C" fn mf_editor_visual_graph_save(
 }
 
 #[unsafe(no_mangle)]
+/// Writes the visual-graph node and template catalog as JSON.
+///
+/// # Safety
+/// `handle` must be a valid immutable editor handle. Output buffer pointers
+/// follow `mf_editor_project_path` semantics.
 pub unsafe extern "C" fn mf_editor_visual_graph_catalog_json(
     handle: *const MfEditorHandle,
     data: *mut c_char,
@@ -2451,6 +2540,12 @@ pub unsafe extern "C" fn mf_editor_visual_graph_catalog_json(
 }
 
 #[unsafe(no_mangle)]
+/// Creates a visual graph from a named template.
+///
+/// # Safety
+/// `handle` must be valid and exclusively borrowed. `relative_path` and
+/// `template_name` must reference valid null-terminated UTF-8 strings; `error`,
+/// when non-null, must be writable.
 pub unsafe extern "C" fn mf_editor_visual_graph_create_template(
     handle: *mut MfEditorHandle,
     relative_path: *const c_char,
@@ -2478,6 +2573,11 @@ pub unsafe extern "C" fn mf_editor_visual_graph_create_template(
 }
 
 #[unsafe(no_mangle)]
+/// Writes the Python toolchain and tool catalog state as JSON.
+///
+/// # Safety
+/// `handle` must be a valid immutable editor handle. Output buffer pointers
+/// follow `mf_editor_project_path` semantics.
 pub unsafe extern "C" fn mf_editor_python_tools_json(
     handle: *const MfEditorHandle,
     data: *mut c_char,
@@ -2499,6 +2599,11 @@ pub unsafe extern "C" fn mf_editor_python_tools_json(
 }
 
 #[unsafe(no_mangle)]
+/// Installs the engine-managed Python tooling for the open project.
+///
+/// # Safety
+/// `handle` must be valid and exclusively borrowed; `error`, when non-null,
+/// must point to writable storage.
 pub unsafe extern "C" fn mf_editor_python_install_tools(
     handle: *mut MfEditorHandle,
     error: *mut MfError,
@@ -2511,6 +2616,12 @@ pub unsafe extern "C" fn mf_editor_python_install_tools(
 }
 
 #[unsafe(no_mangle)]
+/// Runs a registered Python tool with JSON parameters.
+///
+/// # Safety
+/// `handle` must be valid and exclusively borrowed. `tool_id` and
+/// `parameters_json` must reference valid null-terminated UTF-8 strings;
+/// `error`, when non-null, must be writable.
 pub unsafe extern "C" fn mf_editor_python_run_tool(
     handle: *mut MfEditorHandle,
     tool_id: *const c_char,
@@ -2538,6 +2649,11 @@ pub unsafe extern "C" fn mf_editor_python_run_tool(
 }
 
 #[unsafe(no_mangle)]
+/// Writes the most recent Python tool result as JSON.
+///
+/// # Safety
+/// `handle` must be a valid immutable editor handle. Output buffer pointers
+/// follow `mf_editor_project_path` semantics.
 pub unsafe extern "C" fn mf_editor_python_last_result_json(
     handle: *const MfEditorHandle,
     data: *mut c_char,

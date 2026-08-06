@@ -159,6 +159,10 @@ Rectangle {
         var parameters = {}
         for (var index = 0; index < parameterModel.count; ++index) {
             var parameter = parameterModel.get(index)
+            if (parameter.valueType === "bool") {
+                parameters[parameter.parameterId] = String(parameter.editorValue) === "true"
+                continue
+            }
             var value = Number(parameter.editorValue)
             if (!isFinite(value))
                 continue
@@ -327,7 +331,7 @@ Rectangle {
                     height: 74
                     radius: Theme.DarkTheme.radius
                     color: Theme.DarkTheme.surface
-                    border.color: valueInput.activeFocus
+                    border.color: valueInput.activeFocus || boolInput.activeFocus
                         ? Theme.DarkTheme.focus : Theme.DarkTheme.borderSoft
                     border.width: 1
 
@@ -360,6 +364,7 @@ Rectangle {
 
                         TextField {
                             id: valueInput
+                            visible: parameterRow.valueType !== "bool"
                             Layout.preferredWidth: 108
                             text: parameterRow.editorValue
                             horizontalAlignment: TextInput.AlignRight
@@ -375,6 +380,24 @@ Rectangle {
                             }
                             ToolTip.visible: hovered
                             ToolTip.text: "Range " + parameterRow.minimum + " to " + parameterRow.maximum
+                        }
+
+                        Switch {
+                            id: boolInput
+                            visible: parameterRow.valueType === "bool"
+                            Layout.preferredWidth: 108
+                            checked: parameterRow.editorValue === "true"
+                            text: checked ? "On" : "Off"
+                            onToggled: {
+                                parameterModel.setProperty(
+                                    parameterRow.index,
+                                    "editorValue",
+                                    checked ? "true" : "false"
+                                )
+                                root.refreshApplicationPlan()
+                            }
+                            ToolTip.visible: hovered
+                            ToolTip.text: parameterRow.description
                         }
                     }
                 }

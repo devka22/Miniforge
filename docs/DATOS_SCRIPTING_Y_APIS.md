@@ -618,11 +618,26 @@ Componentes principales:
 - `MeshDrawCommand3D`
 - `LightDrawCommand3D`
 - `CameraCommand3D`
+- `RenderTargetDescriptor2D`
+
+`RenderBackend` también expone el ciclo de render target 2D:
+
+- `create_render_target_2d` / `remove_render_target_2d`
+- `begin_render_target_2d` / `end_render_target_2d`
+
+`RenderTexture2D::to_backend_descriptor` valida formato, tamaño y color de limpieza. Para escenas,
+`runtime_render_target_cameras` convierte pares `Camera2D` + `RenderTexture2D` en cámaras sampleables
+con binding estable, resolución y política `always`, `once` o `manual`. Los backends de
+compatibilidad devuelven un error explícito; WGPU crea una textura GPU real que puede usarse en el
+mismo frame como color o normal map. `Camera2D.render_target_include_ui` incorpora UI legacy,
+Canvas y documentos UI retained, incluido texto Unicode mediante un atlas de glifos propio del
+target. Cada target admite una escritura por frame para evitar reemplazos ambiguos.
 
 Backends:
 
 - `MacroquadBackend`: estable.
-- `WgpuBackend`: experimental/futuro.
+- `WgpuBackend`: migración activa con surface Metal/Vulkan/DX12/WebGPU, batching, texto Unicode,
+  materiales WGSL integrados, partículas compute, normal maps y render targets 2D.
 
 `Render2DCompatibilityProfile` describe compatibilidad, limites de atlas/batching, compute, GPU particles, tile compute culling, persistent buffers y fallbacks.
 
