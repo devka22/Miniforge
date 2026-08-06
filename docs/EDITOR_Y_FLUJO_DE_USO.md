@@ -225,6 +225,11 @@ La capa Qt llama comandos por ID mediante `editorController.executeCommand(comma
 - `object.create_sprite_actor`
 - `object.create_camera`
 - `object.create_camera_texture2d`
+- `object.create_post_process_volume2d`
+- `object.create_survival_actor2d`
+- `object.create_survival_environment2d`
+- `object.create_hybrid_world2d3d`
+- `object.create_hybrid_billboard3d`
 - `object.create_area2d`
 - `object.create_character_body2d`
 - `object.create_ui_text`
@@ -238,6 +243,17 @@ Inspector expone resolución y modo de actualización (`always`, `once`, `manual
 conectar la textura después de guardar. En Authoring Hub, el preset **Camera to Texture 2D** añade
 un switch **Include UI**: al activarlo la cámara captura también `UIElement`, Canvas/UI Designer y
 texto retained con clipping adaptado a la resolución del target.
+
+`object.create_post_process_volume2d` crea un volumen global sin sprite ni colisión. El glifo `FX`
+identifica el objeto y el Inspector controla el compositor WGPU físico. Los presets Cinematic,
+Horror, Pixel y Damage ofrecen puntos de partida sin escribir WGSL.
+
+El menú **Survival** crea actores con vida, necesidades, lesiones, inventario, equipamiento,
+fabricación, control, guardado, animación y ancla híbrida; también crea ambientes globales con
+temperatura, viento, lluvia y exposición. El menú **Hybrid 2D + 3D** crea el mundo de presentación
+o actores billboard sincronizados. Los glifos `WX`, `2½D` y `BB` muestran sus parámetros esenciales
+directamente en el viewport. Véanse [Componentes de supervivencia](SURVIVAL_COMPONENTS.md) y
+[Escenas híbridas 2D + 3D](HYBRID_2D_3D.md).
 
 La Command Palette fusiona comandos del backend y acciones propias del shell Qt. La búsqueda es
 fuzzy, se navega con teclado y respeta si un comando requiere proyecto o selección. Es la vía más

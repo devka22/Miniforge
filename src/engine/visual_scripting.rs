@@ -471,6 +471,54 @@ impl VisualScriptRuntime {
                         next_override = branch_next(node, used);
                     }
                 }
+                "EquipInventoryItem" => {
+                    let item = node.get("item").and_then(Value::as_str).unwrap_or("item");
+                    let slot = node
+                        .get("slot")
+                        .and_then(Value::as_str)
+                        .filter(|slot| !slot.trim().is_empty());
+                    let equipped = GameAPI::equip_inventory_item(entity, item, slot).success;
+                    if node.get("true_next").is_some() || node.get("false_next").is_some() {
+                        next_override = branch_next(node, equipped);
+                    }
+                }
+                "UnequipToInventory" => {
+                    let slot = node
+                        .get("slot")
+                        .and_then(Value::as_str)
+                        .unwrap_or("primary");
+                    let unequipped = GameAPI::unequip_to_inventory(entity, slot).success;
+                    if node.get("true_next").is_some() || node.get("false_next").is_some() {
+                        next_override = branch_next(node, unequipped);
+                    }
+                }
+                "ApplyInjury" => {
+                    let region = node
+                        .get("region")
+                        .and_then(Value::as_str)
+                        .unwrap_or("torso");
+                    let injury_type = node
+                        .get("injury_type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("cut");
+                    let severity = node.get("severity").and_then(Value::as_f64).unwrap_or(10.0);
+                    let applied =
+                        GameAPI::apply_injury(entity, region, injury_type, severity).success;
+                    if node.get("true_next").is_some() || node.get("false_next").is_some() {
+                        next_override = branch_next(node, applied);
+                    }
+                }
+                "TreatInjury" => {
+                    let injury_id = node.get("injury_id").and_then(Value::as_u64).unwrap_or(1);
+                    let item = node
+                        .get("item")
+                        .and_then(Value::as_str)
+                        .unwrap_or("bandage");
+                    let treated = GameAPI::treat_injury(entity, injury_id, item).success;
+                    if node.get("true_next").is_some() || node.get("false_next").is_some() {
+                        next_override = branch_next(node, treated);
+                    }
+                }
                 "SortInventory" => {
                     let mode = node.get("mode").and_then(Value::as_str).unwrap_or("id");
                     let _ = GameAPI::sort_inventory(entity, mode);

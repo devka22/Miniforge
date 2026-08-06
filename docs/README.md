@@ -14,6 +14,7 @@ runtime de los juegos, pero ya no existe un editor visual Rust/egui.
 | Instalar y ejecutar el motor | [README principal](../README.md#inicio-rápido) |
 | Aprender el editor y crear un juego | [Editor y flujo de uso](EDITOR_Y_FLUJO_DE_USO.md) |
 | Crear supervivencia con componentes | [Componentes de supervivencia](SURVIVAL_COMPONENTS.md) |
+| Combinar gameplay 2D con presentación 3D | [Escenas híbridas 2D + 3D](HYBRID_2D_3D.md) |
 | Usar presets, parámetros y perfiles físicos | [Mega Authoring Update](MEGA_AUTHORING_UPDATE.md) |
 | Entender el runtime y sus sistemas | [Arquitectura y runtime](ARQUITECTURA_Y_RUNTIME.md) |
 | Programar con Luau o consumir APIs | [Datos, scripting y APIs](DATOS_SCRIPTING_Y_APIS.md) |
@@ -65,6 +66,7 @@ runtime de los juegos, pero ya no existe un editor visual Rust/egui.
 | `ARQUITECTURA_Y_RUNTIME.md` | Capas, mundo, loop, estabilidad y sistemas | `src/runtime`, `src/core`, `src/engine`, `src/systems` |
 | `DATOS_SCRIPTING_Y_APIS.md` | Schemas, Luau, graphs, ABI y APIs públicas | serializadores, `types/miniforge.luau`, header C |
 | `DESARROLLO_BUILD_Y_EXTENSION.md` | Toolchain, pruebas, export y extensiones | `Cargo.toml`, `scripts`, `tools`, plugins |
+| `HYBRID_2D_3D.md` | Puente de coordenadas, billboards y flujo híbrido | `src/engine/hybrid_scene.rs`, componentes 3D |
 | `QT_EDITOR_MIGRATION.md` | Decisión arquitectónica y gates de Qt | gate anti-editor-Rust y tests Qt |
 
 Los archivos `MINIFORGE_MCP_FEEDBACK*.md` y `MFORGE_MCP_FEEDBACK*.md` son feedback y backlog

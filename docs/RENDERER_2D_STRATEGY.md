@@ -88,6 +88,20 @@ adds legacy UI, scene canvases, retained widgets and Unicode text through target
 one glyph atlas per camera target. Multiple writes to the same target in one frame are rejected;
 persistent compute particles inside the off-screen pass remain explicitly unsupported.
 
+`PostProcessVolume2D` now drives a physical fullscreen WGSL composite instead of a preview-only
+marker. The backend renders sprites, particles, retained UI and Unicode text into an intermediate
+RGBA scene texture and then composites it to the window with exposure, contrast, saturation,
+gamma, bloom, vignette, chromatic aberration, pixelation, scanlines, tint, damage flash and fog.
+Multiple enabled volumes blend deterministically by priority and weight; legacy `Bloom2D`, `Fog2D`,
+`DamageEffect2D`, `PixelArtShader2D` and `Distortion2D` components feed the same command for
+compatibility. The scene target, bind groups and pipelines are recreated on resize or device loss.
+`post_process_passes` and `post_process_effects` expose the actual work in frame diagnostics.
+
+The complete no-code path is available from **Create > Effects & Audio > Post Process Volume 2D**
+and from the cinematic, horror, pixel and damage presets in the Authoring Hub. Hardware coverage
+renders the composite on Metal and reads back pixels to verify tint, vignette, UI inclusion and
+diagnostics rather than only checking shader compilation.
+
 Outdated and lost window surfaces are reconfigured and retried once; an occluded or
 still-unavailable surface skips the frame without poisoning the next one. A Metal surface smoke
 with the default 70×30 grid reduced 2,100 logical
@@ -99,9 +113,9 @@ mid-run and verifies that presentation resumes with `device_loss_recoveries=1`.
 The shared 2D composer now turns visible tilemap cells, atlas-backed entities, CPU particles and
 interactive UI geometry into backend-independent sprite quads with camera transforms, ordering and
 screen culling. The main exported runtime still uses Macroquad while retained-canvas hierarchy
-clipping, normal-mapped sprites and camera-to-texture world passes are available in the WGPU
-preview; target-aware retained UI/text is available, while higher-fidelity soft/cone shadows and
-custom hot-reloaded shader materials remain migration work.
+clipping, normal-mapped sprites, camera-to-texture world passes and fullscreen postprocess are
+available in the WGPU preview; target-aware retained UI/text is available, while higher-fidelity
+soft/cone shadows and custom hot-reloaded shader materials remain migration work.
 Projects should therefore leave `experimental_wgpu` disabled for exports that need the full
 production renderer. Project Settings keeps this migration state visible instead of hiding it in
 JSON.
@@ -126,8 +140,8 @@ The preview becomes playable only after these gates pass on macOS, Windows and L
    canvas and retained UI/text are done. Target-aware compute particles, broader retained-canvas virtualization, chunk batching and
    higher-fidelity soft/cone shadows remain.
 4. WGSL materials, post-processing and hot reload with readable shader diagnostics. Four built-in
-   per-sprite WGSL effects are done; custom material compilation, post-processing and hot reload
-   remain.
+   per-sprite WGSL effects and the physical fullscreen postprocess compositor are done; custom
+   material compilation and hot reload remain.
 5. Compute paths for particles and tile visibility, each with a CPU fallback. Persistent compute
    particles and their synchronized CPU fallback are done; tile visibility remains.
 6. Golden-image parity tests against Macroquad plus GPU timing and repeated recovery stress.

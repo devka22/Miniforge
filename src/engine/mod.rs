@@ -81,6 +81,7 @@ pub mod formation;
 pub mod game_api;
 pub mod game_clock;
 pub mod hierarchy_manager;
+pub mod hybrid_scene;
 pub mod input_map;
 #[cfg(feature = "editor_core")]
 pub mod inspector_editor;

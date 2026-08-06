@@ -4,9 +4,9 @@ use miniforge::engine::component::default_component;
 use miniforge::entities::game_object::GameObject;
 use miniforge::map::grid::Grid;
 use miniforge::render::backend::{
-    BUILTIN_RADIAL_LIGHT_TEXTURE_ID, ParticleDrawCommand, RenderBackend, RenderTargetDescriptor2D,
-    SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions, SpriteMaterialEffect,
-    SpriteRegionDrawCommand, TextDrawCommand, TextWrapMode, WgpuBackend,
+    BUILTIN_RADIAL_LIGHT_TEXTURE_ID, ParticleDrawCommand, PostProcessCommand2D, RenderBackend,
+    RenderTargetDescriptor2D, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions,
+    SpriteMaterialEffect, SpriteRegionDrawCommand, TextDrawCommand, TextWrapMode, WgpuBackend,
 };
 use miniforge::render::runtime_scene_2d::{
     RenderTargetCameraView2D, draw_engine_runtime_scene_2d,
@@ -14,6 +14,81 @@ use miniforge::render::runtime_scene_2d::{
 };
 use miniforge::runtime::engine_runtime::EngineRuntime;
 use serde_json::json;
+
+#[test]
+#[ignore = "requires a physical or software wgpu adapter"]
+fn physical_wgpu_post_process_composites_scene_and_ui() {
+    let mut backend = WgpuBackend::new(true, cfg!(target_os = "macos"));
+    backend.resize(64, 64).unwrap();
+    backend.set_clear_color([0.0, 0.0, 0.0, 1.0]);
+    backend.init().unwrap();
+
+    backend.begin_frame().unwrap();
+    backend
+        .draw_sprite(SpriteDrawCommand {
+            entity_id: 1,
+            texture_id: 0,
+            x: 0.0,
+            y: 0.0,
+            width: 64.0,
+            height: 64.0,
+            rotation: 0.0,
+            color: [0.3, 0.3, 0.3, 1.0],
+        })
+        .unwrap();
+    backend
+        .draw_text(TextDrawCommand {
+            text_id: 2,
+            text: "FX".to_string(),
+            font_family: String::new(),
+            x: 2.0,
+            y: 2.0,
+            width: 24.0,
+            height: 16.0,
+            font_size: 12.0,
+            line_height: 14.0,
+            color: [255; 4],
+            wrap: TextWrapMode::None,
+            clip_rect: None,
+        })
+        .unwrap();
+    backend
+        .set_post_process_2d(PostProcessCommand2D {
+            bloom_intensity: 0.25,
+            vignette_intensity: 0.75,
+            tint: [1.0, 0.25, 0.1, 1.0],
+            ..PostProcessCommand2D::default()
+        })
+        .unwrap();
+    backend.end_frame().unwrap();
+
+    let pixels = backend.readback_rgba8().unwrap();
+    let center = (32 * 64 + 32) * 4;
+    let corner = 65 * 4;
+    assert!(
+        pixels[center] > pixels[center + 1].saturating_add(32),
+        "tinted center was rgba={:?}",
+        &pixels[center..center + 4]
+    );
+    assert!(pixels[center + 1] > pixels[center + 2].saturating_add(16));
+    assert!(
+        pixels[corner] < pixels[center],
+        "vignette should darken corners after scene composition"
+    );
+    assert!(
+        (0usize..20).any(|y| {
+            (0usize..28).any(|x| {
+                let pixel = (y * 64 + x) * 4;
+                pixels[pixel] > pixels[center].saturating_add(16)
+            })
+        }),
+        "UI text should be rendered into the intermediate scene before post-processing"
+    );
+    let diagnostics = backend.last_frame_diagnostics();
+    assert_eq!(diagnostics.post_process_passes, 1);
+    assert_eq!(diagnostics.post_process_effects, 3);
+    assert!(diagnostics.pipeline_changes >= 2);
+}
 
 #[test]
 #[ignore = "requires a physical or software wgpu adapter"]

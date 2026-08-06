@@ -22,8 +22,8 @@ use crate::engine::error_handler::{MFResult, MiniForgeError};
 use super::backend::{
     BUILTIN_FLAT_NORMAL_TEXTURE_ID, BUILTIN_RADIAL_LIGHT_TEXTURE_ID,
     BUILTIN_RADIAL_LIGHT_TEXTURE_SIZE, CameraCommand3D, GraphicsApi, LightDrawCommand3D,
-    MAX_RENDER_TARGET_SIZE_2D, MeshDrawCommand3D, ParticleDrawCommand, RenderBackend,
-    RenderDeviceCaps, RenderTargetDescriptor2D, SpriteBlendMode, SpriteDrawCommand,
+    MAX_RENDER_TARGET_SIZE_2D, MeshDrawCommand3D, ParticleDrawCommand, PostProcessCommand2D,
+    RenderBackend, RenderDeviceCaps, RenderTargetDescriptor2D, SpriteBlendMode, SpriteDrawCommand,
     SpriteDrawOptions, SpriteMaterialEffect, SpriteRegionDrawCommand, TextDrawCommand,
     TextWrapMode, TilemapDrawCommand, UiDrawCommand, radial_light_texture_rgba8,
 };
@@ -298,6 +298,118 @@ fn fs_particle(in: ParticleVertexOut) -> @location(0) vec4<f32> {
 }
 "#;
 
+const POST_PROCESS_SHADER: &str = r#"
+struct PostProcessParams {
+    resolution_time: vec4<f32>,
+    color_grade: vec4<f32>,
+    bloom: vec4<f32>,
+    vignette: vec4<f32>,
+    screen_fx: vec4<f32>,
+    tint: vec4<f32>,
+    damage_flash: vec4<f32>,
+    damage_fog: vec4<f32>,
+    fog_color: vec4<f32>,
+};
+
+struct PostProcessVertexOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@group(0) @binding(0) var scene_color: texture_2d<f32>;
+@group(0) @binding(1) var scene_sampler: sampler;
+@group(1) @binding(0) var<uniform> params: PostProcessParams;
+
+@vertex
+fn vs_post_process(@builtin(vertex_index) vertex_index: u32) -> PostProcessVertexOut {
+    let positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    let uvs = array<vec2<f32>, 3>(
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(2.0, 1.0),
+        vec2<f32>(0.0, -1.0),
+    );
+    var out: PostProcessVertexOut;
+    out.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
+    out.uv = uvs[vertex_index];
+    return out;
+}
+
+fn luminance(color: vec3<f32>) -> f32 {
+    return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+fn sample_bloom(uv: vec2<f32>, texel: vec2<f32>, radius: f32, threshold: f32) -> vec3<f32> {
+    let offsets = array<vec2<f32>, 8>(
+        vec2<f32>(-1.0, 0.0), vec2<f32>(1.0, 0.0),
+        vec2<f32>(0.0, -1.0), vec2<f32>(0.0, 1.0),
+        vec2<f32>(-0.707, -0.707), vec2<f32>(0.707, -0.707),
+        vec2<f32>(-0.707, 0.707), vec2<f32>(0.707, 0.707),
+    );
+    var result = vec3<f32>(0.0);
+    for (var index = 0u; index < 8u; index = index + 1u) {
+        let sampled = textureSample(scene_color, scene_sampler, uv + offsets[index] * texel * radius).rgb;
+        let contribution = smoothstep(threshold, 1.0, luminance(sampled));
+        result = result + sampled * contribution;
+    }
+    return result * 0.125;
+}
+
+fn noise(uv: vec2<f32>) -> f32 {
+    return fract(sin(dot(uv, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+}
+
+@fragment
+fn fs_post_process(in: PostProcessVertexOut) -> @location(0) vec4<f32> {
+    let resolution = max(params.resolution_time.xy, vec2<f32>(1.0));
+    let texel = 1.0 / resolution;
+    let pixel_size = max(params.screen_fx.y, 1.0);
+    var uv = clamp(in.uv, vec2<f32>(0.0), vec2<f32>(1.0));
+    if pixel_size > 1.001 {
+        uv = (floor(uv * resolution / pixel_size) + vec2<f32>(0.5)) * pixel_size / resolution;
+    }
+
+    let chromatic = max(params.screen_fx.x, 0.0);
+    let red = textureSample(scene_color, scene_sampler, uv + vec2<f32>(chromatic, 0.0)).r;
+    let center = textureSample(scene_color, scene_sampler, uv);
+    let blue = textureSample(scene_color, scene_sampler, uv - vec2<f32>(chromatic, 0.0)).b;
+    var color = vec3<f32>(red, center.g, blue);
+
+    if params.bloom.y > 0.0001 {
+        color = color + sample_bloom(uv, texel, max(params.bloom.z, 0.5), params.bloom.x)
+            * params.bloom.y;
+    }
+
+    color = color * max(params.color_grade.x, 0.0);
+    color = (color - vec3<f32>(0.5)) * params.color_grade.y + vec3<f32>(0.5);
+    let gray = vec3<f32>(luminance(color));
+    color = mix(gray, color, params.color_grade.z);
+    color = pow(max(color, vec3<f32>(0.0)), vec3<f32>(1.0 / max(params.color_grade.w, 0.05)));
+    color = color * params.tint.rgb;
+
+    let fog_noise = noise(uv * resolution * 0.0125 + params.resolution_time.zz);
+    let fog_amount = clamp(
+        params.damage_fog.y * (0.35 + uv.y * 0.65) * mix(0.82, 1.18, fog_noise),
+        0.0,
+        1.0,
+    );
+    color = mix(color, params.fog_color.rgb, fog_amount * params.fog_color.a);
+    color = mix(color, params.damage_flash.rgb, params.damage_fog.x * params.damage_flash.a);
+
+    let scanline = 0.5 + 0.5 * sin(uv.y * resolution.y * 3.14159265);
+    color = color * (1.0 - clamp(params.screen_fx.z, 0.0, 1.0) * scanline);
+
+    let aspect = resolution.x / resolution.y;
+    let centered = (uv - vec2<f32>(0.5)) * vec2<f32>(aspect, 1.0);
+    let vignette_edge = smoothstep(params.vignette.y, 0.92, length(centered));
+    color = color * (1.0 - clamp(params.vignette.x, 0.0, 1.0) * vignette_edge);
+    return vec4<f32>(clamp(color, vec3<f32>(0.0), vec3<f32>(8.0)), center.a * params.tint.a);
+}
+"#;
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct SpriteVertex {
@@ -343,6 +455,20 @@ struct GpuParticleParams {
     spawn_count: u32,
     frame_seed: u32,
     _padding: [u32; 2],
+}
+
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct GpuPostProcessParams {
+    resolution_time: [f32; 4],
+    color_grade: [f32; 4],
+    bloom: [f32; 4],
+    vignette: [f32; 4],
+    screen_fx: [f32; 4],
+    tint: [f32; 4],
+    damage_flash: [f32; 4],
+    damage_fog: [f32; 4],
+    fog_color: [f32; 4],
 }
 
 #[derive(Clone, Copy)]
@@ -400,6 +526,10 @@ pub struct WgpuFrameDiagnostics {
     pub normal_texture_bind_changes: usize,
     #[serde(default)]
     pub render_target_passes: usize,
+    #[serde(default)]
+    pub post_process_passes: usize,
+    #[serde(default)]
+    pub post_process_effects: usize,
     pub pipeline_changes: usize,
     pub vertex_bytes_uploaded: u64,
     pub vertex_buffer_capacity_bytes: u64,
@@ -434,6 +564,21 @@ struct WgpuRenderTarget {
     color_view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
     normal_bind_group: wgpu::BindGroup,
+    text_atlas: TextAtlas,
+    text_renderer: TextRenderer,
+    text_viewport: TextViewport,
+    width: u32,
+    height: u32,
+}
+
+struct WgpuPostProcess {
+    scene_texture: wgpu::Texture,
+    scene_view: wgpu::TextureView,
+    scene_bind_group: wgpu::BindGroup,
+    sampler: wgpu::Sampler,
+    uniform_buffer: wgpu::Buffer,
+    uniform_bind_group: wgpu::BindGroup,
+    pipeline: wgpu::RenderPipeline,
     text_atlas: TextAtlas,
     text_renderer: TextRenderer,
     text_viewport: TextViewport,
@@ -512,7 +657,9 @@ struct WgpuState {
     particle_render_bind_group_layout: wgpu::BindGroupLayout,
     particle_compute_pipeline: wgpu::ComputePipeline,
     particle_render_pipelines: HashMap<SpriteBlendMode, wgpu::RenderPipeline>,
+    post_process_particle_pipelines: HashMap<SpriteBlendMode, wgpu::RenderPipeline>,
     particle_systems: HashMap<u64, GpuParticleSystem>,
+    post_process: WgpuPostProcess,
     font_system: FontSystem,
     swash_cache: SwashCache,
     text_atlas: TextAtlas,
@@ -545,6 +692,7 @@ pub struct WgpuBackend {
     render_target_descriptors: HashMap<u64, RenderTargetDescriptor2D>,
     render_target_passes: Vec<QueuedRenderTargetPass>,
     active_render_target: Option<ActiveRenderTargetPass>,
+    post_process_command: Option<PostProcessCommand2D>,
     culled_sprites: usize,
     culled_text_areas: usize,
     last_frame_diagnostics: WgpuFrameDiagnostics,
@@ -575,6 +723,7 @@ impl fmt::Debug for WgpuBackend {
             )
             .field("last_frame_diagnostics", &self.last_frame_diagnostics)
             .field("last_device_loss", &self.last_device_loss)
+            .field("post_process_command", &self.post_process_command)
             .field("has_surface", &self.has_surface())
             .field("frame_open", &self.frame_open)
             .finish_non_exhaustive()
@@ -607,6 +756,7 @@ impl Default for WgpuBackend {
             render_target_descriptors: HashMap::new(),
             render_target_passes: Vec::new(),
             active_render_target: None,
+            post_process_command: None,
             culled_sprites: 0,
             culled_text_areas: 0,
             last_frame_diagnostics: WgpuFrameDiagnostics::default(),
@@ -1043,6 +1193,27 @@ impl WgpuBackend {
             )
         })
         .collect();
+        let post_process_particle_pipelines = [
+            SpriteBlendMode::Alpha,
+            SpriteBlendMode::PremultipliedAlpha,
+            SpriteBlendMode::Additive,
+            SpriteBlendMode::Multiply,
+            SpriteBlendMode::Screen,
+        ]
+        .into_iter()
+        .map(|blend_mode| {
+            (
+                blend_mode,
+                create_particle_render_pipeline(
+                    &device,
+                    &particle_shader,
+                    &particle_render_pipeline_layout,
+                    SPRITE_COLOR_VIEW_FORMAT,
+                    blend_mode,
+                ),
+            )
+        })
+        .collect();
         let font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
         let text_cache = TextCache::new(&device);
@@ -1053,6 +1224,16 @@ impl WgpuBackend {
             &device,
             wgpu::MultisampleState::default(),
             None,
+        );
+        let post_process = create_post_process_resources(
+            PostProcessCreateResources {
+                device: &device,
+                queue: &queue,
+                texture_layout: &texture_layout,
+            },
+            self.width,
+            self.height,
+            target_format,
         );
         let target = surface
             .is_none()
@@ -1091,7 +1272,9 @@ impl WgpuBackend {
                 particle_render_bind_group_layout,
                 particle_compute_pipeline,
                 particle_render_pipelines,
+                post_process_particle_pipelines,
                 particle_systems: HashMap::new(),
+                post_process,
                 font_system,
                 swash_cache,
                 text_atlas,
@@ -1273,6 +1456,11 @@ impl WgpuBackend {
     fn render_frame(&mut self) -> MFResult<WgpuFrameDiagnostics> {
         let vertices = sprites_to_vertices(&self.sprites);
         let batches = build_sprite_batches(&self.sprites);
+        let post_process_command = self.post_process_command.clone();
+        let has_post_process = post_process_command.is_some();
+        let post_process_effects = post_process_command
+            .as_ref()
+            .map_or(0, PostProcessCommand2D::active_effect_count);
         let render_target_passes = self.render_target_passes.clone();
         let render_target_batches = (0..render_target_passes.len())
             .map(|pass_index| {
@@ -1339,18 +1527,32 @@ impl WgpuBackend {
                     .write_buffer(&state.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
             }
             if has_main_text {
-                let WgpuState {
-                    device,
-                    queue,
-                    font_system,
-                    swash_cache,
-                    text_atlas,
-                    text_renderer,
-                    text_viewport,
-                    ..
-                } = state;
-                prepare_text_areas(
-                    TextRenderResources {
+                if has_post_process {
+                    let WgpuState {
+                        device,
+                        queue,
+                        font_system,
+                        swash_cache,
+                        post_process,
+                        ..
+                    } = state;
+                    prepare_text_areas(
+                        TextRenderResources {
+                            device,
+                            queue,
+                            font_system,
+                            swash_cache,
+                            text_atlas: &mut post_process.text_atlas,
+                            text_renderer: &mut post_process.text_renderer,
+                            text_viewport: &mut post_process.text_viewport,
+                        },
+                        &main_text_commands,
+                        &mut main_text_buffers,
+                        self.width,
+                        self.height,
+                    )?;
+                } else {
+                    let WgpuState {
                         device,
                         queue,
                         font_system,
@@ -1358,12 +1560,24 @@ impl WgpuBackend {
                         text_atlas,
                         text_renderer,
                         text_viewport,
-                    },
-                    &main_text_commands,
-                    &mut main_text_buffers,
-                    self.width,
-                    self.height,
-                )?;
+                        ..
+                    } = state;
+                    prepare_text_areas(
+                        TextRenderResources {
+                            device,
+                            queue,
+                            font_system,
+                            swash_cache,
+                            text_atlas,
+                            text_renderer,
+                            text_viewport,
+                        },
+                        &main_text_commands,
+                        &mut main_text_buffers,
+                        self.width,
+                        self.height,
+                    )?;
+                }
             }
             for (pass, commands) in render_target_passes
                 .iter()
@@ -1405,6 +1619,14 @@ impl WgpuBackend {
             }
             let prepared_particles =
                 prepare_gpu_particle_draws(state, particle_commands, self.width, self.height)?;
+            if let Some(command) = post_process_command.as_ref() {
+                let params = post_process_gpu_params(command, self.width, self.height);
+                state.queue.write_buffer(
+                    &state.post_process.uniform_buffer,
+                    0,
+                    bytemuck::bytes_of(&params),
+                );
+            }
             gpu_particle_capacity = prepared_particles
                 .iter()
                 .map(|draw| draw.capacity as usize)
@@ -1565,8 +1787,13 @@ impl WgpuBackend {
                     }
                 }
                 {
+                    let main_view = if has_post_process {
+                        &state.post_process.scene_view
+                    } else {
+                        &view
+                    };
                     let color_attachment = wgpu::RenderPassColorAttachment {
-                        view: &view,
+                        view: main_view,
                         resolve_target: None,
                         depth_slice: None,
                         ops: wgpu::Operations {
@@ -1587,13 +1814,21 @@ impl WgpuBackend {
                     draw_sprite_batches(
                         &mut pass,
                         state,
-                        &state.pipelines,
+                        if has_post_process {
+                            &state.render_target_pipelines
+                        } else {
+                            &state.pipelines
+                        },
                         &main_batches,
                         vertex_bytes,
                     );
                     for draw in &prepared_particles {
-                        let pipeline = state
-                            .particle_render_pipelines
+                        let pipelines = if has_post_process {
+                            &state.post_process_particle_pipelines
+                        } else {
+                            &state.particle_render_pipelines
+                        };
+                        let pipeline = pipelines
                             .get(&draw.blend_mode)
                             .expect("every particle blend mode must have a pipeline");
                         let particle_system = state
@@ -1606,13 +1841,49 @@ impl WgpuBackend {
                         pass.draw(0..6, 0..draw.capacity);
                     }
                     if has_main_text {
-                        state
-                            .text_renderer
-                            .render(&state.text_atlas, &state.text_viewport, &mut pass)
-                            .map_err(|error| {
-                                render_error(format!("wgpu text render failed: {error}"))
-                            })?;
+                        if has_post_process {
+                            state
+                                .post_process
+                                .text_renderer
+                                .render(
+                                    &state.post_process.text_atlas,
+                                    &state.post_process.text_viewport,
+                                    &mut pass,
+                                )
+                                .map_err(|error| {
+                                    render_error(format!(
+                                        "wgpu post-process scene text render failed: {error}"
+                                    ))
+                                })?;
+                        } else {
+                            state
+                                .text_renderer
+                                .render(&state.text_atlas, &state.text_viewport, &mut pass)
+                                .map_err(|error| {
+                                    render_error(format!("wgpu text render failed: {error}"))
+                                })?;
+                        }
                     }
+                }
+                if has_post_process {
+                    let color_attachment = wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    };
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("MiniForge WGPU post-process composite"),
+                        color_attachments: &[Some(color_attachment)],
+                        ..Default::default()
+                    });
+                    pass.set_pipeline(&state.post_process.pipeline);
+                    pass.set_bind_group(0, &state.post_process.scene_bind_group, &[]);
+                    pass.set_bind_group(1, &state.post_process.uniform_bind_group, &[]);
+                    pass.draw(0..3, 0..1);
                 }
                 state.queue.submit([encoder.finish()]);
                 if let Some(output) = surface_output.take() {
@@ -1631,7 +1902,11 @@ impl WgpuBackend {
                     }
                 }
                 if has_main_text {
-                    state.text_atlas.trim();
+                    if has_post_process {
+                        state.post_process.text_atlas.trim();
+                    } else {
+                        state.text_atlas.trim();
+                    }
                 }
                 for (target_pass, _commands) in render_target_passes
                     .iter()
@@ -1665,14 +1940,18 @@ impl WgpuBackend {
             gpu_draw_calls: batches.len()
                 + self.particles.len()
                 + usize::from(has_main_text)
-                + target_text_passes,
+                + target_text_passes
+                + usize::from(has_post_process),
             texture_bind_changes: texture_bind_changes(&batches),
             normal_texture_bind_changes: normal_texture_bind_changes(&batches),
             render_target_passes: render_target_passes.len(),
+            post_process_passes: usize::from(has_post_process),
+            post_process_effects,
             pipeline_changes: pipeline_changes(&batches)
                 + self.particles.len()
                 + usize::from(has_main_text)
-                + target_text_passes,
+                + target_text_passes
+                + usize::from(has_post_process),
             vertex_bytes_uploaded: vertex_bytes,
             vertex_buffer_capacity_bytes,
             vertex_buffer_reallocations: self.vertex_buffer_reallocations,
@@ -1705,6 +1984,7 @@ impl RenderBackend for WgpuBackend {
         self.particles.clear();
         self.render_target_passes.clear();
         self.active_render_target = None;
+        self.post_process_command = None;
         self.draw_calls = 0;
         self.culled_sprites = 0;
         self.culled_text_areas = 0;
@@ -1747,6 +2027,13 @@ impl RenderBackend for WgpuBackend {
             } else {
                 state.target = Some(create_target(&state.device, self.width, self.height));
             }
+            resize_post_process_scene(
+                &state.device,
+                &state.texture_layout,
+                &mut state.post_process,
+                self.width,
+                self.height,
+            );
         }
         Ok(())
     }
@@ -2113,6 +2400,23 @@ impl RenderBackend for WgpuBackend {
             first_text: active.first_text,
             text_count: self.texts.len().saturating_sub(active.first_text),
         });
+        Ok(())
+    }
+
+    fn set_post_process_2d(&mut self, command: PostProcessCommand2D) -> MFResult<()> {
+        if !self.frame_open {
+            return Err(render_error(
+                "wgpu set_post_process_2d called outside a frame",
+            ));
+        }
+        if self.active_render_target.is_some() {
+            return Err(render_error(
+                "post-processing config cannot change inside a Render Target 2D pass",
+            ));
+        }
+        let command = sanitize_post_process_command(command)?;
+        self.post_process_command =
+            (command.enabled && command.active_effect_count() > 0).then_some(command);
         Ok(())
     }
 }
@@ -2714,6 +3018,286 @@ fn create_target(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Textur
     })
 }
 
+fn sanitize_post_process_command(
+    mut command: PostProcessCommand2D,
+) -> MFResult<PostProcessCommand2D> {
+    let scalar_values = [
+        command.time_seconds,
+        command.exposure,
+        command.contrast,
+        command.saturation,
+        command.gamma,
+        command.bloom_threshold,
+        command.bloom_intensity,
+        command.bloom_radius,
+        command.vignette_intensity,
+        command.vignette_softness,
+        command.chromatic_aberration,
+        command.pixel_size,
+        command.scanline_intensity,
+        command.damage_strength,
+        command.fog_density,
+    ];
+    if scalar_values
+        .into_iter()
+        .chain(command.tint)
+        .chain(command.damage_flash)
+        .chain(command.fog_color)
+        .any(|value| !value.is_finite())
+    {
+        return Err(render_error(
+            "wgpu post-process values and colors must be finite",
+        ));
+    }
+    command.time_seconds = command.time_seconds.max(0.0);
+    command.exposure = command.exposure.clamp(0.0, 8.0);
+    command.contrast = command.contrast.clamp(0.0, 4.0);
+    command.saturation = command.saturation.clamp(0.0, 4.0);
+    command.gamma = command.gamma.clamp(0.05, 5.0);
+    command.bloom_threshold = command.bloom_threshold.clamp(0.0, 0.999);
+    command.bloom_intensity = command.bloom_intensity.clamp(0.0, 4.0);
+    command.bloom_radius = command.bloom_radius.clamp(0.5, 32.0);
+    command.vignette_intensity = command.vignette_intensity.clamp(0.0, 1.0);
+    command.vignette_softness = command.vignette_softness.clamp(0.0, 0.9);
+    command.chromatic_aberration = command.chromatic_aberration.clamp(0.0, 0.05);
+    command.pixel_size = command.pixel_size.clamp(1.0, 256.0);
+    command.scanline_intensity = command.scanline_intensity.clamp(0.0, 1.0);
+    command.tint = command.tint.map(|channel| channel.clamp(0.0, 2.0));
+    command.damage_flash = command.damage_flash.map(|channel| channel.clamp(0.0, 1.0));
+    command.damage_strength = command.damage_strength.clamp(0.0, 1.0);
+    command.fog_color = command.fog_color.map(|channel| channel.clamp(0.0, 1.0));
+    command.fog_density = command.fog_density.clamp(0.0, 1.0);
+    Ok(command)
+}
+
+fn post_process_gpu_params(
+    command: &PostProcessCommand2D,
+    width: u32,
+    height: u32,
+) -> GpuPostProcessParams {
+    GpuPostProcessParams {
+        resolution_time: [
+            width.max(1) as f32,
+            height.max(1) as f32,
+            command.time_seconds,
+            0.0,
+        ],
+        color_grade: [
+            command.exposure,
+            command.contrast,
+            command.saturation,
+            command.gamma,
+        ],
+        bloom: [
+            command.bloom_threshold,
+            command.bloom_intensity,
+            command.bloom_radius,
+            0.0,
+        ],
+        vignette: [
+            command.vignette_intensity,
+            command.vignette_softness,
+            0.0,
+            0.0,
+        ],
+        screen_fx: [
+            command.chromatic_aberration,
+            command.pixel_size,
+            command.scanline_intensity,
+            0.0,
+        ],
+        tint: command.tint,
+        damage_flash: command.damage_flash,
+        damage_fog: [command.damage_strength, command.fog_density, 0.0, 0.0],
+        fog_color: command.fog_color,
+    }
+}
+
+struct PostProcessCreateResources<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    texture_layout: &'a wgpu::BindGroupLayout,
+}
+
+fn create_post_process_resources(
+    resources: PostProcessCreateResources<'_>,
+    width: u32,
+    height: u32,
+    output_format: wgpu::TextureFormat,
+) -> WgpuPostProcess {
+    let PostProcessCreateResources {
+        device,
+        queue,
+        texture_layout,
+    } = resources;
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("MiniForge post-process linear sampler"),
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        ..Default::default()
+    });
+    let (scene_texture, scene_view, scene_bind_group) =
+        create_post_process_scene_target(device, texture_layout, &sampler, width, height);
+    let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("MiniForge post-process parameters"),
+        size: std::mem::size_of::<GpuPostProcessParams>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("MiniForge post-process uniform layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("MiniForge post-process uniform binding"),
+        layout: &uniform_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buffer.as_entire_binding(),
+        }],
+    });
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("MiniForge post-process shader"),
+        source: wgpu::ShaderSource::Wgsl(POST_PROCESS_SHADER.into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("MiniForge post-process pipeline layout"),
+        bind_group_layouts: &[Some(texture_layout), Some(&uniform_layout)],
+        immediate_size: 0,
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("MiniForge post-process composite pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_post_process"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_post_process"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: output_format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    let text_cache = TextCache::new(device);
+    let text_viewport = TextViewport::new(device, &text_cache);
+    let mut text_atlas = TextAtlas::new(device, queue, &text_cache, SPRITE_COLOR_VIEW_FORMAT);
+    let text_renderer = TextRenderer::new(
+        &mut text_atlas,
+        device,
+        wgpu::MultisampleState::default(),
+        None,
+    );
+    WgpuPostProcess {
+        scene_texture,
+        scene_view,
+        scene_bind_group,
+        sampler,
+        uniform_buffer,
+        uniform_bind_group,
+        pipeline,
+        text_atlas,
+        text_renderer,
+        text_viewport,
+        width: width.max(1),
+        height: height.max(1),
+    }
+}
+
+fn create_post_process_scene_target(
+    device: &wgpu::Device,
+    texture_layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup) {
+    let width = width.max(1);
+    let height = height.max(1);
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("MiniForge post-process scene color"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: SPRITE_TEXTURE_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[SPRITE_COLOR_VIEW_FORMAT],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("MiniForge post-process scene color sRGB view"),
+        format: Some(SPRITE_COLOR_VIEW_FORMAT),
+        ..Default::default()
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("MiniForge post-process scene color binding"),
+        layout: texture_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    });
+    (texture, view, bind_group)
+}
+
+fn resize_post_process_scene(
+    device: &wgpu::Device,
+    texture_layout: &wgpu::BindGroupLayout,
+    post_process: &mut WgpuPostProcess,
+    width: u32,
+    height: u32,
+) {
+    let (texture, view, bind_group) = create_post_process_scene_target(
+        device,
+        texture_layout,
+        &post_process.sampler,
+        width,
+        height,
+    );
+    post_process.scene_texture = texture;
+    post_process.scene_view = view;
+    post_process.scene_bind_group = bind_group;
+    post_process.width = width.max(1);
+    post_process.height = height.max(1);
+}
+
 fn readback_texture_rgba8(
     state: &WgpuState,
     texture: &wgpu::Texture,
@@ -3049,6 +3633,52 @@ fn render_error(message: impl Into<String>) -> MiniForgeError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn post_process_uniform_abi_and_validation_are_gpu_safe() {
+        assert_eq!(std::mem::size_of::<GpuPostProcessParams>(), 144);
+        assert_eq!(std::mem::align_of::<GpuPostProcessParams>(), 16);
+
+        let mut backend = WgpuBackend::default();
+        assert!(
+            backend
+                .set_post_process_2d(PostProcessCommand2D::default())
+                .is_err()
+        );
+        backend.frame_open = true;
+        let mut command = PostProcessCommand2D {
+            exposure: 99.0,
+            gamma: 0.0,
+            bloom_intensity: 8.0,
+            chromatic_aberration: 2.0,
+            tint: [3.0, -1.0, 0.5, 1.0],
+            ..PostProcessCommand2D::default()
+        };
+        backend.set_post_process_2d(command.clone()).unwrap();
+        let sanitized = backend.post_process_command.as_ref().unwrap();
+        assert_eq!(sanitized.exposure, 8.0);
+        assert_eq!(sanitized.gamma, 0.05);
+        assert_eq!(sanitized.bloom_intensity, 4.0);
+        assert_eq!(sanitized.chromatic_aberration, 0.05);
+        assert_eq!(sanitized.tint, [2.0, 0.0, 0.5, 1.0]);
+
+        command.exposure = f32::NAN;
+        assert!(backend.set_post_process_2d(command).is_err());
+        backend.active_render_target = Some(ActiveRenderTargetPass {
+            target_id: 7,
+            pass_index: 0,
+            first_sprite: 0,
+            first_text: 0,
+        });
+        assert!(
+            backend
+                .set_post_process_2d(PostProcessCommand2D {
+                    bloom_intensity: 1.0,
+                    ..PostProcessCommand2D::default()
+                })
+                .is_err()
+        );
+    }
 
     fn queued(texture_id: u64, clip_rect: Option<[u32; 4]>) -> QueuedSprite {
         QueuedSprite {

@@ -463,7 +463,16 @@ void MainWindow::createMenus()
         auto* effects = menu->addMenu(QStringLiteral("Effects & Audio"));
         addMenuCommand(effects, QStringLiteral("Particle Emitter 2D"), QStringLiteral("object.create_particle_emitter2d"));
         addMenuCommand(effects, QStringLiteral("GPU Particle Emitter 2D"), QStringLiteral("object.create_gpu_particle_emitter2d"));
+        addMenuCommand(effects, QStringLiteral("Post Process Volume 2D"), QStringLiteral("object.create_post_process_volume2d"));
         addMenuCommand(effects, QStringLiteral("Spatial Audio Emitter 2D"), QStringLiteral("object.create_audio_emitter2d"));
+
+        auto* survival = menu->addMenu(QStringLiteral("Survival"));
+        addMenuCommand(survival, QStringLiteral("Survival Actor 2D"), QStringLiteral("object.create_survival_actor2d"));
+        addMenuCommand(survival, QStringLiteral("Survival Environment 2D"), QStringLiteral("object.create_survival_environment2d"));
+
+        auto* hybrid = menu->addMenu(QStringLiteral("Hybrid 2D + 3D"));
+        addMenuCommand(hybrid, QStringLiteral("Hybrid World 2D + 3D"), QStringLiteral("object.create_hybrid_world2d3d"));
+        addMenuCommand(hybrid, QStringLiteral("Hybrid Billboard Actor"), QStringLiteral("object.create_hybrid_billboard3d"));
     };
 
     const auto addExportAction = [this](QMenu* menu, const QString& label, const QString& profile) {
@@ -887,7 +896,16 @@ void MainWindow::createToolbar()
     auto* effectsMenu = addMenu->addMenu(QStringLiteral("Effects & Audio"));
     addCreateAction(effectsMenu, QStringLiteral("Particle Emitter 2D"), QStringLiteral("object.create_particle_emitter2d"));
     addCreateAction(effectsMenu, QStringLiteral("GPU Particle Emitter 2D"), QStringLiteral("object.create_gpu_particle_emitter2d"));
+    addCreateAction(effectsMenu, QStringLiteral("Post Process Volume 2D"), QStringLiteral("object.create_post_process_volume2d"));
     addCreateAction(effectsMenu, QStringLiteral("Spatial Audio Emitter 2D"), QStringLiteral("object.create_audio_emitter2d"));
+
+    auto* survivalMenu = addMenu->addMenu(QStringLiteral("Survival"));
+    addCreateAction(survivalMenu, QStringLiteral("Survival Actor 2D"), QStringLiteral("object.create_survival_actor2d"));
+    addCreateAction(survivalMenu, QStringLiteral("Survival Environment 2D"), QStringLiteral("object.create_survival_environment2d"));
+
+    auto* hybridMenu = addMenu->addMenu(QStringLiteral("Hybrid 2D + 3D"));
+    addCreateAction(hybridMenu, QStringLiteral("Hybrid World 2D + 3D"), QStringLiteral("object.create_hybrid_world2d3d"));
+    addCreateAction(hybridMenu, QStringLiteral("Hybrid Billboard Actor"), QStringLiteral("object.create_hybrid_billboard3d"));
 
     auto* gameplayMenu = addMenu->addMenu(QStringLiteral("Gameplay"));
     const auto addGameplayAction = [this, gameplayMenu](const QString& label, const QString& commandId) {

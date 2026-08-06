@@ -1058,6 +1058,119 @@ void ViewportWidget::paintSceneOverlays(QPainter& painter)
             }
         }
 
+        if (entityHasComponent(entity, QStringLiteral("PostProcessVolume2D"))) {
+            const QRectF badge(center + QPointF(-13, -13), QSizeF(26, 26));
+            painter.setPen(QPen(QColor(225, 112, 255, selected ? 250 : 175),
+                selected ? 2.2 : 1.4));
+            painter.setBrush(QColor(75, 24, 91, selected ? 118 : 62));
+            painter.drawRoundedRect(badge, 7, 7);
+            painter.setPen(QColor(253, 218, 255, selected ? 255 : 205));
+            painter.drawText(badge, Qt::AlignCenter, QStringLiteral("FX"));
+            if (selected) {
+                const QString preset = entity.value(QStringLiteral("post_process_preset"))
+                                           .toString(QStringLiteral("custom"));
+                const qreal weight = entity.value(QStringLiteral("post_process_weight"))
+                                         .toDouble(1.0);
+                const qreal bloom = entity.value(QStringLiteral("post_process_bloom")).toDouble();
+                const qreal vignette = entity.value(QStringLiteral("post_process_vignette")).toDouble();
+                painter.drawText(QRectF(center + QPointF(18, -14), QSizeF(260, 26)),
+                    Qt::AlignLeft | Qt::AlignVCenter,
+                    tr("%1 · W %2 · Bloom %3 · Vignette %4")
+                        .arg(preset)
+                        .arg(weight, 0, 'f', 2)
+                        .arg(bloom, 0, 'f', 2)
+                        .arg(vignette, 0, 'f', 2));
+            }
+        }
+
+        if (entityHasComponent(entity, QStringLiteral("SurvivalEnvironment2D"))) {
+            const QRectF badge(center + QPointF(-14, -14), QSizeF(28, 28));
+            painter.setPen(QPen(QColor(87, 208, 255, selected ? 250 : 180),
+                selected ? 2.2 : 1.4));
+            painter.setBrush(QColor(17, 62, 83, selected ? 120 : 65));
+            painter.drawEllipse(badge);
+            painter.setPen(QColor(220, 248, 255, selected ? 255 : 210));
+            painter.drawText(badge, Qt::AlignCenter, QStringLiteral("WX"));
+            if (selected) {
+                const qreal temperature = entity.value(QStringLiteral("survival_temperature_c"))
+                                              .toDouble(20.0);
+                const qreal precipitation = entity.value(QStringLiteral("survival_precipitation"))
+                                                .toDouble();
+                const qreal wind = entity.value(QStringLiteral("survival_wind_speed")).toDouble();
+                painter.drawText(QRectF(center + QPointF(18, -14), QSizeF(230, 26)),
+                    Qt::AlignLeft | Qt::AlignVCenter,
+                    tr("%1°C · Rain %2 · Wind %3")
+                        .arg(temperature, 0, 'f', 1)
+                        .arg(precipitation, 0, 'f', 2)
+                        .arg(wind, 0, 'f', 1));
+            }
+        }
+
+        if (entityHasComponent(entity, QStringLiteral("BodyCondition2D"))) {
+            const int injuries = entity.value(QStringLiteral("survival_injury_count")).toInt();
+            const int equipped = entity.value(QStringLiteral("equipment_item_count")).toInt();
+            const QPointF marker = center + QPointF(-12, -18);
+            painter.setPen(QPen(QColor(255, 116, 110, selected ? 250 : 185), 2.0));
+            painter.drawLine(marker + QPointF(-4, 0), marker + QPointF(4, 0));
+            painter.drawLine(marker + QPointF(0, -4), marker + QPointF(0, 4));
+            if (selected) {
+                painter.setPen(QColor(255, 188, 182, 240));
+                painter.drawText(QRectF(center + QPointF(18, 8), QSizeF(210, 24)),
+                    Qt::AlignLeft | Qt::AlignVCenter,
+                    tr("Injuries %1 · Equipped %2").arg(injuries).arg(equipped));
+            }
+        }
+
+        if (entityHasComponent(entity, QStringLiteral("HybridScene3D"))) {
+            const QRectF badge(center + QPointF(-16, -14), QSizeF(32, 28));
+            painter.setPen(QPen(QColor(121, 188, 255, selected ? 255 : 190),
+                selected ? 2.2 : 1.4));
+            painter.setBrush(QColor(28, 57, 102, selected ? 135 : 72));
+            QPolygonF diamond;
+            diamond << QPointF(badge.center().x(), badge.top())
+                    << QPointF(badge.right(), badge.center().y())
+                    << QPointF(badge.center().x(), badge.bottom())
+                    << QPointF(badge.left(), badge.center().y());
+            painter.drawPolygon(diamond);
+            painter.setPen(QColor(225, 242, 255, selected ? 255 : 215));
+            painter.drawText(badge, Qt::AlignCenter, QStringLiteral("2½D"));
+            if (selected) {
+                const qreal scale = entity.value(QStringLiteral("hybrid_world_scale")).toDouble(1.0);
+                const qreal pitch = entity.value(QStringLiteral("hybrid_camera_pitch")).toDouble(58.0);
+                const qreal yaw = entity.value(QStringLiteral("hybrid_camera_yaw")).toDouble(35.0);
+                painter.drawText(QRectF(center + QPointF(20, -14), QSizeF(250, 26)),
+                    Qt::AlignLeft | Qt::AlignVCenter,
+                    tr("2D physics · 3D view · Scale %1 · %2°/%3°")
+                        .arg(scale, 0, 'f', 2)
+                        .arg(pitch, 0, 'f', 0)
+                        .arg(yaw, 0, 'f', 0));
+            }
+        }
+
+        if (entityHasComponent(entity, QStringLiteral("Billboard3D"))) {
+            const QRectF badge(center + QPointF(-12, -15), QSizeF(24, 24));
+            painter.setPen(QPen(QColor(90, 232, 190, selected ? 255 : 185),
+                selected ? 2.0 : 1.3));
+            painter.setBrush(QColor(20, 91, 72, selected ? 120 : 62));
+            painter.drawRoundedRect(badge, 5, 5);
+            painter.setPen(QColor(220, 255, 244, selected ? 255 : 210));
+            painter.drawText(badge, Qt::AlignCenter, QStringLiteral("BB"));
+            if (selected) {
+                const QString mode = entity.value(QStringLiteral("hybrid_sync_mode"))
+                                         .toString(QStringLiteral("from_2d"));
+                const qreal elevation = entity.value(QStringLiteral("hybrid_elevation")).toDouble();
+                const qreal width = entity.value(QStringLiteral("billboard_width")).toDouble();
+                const qreal height = entity.value(QStringLiteral("billboard_height")).toDouble();
+                painter.drawText(QRectF(center + QPointF(16, -14), QSizeF(230, 26)),
+                    Qt::AlignLeft | Qt::AlignVCenter,
+                    tr("%1 · %2x%3 · elevation %4")
+                        .arg(mode)
+                        .arg(width, 0, 'f', 1)
+                        .arg(height, 0, 'f', 1)
+                        .arg(elevation, 0, 'f', 1));
+            }
+        }
+
         if (entityHasComponent(entity, QStringLiteral("NavAgent"))) {
             painter.setPen(QPen(QColor(87, 219, 159, selected ? 230 : 125), 1.5, Qt::DotLine));
             painter.setBrush(Qt::NoBrush);

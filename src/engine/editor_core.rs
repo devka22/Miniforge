@@ -2555,6 +2555,13 @@ impl EditorCore {
                 let joint = entity.get_component("Joint2D");
                 let gpu_particles = entity.get_component("GpuParticles2D");
                 let render_texture = entity.get_component("RenderTexture2D");
+                let post_process = entity.get_component("PostProcessVolume2D");
+                let survival_environment = entity.get_component("SurvivalEnvironment2D");
+                let body_condition = entity.get_component("BodyCondition2D");
+                let equipment = entity.get_component("Equipment");
+                let hybrid_scene = entity.get_component("HybridScene3D");
+                let hybrid_anchor = entity.get_component("HybridAnchor2D3D");
+                let billboard = entity.get_component("Billboard3D");
                 let joint_target = joint.and_then(|joint| {
                     let target_id = joint.get("target_id").and_then(Value::as_u64);
                     let target_name = joint.get_string("target_name", "");
@@ -2632,6 +2639,58 @@ impl EditorCore {
                         .unwrap_or(0),
                     "render_target_update_mode": render_texture
                         .map(|component| component.get_string("update_mode", "always")),
+                    "post_process_preset": post_process
+                        .map(|component| component.get_string("preset", "custom")),
+                    "post_process_weight": post_process
+                        .map(|component| component.get_f64("weight", 1.0))
+                        .unwrap_or(0.0),
+                    "post_process_bloom": post_process
+                        .map(|component| component.get_f64("bloom_intensity", 0.0))
+                        .unwrap_or(0.0),
+                    "post_process_vignette": post_process
+                        .map(|component| component.get_f64("vignette_intensity", 0.0))
+                        .unwrap_or(0.0),
+                    "survival_temperature_c": survival_environment
+                        .map(|component| component.get_f64("ambient_temperature_c", 20.0))
+                        .unwrap_or(20.0),
+                    "survival_precipitation": survival_environment
+                        .map(|component| component.get_f64("precipitation", 0.0))
+                        .unwrap_or(0.0),
+                    "survival_wind_speed": survival_environment
+                        .map(|component| component.get_f64("wind_speed", 0.0))
+                        .unwrap_or(0.0),
+                    "survival_injury_count": body_condition
+                        .and_then(|component| component.get("injuries"))
+                        .and_then(Value::as_array)
+                        .map(Vec::len)
+                        .unwrap_or(0),
+                    "equipment_item_count": equipment
+                        .and_then(|component| component.get("equipped_items"))
+                        .and_then(Value::as_object)
+                        .map(serde_json::Map::len)
+                        .unwrap_or(0),
+                    "hybrid_world_enabled": hybrid_scene
+                        .is_some_and(|component| component.enabled),
+                    "hybrid_world_scale": hybrid_scene
+                        .map(|component| component.get_f64("world_scale", 1.0))
+                        .unwrap_or(1.0),
+                    "hybrid_camera_pitch": hybrid_scene
+                        .map(|component| component.get_f64("camera_pitch_degrees", 58.0))
+                        .unwrap_or(58.0),
+                    "hybrid_camera_yaw": hybrid_scene
+                        .map(|component| component.get_f64("camera_yaw_degrees", 35.0))
+                        .unwrap_or(35.0),
+                    "hybrid_sync_mode": hybrid_anchor
+                        .map(|component| component.get_string("sync_mode", "from_2d")),
+                    "hybrid_elevation": hybrid_anchor
+                        .map(|component| component.get_f64("elevation", 0.0))
+                        .unwrap_or(0.0),
+                    "billboard_width": billboard
+                        .map(|component| component.get_f64("width", 1.0))
+                        .unwrap_or(0.0),
+                    "billboard_height": billboard
+                        .map(|component| component.get_f64("height", 1.0))
+                        .unwrap_or(0.0),
                     "collision_points": EditorSpatialTools2D::collision_points(entity),
                 })
             })
@@ -3749,6 +3808,157 @@ impl EditorCore {
                     changed: true,
                     message: format!(
                         "Created CameraTexture2D #{id} with a sampleable 512x512 WGPU target"
+                    ),
+                }
+            }
+            "object.create_post_process_volume2d" => {
+                let (x, y) = editor_spawn_position(game);
+                let id =
+                    game.spawn_scene_node("GlobalPostProcess2D", &["PostProcessVolume2D"], x, y);
+                if let Some(entity) = game.get_entity_by_id_mut(id) {
+                    entity.remove_component("Collider2D");
+                    entity.remove_component("SpriteRenderer");
+                    entity.tag = "Effects".to_string();
+                    entity.layer = "Effects".to_string();
+                    entity.width = 2.0;
+                    entity.height = 2.0;
+                    entity.sync_to_components();
+                }
+                game.sync_world();
+                CommandOutcome {
+                    changed: true,
+                    message: format!(
+                        "Created global PostProcessVolume2D #{id}; tune the live WGPU effects in the Inspector"
+                    ),
+                }
+            }
+            "object.create_survival_actor2d" => {
+                let (x, y) = editor_spawn_position(game);
+                let id = game.spawn_scene_node(
+                    "SurvivalActor2D",
+                    &[
+                        "Health",
+                        "Stats",
+                        "SurvivalNeeds",
+                        "BodyCondition2D",
+                        "Inventory",
+                        "Equipment",
+                        "CraftingBook",
+                        "HybridAnchor2D3D",
+                        "Billboard3D",
+                        "Animator2D",
+                        "CharacterController2D",
+                        "Rigidbody2D",
+                        "Saveable",
+                    ],
+                    x,
+                    y,
+                );
+                if let Some(entity) = game.get_entity_by_id_mut(id) {
+                    entity.tag = "Player".to_string();
+                    entity.layer = "Pawn".to_string();
+                    if let Some(body) = entity.get_component_mut("Rigidbody2D") {
+                        body.set("use_gravity", json!(false));
+                        body.set("freeze_rotation", json!(true));
+                    }
+                    if let Some(inventory) = entity.get_component_mut("Inventory") {
+                        inventory.set("capacity", json!(32));
+                        inventory.set_f64("max_weight", 35.0);
+                    }
+                    entity.sync_to_components();
+                }
+                game.sync_world();
+                CommandOutcome {
+                    changed: true,
+                    message: format!(
+                        "Created hybrid-ready SurvivalActor2D #{id} with native needs, injuries, inventory, equipment and animation"
+                    ),
+                }
+            }
+            "object.create_survival_environment2d" => {
+                let (x, y) = editor_spawn_position(game);
+                let id = game.spawn_scene_node(
+                    "SurvivalEnvironment2D",
+                    &["SurvivalEnvironment2D", "Saveable"],
+                    x,
+                    y,
+                );
+                if let Some(entity) = game.get_entity_by_id_mut(id) {
+                    entity.remove_component("Collider2D");
+                    entity.remove_component("SpriteRenderer");
+                    entity.tag = "Systems".to_string();
+                    entity.layer = "World".to_string();
+                    entity.width = 2.0;
+                    entity.height = 2.0;
+                    entity.sync_to_components();
+                }
+                game.sync_world();
+                CommandOutcome {
+                    changed: true,
+                    message: format!(
+                        "Created SurvivalEnvironment2D #{id}; author temperature, wind, rain and exposure in the Inspector"
+                    ),
+                }
+            }
+            "object.create_hybrid_world2d3d" => {
+                let (x, y) = editor_spawn_position(game);
+                let id = game.spawn_scene_node(
+                    "HybridWorld2D3D",
+                    &["HybridScene3D", "Camera3D", "Light3D", "Saveable"],
+                    x,
+                    y,
+                );
+                if let Some(entity) = game.get_entity_by_id_mut(id) {
+                    entity.remove_component("Collider2D");
+                    entity.remove_component("SpriteRenderer");
+                    entity.tag = "Systems".to_string();
+                    entity.layer = "World3D".to_string();
+                    entity.width = 3.0;
+                    entity.height = 3.0;
+                    if let Some(hybrid) = entity.get_component_mut("HybridScene3D") {
+                        hybrid.enabled = true;
+                        hybrid.set("physics_mode", json!("2d_gameplay"));
+                        hybrid.set("render_2d_overlay", json!(true));
+                    }
+                    if let Some(camera) = entity.get_component_mut("Camera3D") {
+                        camera.set("active", json!(true));
+                    }
+                    entity.sync_to_components();
+                }
+                game.sync_world();
+                CommandOutcome {
+                    changed: true,
+                    message: format!(
+                        "Created HybridWorld2D3D #{id}; 2D gameplay now has a reusable 3D presentation world"
+                    ),
+                }
+            }
+            "object.create_hybrid_billboard3d" => {
+                let (x, y) = editor_spawn_position(game);
+                let id = game.spawn_scene_node(
+                    "HybridBillboardActor",
+                    &["Actor2D", "HybridAnchor2D3D", "Billboard3D", "Animator2D"],
+                    x,
+                    y,
+                );
+                if let Some(entity) = game.get_entity_by_id_mut(id) {
+                    entity.tag = "Actor".to_string();
+                    entity.layer = "Pawn".to_string();
+                    entity.width = 1.0;
+                    entity.height = 1.5;
+                    if let Some(billboard) = entity.get_component_mut("Billboard3D") {
+                        billboard.set_f64("width", 1.0);
+                        billboard.set_f64("height", 1.5);
+                        billboard.set("lock_y_axis", json!(true));
+                        billboard.set("use_2d_animation", json!(true));
+                    }
+                    entity.sync_to_components();
+                }
+                game.sync_world();
+                CommandOutcome {
+                    changed: true,
+                    message: format!(
+                        "Created HybridBillboardActor #{id}; assign a SpriteRenderer texture or Animator2D controller"
                     ),
                 }
             }
@@ -5622,6 +5832,36 @@ fn default_command_descriptors() -> Vec<CommandDescriptor> {
             "object.create_camera_texture2d",
             "Create Camera to Texture 2D",
             "Rendering",
+            None,
+        ),
+        command(
+            "object.create_post_process_volume2d",
+            "Create Post Process Volume 2D",
+            "Effects",
+            None,
+        ),
+        command(
+            "object.create_survival_actor2d",
+            "Create Survival Actor 2D",
+            "Survival",
+            None,
+        ),
+        command(
+            "object.create_survival_environment2d",
+            "Create Survival Environment 2D",
+            "Survival",
+            None,
+        ),
+        command(
+            "object.create_hybrid_world2d3d",
+            "Create Hybrid 2D + 3D World",
+            "Hybrid 2D + 3D",
+            None,
+        ),
+        command(
+            "object.create_hybrid_billboard3d",
+            "Create Hybrid Billboard Actor",
+            "Hybrid 2D + 3D",
             None,
         ),
         command(
@@ -8259,6 +8499,35 @@ mod tests {
                 "object.create_camera_texture2d",
                 &["Camera2D", "RenderTexture2D"],
             ),
+            (
+                "object.create_post_process_volume2d",
+                &["PostProcessVolume2D"],
+            ),
+            (
+                "object.create_survival_actor2d",
+                &[
+                    "Health",
+                    "SurvivalNeeds",
+                    "BodyCondition2D",
+                    "Inventory",
+                    "Equipment",
+                    "HybridAnchor2D3D",
+                    "Billboard3D",
+                    "Animator2D",
+                ],
+            ),
+            (
+                "object.create_survival_environment2d",
+                &["SurvivalEnvironment2D", "Saveable"],
+            ),
+            (
+                "object.create_hybrid_world2d3d",
+                &["HybridScene3D", "Camera3D", "Light3D", "Saveable"],
+            ),
+            (
+                "object.create_hybrid_billboard3d",
+                &["Actor2D", "HybridAnchor2D3D", "Billboard3D", "Animator2D"],
+            ),
             ("object.create_spot_light2d", &["Light2D"]),
             (
                 "object.create_shadow_occluder2d",
@@ -8354,6 +8623,56 @@ mod tests {
                         Some(expected_binding.as_str()),
                         "camera texture bindings must survive scene save/reload"
                     );
+                }
+                "object.create_post_process_volume2d" => {
+                    let volume = entity.get_component("PostProcessVolume2D").unwrap();
+                    assert!(volume.get_bool("global", false));
+                    assert_eq!(volume.get_string("preset", ""), "cinematic");
+                    assert!(entity.get_component("Collider2D").is_none());
+                    assert!(entity.get_component("SpriteRenderer").is_none());
+                    assert_eq!(entity.layer, "Effects");
+                }
+                "object.create_survival_actor2d" => {
+                    assert_eq!(entity.tag, "Player");
+                    assert_eq!(entity.layer, "Pawn");
+                    assert_eq!(
+                        entity
+                            .get_component("Inventory")
+                            .unwrap()
+                            .get_f64("max_weight", 0.0),
+                        35.0
+                    );
+                    assert!(
+                        !entity
+                            .get_component("Rigidbody2D")
+                            .unwrap()
+                            .get_bool("use_gravity", true)
+                    );
+                }
+                "object.create_survival_environment2d" => {
+                    assert!(entity.get_component("Collider2D").is_none());
+                    assert!(entity.get_component("SpriteRenderer").is_none());
+                    assert_eq!(entity.tag, "Systems");
+                }
+                "object.create_hybrid_world2d3d" => {
+                    let hybrid = entity.get_component("HybridScene3D").unwrap();
+                    assert!(hybrid.enabled);
+                    assert_eq!(hybrid.get_string("physics_mode", ""), "2d_gameplay");
+                    assert!(
+                        entity
+                            .get_component("Camera3D")
+                            .unwrap()
+                            .get_bool("active", false)
+                    );
+                    assert!(entity.get_component("Collider2D").is_none());
+                    assert!(entity.get_component("SpriteRenderer").is_none());
+                    assert_eq!(entity.layer, "World3D");
+                }
+                "object.create_hybrid_billboard3d" => {
+                    let billboard = entity.get_component("Billboard3D").unwrap();
+                    assert_eq!(billboard.get_f64("height", 0.0), 1.5);
+                    assert!(billboard.get_bool("use_2d_animation", false));
+                    assert_eq!(entity.tag, "Actor");
                 }
                 "object.create_one_way_platform2d" => {
                     assert!(

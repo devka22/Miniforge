@@ -18,9 +18,10 @@ use crate::runtime::engine_runtime::{EngineRuntime, RuntimeUiDocument2D};
 use crate::systems::particle_system::ParticleSystem;
 
 use super::backend::{
-    BUILTIN_RADIAL_LIGHT_TEXTURE_ID, ParticleDrawCommand, RenderBackend, RenderTargetDescriptor2D,
-    SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions, SpriteMaterialEffect,
-    SpriteRegionDrawCommand, TextDrawCommand, TextWrapMode, namespaced_render_target_texture_id,
+    BUILTIN_RADIAL_LIGHT_TEXTURE_ID, ParticleDrawCommand, PostProcessCommand2D, RenderBackend,
+    RenderTargetDescriptor2D, SpriteBlendMode, SpriteDrawCommand, SpriteDrawOptions,
+    SpriteMaterialEffect, SpriteRegionDrawCommand, TextDrawCommand, TextWrapMode,
+    namespaced_render_target_texture_id,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -124,6 +125,161 @@ pub struct RuntimeRenderTargetCamera2D {
 
 pub fn render_target_binding_key(name: &str) -> String {
     format!("render-target://{}", name.trim())
+}
+
+/// Resolves global post-process volumes and legacy effect components into one
+/// backend-independent command. Volumes are blended in priority/entity order,
+/// which keeps authored output deterministic across editor and exported builds.
+pub fn runtime_post_process_2d(
+    world: &RuntimeWorld,
+    elapsed_seconds: f32,
+) -> Option<PostProcessCommand2D> {
+    let mut volumes = world
+        .units
+        .iter()
+        .filter(|entity| entity.enabled)
+        .filter_map(|entity| {
+            let volume = entity
+                .get_component("PostProcessVolume2D")
+                .filter(|component| {
+                    component.enabled
+                        && component.get_bool("enabled", true)
+                        && component.get_bool("global", true)
+                });
+            let command = post_process_command_from_entity(entity, volume, elapsed_seconds)?;
+            let priority = volume.map_or(0, |component| component.get_i64("priority", 0));
+            let weight = volume.map_or(1.0, |component| {
+                component_f32(component, "weight", 1.0).clamp(0.0, 1.0)
+            });
+            (weight > 0.0).then_some((priority, entity.id, weight, command))
+        })
+        .collect::<Vec<_>>();
+    volumes.sort_by_key(|(priority, entity_id, _, _)| (*priority, *entity_id));
+    let mut resolved = PostProcessCommand2D {
+        enabled: true,
+        time_seconds: elapsed_seconds.max(0.0),
+        ..PostProcessCommand2D::default()
+    };
+    let mut found = false;
+    for (_, _, weight, volume) in volumes {
+        blend_post_process_command(&mut resolved, &volume, weight);
+        found = true;
+    }
+    (found && resolved.active_effect_count() > 0).then_some(resolved)
+}
+
+fn post_process_command_from_entity(
+    entity: &GameObject,
+    volume: Option<&Component>,
+    elapsed_seconds: f32,
+) -> Option<PostProcessCommand2D> {
+    let mut command = PostProcessCommand2D {
+        time_seconds: elapsed_seconds.max(0.0),
+        ..PostProcessCommand2D::default()
+    };
+    let mut found = false;
+    if let Some(component) = volume {
+        found = true;
+        command.exposure = component_f32(component, "exposure", 1.0);
+        command.contrast = component_f32(component, "contrast", 1.0);
+        command.saturation = component_f32(component, "saturation", 1.0);
+        command.gamma = component_f32(component, "gamma", 1.0);
+        command.bloom_threshold = component_f32(component, "bloom_threshold", 0.8);
+        command.bloom_intensity = component_f32(component, "bloom_intensity", 0.0);
+        command.bloom_radius = component_f32(component, "bloom_radius", 2.0);
+        command.vignette_intensity = component_f32(component, "vignette_intensity", 0.0);
+        command.vignette_softness = component_f32(component, "vignette_softness", 0.45);
+        command.chromatic_aberration = component_f32(component, "chromatic_aberration", 0.0);
+        command.pixel_size = component_f32(component, "pixel_size", 1.0);
+        command.scanline_intensity = component_f32(component, "scanline_intensity", 0.0);
+        command.tint = component_color(component.get("tint"), [255; 4], 1.0);
+        command.damage_flash =
+            component_color(component.get("damage_flash"), [255, 35, 24, 255], 1.0);
+        command.damage_strength = component_f32(component, "damage_strength", 0.0);
+        command.fog_color = component_color(component.get("fog_color"), [95, 115, 140, 255], 1.0);
+        command.fog_density = component_f32(component, "fog_density", 0.0);
+    }
+    if let Some(bloom) = entity
+        .get_component("Bloom2D")
+        .filter(|component| component.enabled)
+    {
+        found = true;
+        command.bloom_threshold = component_f32(bloom, "threshold", command.bloom_threshold);
+        command.bloom_intensity = component_f32(bloom, "intensity", command.bloom_intensity);
+        command.bloom_radius = component_f32(bloom, "radius", command.bloom_radius);
+    }
+    if let Some(fog) = entity
+        .get_component("Fog2D")
+        .filter(|component| component.enabled)
+    {
+        found = true;
+        command.fog_density = component_f32(fog, "density", command.fog_density);
+        command.fog_color = component_color(fog.get("color"), [95, 115, 140, 150], 1.0);
+    }
+    if let Some(damage) = entity
+        .get_component("DamageEffect2D")
+        .filter(|component| component.enabled)
+    {
+        found = true;
+        command.chromatic_aberration =
+            component_f32(damage, "chromatic_aberration", command.chromatic_aberration);
+        command.vignette_intensity = component_f32(damage, "vignette", command.vignette_intensity);
+        command.damage_flash = component_color(damage.get("flash_color"), [255, 65, 65, 255], 1.0);
+        command.damage_strength = component_f32(damage, "strength", command.damage_strength);
+    }
+    if let Some(pixel) = entity
+        .get_component("PixelArtShader2D")
+        .filter(|component| component.enabled)
+    {
+        found = true;
+        command.pixel_size = component_f32(pixel, "pixel_scale", command.pixel_size);
+    }
+    if let Some(distortion) = entity
+        .get_component("Distortion2D")
+        .filter(|component| component.enabled)
+    {
+        found = true;
+        command.chromatic_aberration = command
+            .chromatic_aberration
+            .max(component_f32(distortion, "strength", 0.0).clamp(0.0, 1.0) * 0.025);
+    }
+    found.then_some(command)
+}
+
+fn blend_post_process_command(
+    output: &mut PostProcessCommand2D,
+    target: &PostProcessCommand2D,
+    weight: f32,
+) {
+    let blend = |from: f32, to: f32| from + (to - from) * weight;
+    output.exposure = blend(output.exposure, target.exposure);
+    output.contrast = blend(output.contrast, target.contrast);
+    output.saturation = blend(output.saturation, target.saturation);
+    output.gamma = blend(output.gamma, target.gamma);
+    output.bloom_threshold = blend(output.bloom_threshold, target.bloom_threshold);
+    output.bloom_intensity = blend(output.bloom_intensity, target.bloom_intensity);
+    output.bloom_radius = blend(output.bloom_radius, target.bloom_radius);
+    output.vignette_intensity = blend(output.vignette_intensity, target.vignette_intensity);
+    output.vignette_softness = blend(output.vignette_softness, target.vignette_softness);
+    output.chromatic_aberration = blend(output.chromatic_aberration, target.chromatic_aberration);
+    output.pixel_size = blend(output.pixel_size, target.pixel_size);
+    output.scanline_intensity = blend(output.scanline_intensity, target.scanline_intensity);
+    output.damage_strength = blend(output.damage_strength, target.damage_strength);
+    output.fog_density = blend(output.fog_density, target.fog_density);
+    for index in 0..4 {
+        output.tint[index] = blend(output.tint[index], target.tint[index]);
+        output.damage_flash[index] = blend(output.damage_flash[index], target.damage_flash[index]);
+        output.fog_color[index] = blend(output.fog_color[index], target.fog_color[index]);
+    }
+}
+
+fn component_f32(component: &Component, key: &str, fallback: f32) -> f32 {
+    let value = component.get_f64(key, f64::from(fallback));
+    if value.is_finite() {
+        finite_f64_to_f32(value)
+    } else {
+        fallback
+    }
 }
 
 /// Extracts valid, sampleable camera targets from ordinary scene components.
@@ -3024,6 +3180,71 @@ mod tests {
     use crate::entities::game_object::GameObject;
     use crate::render::backend::MacroquadBackend;
     use serde_json::json;
+
+    #[test]
+    fn post_process_volume_extracts_a_backend_independent_command() {
+        let mut entity = GameObject::new(0.0, 0.0, Some("World grading".to_string()));
+        let mut volume = default_component("PostProcessVolume2D").unwrap();
+        volume.set("exposure", json!(1.25));
+        volume.set("bloom_intensity", json!(0.7));
+        volume.set("vignette_intensity", json!(0.4));
+        volume.set("tint", json!([255, 192, 128, 255]));
+        entity.add_component(volume);
+
+        let command = runtime_post_process_2d(&RuntimeWorld::new(vec![entity]), 2.5)
+            .expect("authored volume should produce an active command");
+        assert_eq!(command.time_seconds, 2.5);
+        assert!((command.exposure - 1.25).abs() < 0.001);
+        assert!((command.bloom_intensity - 0.7).abs() < 0.001);
+        assert!((command.vignette_intensity - 0.4).abs() < 0.001);
+        assert!((command.tint[1] - 192.0 / 255.0).abs() < 0.001);
+        assert!(command.active_effect_count() >= 4);
+    }
+
+    #[test]
+    fn post_process_volumes_blend_in_priority_order_and_respect_weight() {
+        let mut base = GameObject::new(0.0, 0.0, Some("Base grade".to_string()));
+        let mut base_volume = default_component("PostProcessVolume2D").unwrap();
+        base_volume.set("priority", json!(0));
+        base_volume.set("exposure", json!(2.0));
+        base_volume.set("bloom_intensity", json!(1.0));
+        base.add_component(base_volume);
+
+        let mut override_entity = GameObject::new(0.0, 0.0, Some("Interior override".to_string()));
+        let mut override_volume = default_component("PostProcessVolume2D").unwrap();
+        override_volume.set("priority", json!(10));
+        override_volume.set("weight", json!(0.5));
+        override_volume.set("exposure", json!(1.0));
+        override_volume.set("bloom_intensity", json!(0.0));
+        override_entity.add_component(override_volume);
+
+        let command =
+            runtime_post_process_2d(&RuntimeWorld::new(vec![override_entity, base]), -4.0)
+                .expect("two visible volumes should resolve");
+        assert_eq!(command.time_seconds, 0.0);
+        assert!((command.exposure - 1.5).abs() < 0.001);
+        assert!((command.bloom_intensity - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn legacy_effect_components_feed_the_shared_post_process_path() {
+        let mut entity = GameObject::new(0.0, 0.0, Some("Legacy effects".to_string()));
+        let mut bloom = default_component("Bloom2D").unwrap();
+        bloom.set("intensity", json!(1.25));
+        bloom.set("threshold", json!(0.6));
+        let mut fog = default_component("Fog2D").unwrap();
+        fog.set("density", json!(0.3));
+        fog.set("color", json!([20, 40, 60, 255]));
+        entity.add_component(bloom);
+        entity.add_component(fog);
+
+        let command = runtime_post_process_2d(&RuntimeWorld::new(vec![entity]), 1.0)
+            .expect("legacy effects should migrate without scripts");
+        assert!((command.bloom_intensity - 1.25).abs() < 0.001);
+        assert!((command.bloom_threshold - 0.6).abs() < 0.001);
+        assert!((command.fog_density - 0.3).abs() < 0.001);
+        assert!((command.fog_color[2] - 60.0 / 255.0).abs() < 0.001);
+    }
 
     #[test]
     fn scene_components_extract_namespaced_no_code_camera_targets() {

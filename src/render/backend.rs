@@ -132,6 +132,78 @@ fn default_render_target_clear_color() -> [f64; 4] {
     [0.0, 0.0, 0.0, 0.0]
 }
 
+/// Backend-independent full-frame color grading and screen-space effects.
+///
+/// Zero-strength effects are skipped by the GPU shader. The command is kept
+/// compact enough to update once per frame while still covering common 2D
+/// presentation needs without game-specific renderer code.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PostProcessCommand2D {
+    pub enabled: bool,
+    pub time_seconds: f32,
+    pub exposure: f32,
+    pub contrast: f32,
+    pub saturation: f32,
+    pub gamma: f32,
+    pub bloom_threshold: f32,
+    pub bloom_intensity: f32,
+    pub bloom_radius: f32,
+    pub vignette_intensity: f32,
+    pub vignette_softness: f32,
+    pub chromatic_aberration: f32,
+    pub pixel_size: f32,
+    pub scanline_intensity: f32,
+    pub tint: [f32; 4],
+    pub damage_flash: [f32; 4],
+    pub damage_strength: f32,
+    pub fog_color: [f32; 4],
+    pub fog_density: f32,
+}
+
+impl Default for PostProcessCommand2D {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            time_seconds: 0.0,
+            exposure: 1.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            gamma: 1.0,
+            bloom_threshold: 0.8,
+            bloom_intensity: 0.0,
+            bloom_radius: 2.0,
+            vignette_intensity: 0.0,
+            vignette_softness: 0.45,
+            chromatic_aberration: 0.0,
+            pixel_size: 1.0,
+            scanline_intensity: 0.0,
+            tint: [1.0; 4],
+            damage_flash: [1.0, 0.12, 0.08, 1.0],
+            damage_strength: 0.0,
+            fog_color: [0.37, 0.45, 0.55, 1.0],
+            fog_density: 0.0,
+        }
+    }
+}
+
+impl PostProcessCommand2D {
+    pub fn active_effect_count(&self) -> usize {
+        usize::from((self.exposure - 1.0).abs() > f32::EPSILON)
+            + usize::from((self.contrast - 1.0).abs() > f32::EPSILON)
+            + usize::from((self.saturation - 1.0).abs() > f32::EPSILON)
+            + usize::from((self.gamma - 1.0).abs() > f32::EPSILON)
+            + usize::from(self.bloom_intensity > 0.0)
+            + usize::from(self.vignette_intensity > 0.0)
+            + usize::from(self.chromatic_aberration > 0.0)
+            + usize::from(self.pixel_size > 1.0)
+            + usize::from(self.scanline_intensity > 0.0)
+            + usize::from(self.tint != [1.0; 4])
+            + usize::from(self.damage_strength > 0.0)
+            + usize::from(self.fog_density > 0.0)
+    }
+}
+
 /// Stable, backend-independent blend modes for sprites, UI geometry and particles.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -471,6 +543,12 @@ pub trait RenderBackend {
             self.name()
         )))
     }
+    fn set_post_process_2d(&mut self, _command: PostProcessCommand2D) -> MFResult<()> {
+        Err(MiniForgeError::RenderError(format!(
+            "{} does not support post-processing",
+            self.name()
+        )))
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -681,7 +759,29 @@ impl RenderBackend for MacroquadBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::{SpriteBlendMode, SpriteMaterialEffect, radial_light_texture_rgba8};
+    use super::{
+        PostProcessCommand2D, SpriteBlendMode, SpriteMaterialEffect, radial_light_texture_rgba8,
+    };
+
+    #[test]
+    fn post_process_command_reports_only_visible_effects() {
+        let mut command = PostProcessCommand2D::default();
+        assert_eq!(command.active_effect_count(), 0);
+
+        command.exposure = 1.2;
+        command.bloom_intensity = 0.4;
+        command.pixel_size = 4.0;
+        command.tint = [1.0, 0.8, 0.7, 1.0];
+        command.fog_density = 0.2;
+        assert_eq!(command.active_effect_count(), 5);
+
+        command.enabled = false;
+        assert_eq!(
+            command.active_effect_count(),
+            5,
+            "effect diagnostics stay descriptive even when a volume is disabled"
+        );
+    }
 
     #[test]
     fn sprite_blend_mode_accepts_editor_and_asset_aliases() {

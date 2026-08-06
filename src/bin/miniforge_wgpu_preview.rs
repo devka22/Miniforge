@@ -12,8 +12,8 @@ use miniforge::render::backend::{
 use miniforge::render::runtime_scene_2d::{
     RenderTargetUpdateMode2D, RuntimeScene2DStats, RuntimeTexture2D, draw_engine_runtime_scene_2d,
     draw_engine_runtime_world_to_render_target_2d, entity_normal_map_path, entity_sprite_path,
-    entity_ui_sprite_path, runtime_render_target_cameras, scene_ui_sprite_paths,
-    ui_document_sprite_paths,
+    entity_ui_sprite_path, runtime_post_process_2d, runtime_render_target_cameras,
+    scene_ui_sprite_paths, ui_document_sprite_paths,
 };
 use miniforge::runtime::engine_runtime::EngineRuntime;
 use winit::application::ApplicationHandler;
@@ -277,6 +277,19 @@ impl PreviewApp {
                     self.rendered_once_targets.insert(camera.texture_id);
                 }
             }
+            let post_processing_enabled = runtime
+                .engine_config
+                .data
+                .pointer("/rendering/post_processing")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true);
+            if post_processing_enabled
+                && let Some(command) = runtime_post_process_2d(&runtime.runtime_world, elapsed)
+            {
+                backend
+                    .set_post_process_2d(command)
+                    .map_err(|error| error.to_string())?;
+            }
             self.last_scene_stats =
                 draw_engine_runtime_scene_2d(backend, runtime, &self.texture_ids, width, height)
                     .map_err(|error| error.to_string())?;
@@ -291,7 +304,7 @@ impl PreviewApp {
                 || self.frames >= target.max(1).saturating_mul(120)
         }) {
             println!(
-                "MINIFORGE_WGPU_SURFACE_{} frames={} presented={} skipped={} reconfigured={} surface_loss_recoveries={} device_loss_recoveries={} logical_draws={} gpu_draws={} color_binds={} normal_binds={} render_target_passes={} pipelines={} vertex_bytes={} particle_emitters={} particle_capacity={} particle_spawned={} particle_dispatches={} entities={} textures={} normal_mapped={} lit={} ui_documents={} retained_ui_widgets={} retained_ui_quads={} api={:?}",
+                "MINIFORGE_WGPU_SURFACE_{} frames={} presented={} skipped={} reconfigured={} surface_loss_recoveries={} device_loss_recoveries={} logical_draws={} gpu_draws={} color_binds={} normal_binds={} render_target_passes={} post_process_passes={} post_process_effects={} pipelines={} vertex_bytes={} particle_emitters={} particle_capacity={} particle_spawned={} particle_dispatches={} entities={} textures={} normal_mapped={} lit={} ui_documents={} retained_ui_widgets={} retained_ui_quads={} api={:?}",
                 if backend.submitted_frames >= self.autotest_frames.unwrap_or(1).max(1) {
                     "OK"
                 } else {
@@ -308,6 +321,8 @@ impl PreviewApp {
                 backend.last_frame_diagnostics().texture_bind_changes,
                 backend.last_frame_diagnostics().normal_texture_bind_changes,
                 backend.last_frame_diagnostics().render_target_passes,
+                backend.last_frame_diagnostics().post_process_passes,
+                backend.last_frame_diagnostics().post_process_effects,
                 backend.last_frame_diagnostics().pipeline_changes,
                 backend.last_frame_diagnostics().vertex_bytes_uploaded,
                 backend.last_frame_diagnostics().queued_particle_systems,
