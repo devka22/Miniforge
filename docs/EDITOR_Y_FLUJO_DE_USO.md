@@ -292,7 +292,7 @@ Los comandos modernos de `EditorCore` para escena agregan ademas `Node2D` y `Sce
 - `SpriteRenderer`
 - `Collider2D`
 
-Luego se pueden agregar componentes desde `ComponentRegistry`. Para un jugador topdown completo, el motor ya tiene helpers de foundation que agregan componentes como `Health`, `Stats`, `Rigidbody2D`, `CharacterController2D`, `CameraFollow`, `Inventory`, `Equipment`, `Ability`, `QuestLog`, `Saveable`, `Cooldown`, `StatusEffects`, `Interaction`, `CombatTarget`, `NavAgent` y `VisualScript`.
+Luego se pueden agregar componentes desde `ComponentRegistry`. Para un jugador topdown completo, el motor ya tiene helpers de foundation que agregan componentes como `Health`, `Stats`, `Rigidbody2D`, `CharacterController2D`, `CameraFollow`, `Inventory`, `Equipment`, `Ability`, `QuestLog`, `Saveable`, `Cooldown`, `StatusEffects`, `Interaction`, `CombatTarget`, `NavAgent` y `VisualScript`. El submenu **Create > Survival** también crea un actor con sigilo/ruido, un cazador o zombi con vista/oído/alerta y una puerta con cerradura y barricada, todos editables en el Inspector sin programar esos sistemas desde cero.
 
 ## Escenas
 

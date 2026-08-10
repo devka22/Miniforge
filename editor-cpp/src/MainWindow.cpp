@@ -468,6 +468,8 @@ void MainWindow::createMenus()
 
         auto* survival = menu->addMenu(QStringLiteral("Survival"));
         addMenuCommand(survival, QStringLiteral("Survival Actor 2D"), QStringLiteral("object.create_survival_actor2d"));
+        addMenuCommand(survival, QStringLiteral("Survival Hunter / Zombie 2D"), QStringLiteral("object.create_survival_hunter2d"));
+        addMenuCommand(survival, QStringLiteral("Barricadable Door 2D"), QStringLiteral("object.create_survival_door2d"));
         addMenuCommand(survival, QStringLiteral("Survival Environment 2D"), QStringLiteral("object.create_survival_environment2d"));
 
         auto* hybrid = menu->addMenu(QStringLiteral("Hybrid 2D + 3D"));
@@ -901,6 +903,8 @@ void MainWindow::createToolbar()
 
     auto* survivalMenu = addMenu->addMenu(QStringLiteral("Survival"));
     addCreateAction(survivalMenu, QStringLiteral("Survival Actor 2D"), QStringLiteral("object.create_survival_actor2d"));
+    addCreateAction(survivalMenu, QStringLiteral("Survival Hunter / Zombie 2D"), QStringLiteral("object.create_survival_hunter2d"));
+    addCreateAction(survivalMenu, QStringLiteral("Barricadable Door 2D"), QStringLiteral("object.create_survival_door2d"));
     addCreateAction(survivalMenu, QStringLiteral("Survival Environment 2D"), QStringLiteral("object.create_survival_environment2d"));
 
     auto* hybridMenu = addMenu->addMenu(QStringLiteral("Hybrid 2D + 3D"));

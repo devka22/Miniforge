@@ -13,6 +13,10 @@ use crate::engine::survival_systems::{
     CraftResult, EquipmentChangeResult, EquipmentSummary, InjuryResult, SurvivalEnvironment2D,
     SurvivalInteractionResult, SurvivalSystems, SurvivalTickReport,
 };
+use crate::engine::survival_world::{
+    BarricadeResult, DoorActionResult, DoorCommand, NoiseEvent2D, PerceptionResult,
+    SurvivalWorldSystems,
+};
 use crate::entities::game_object::GameObject;
 use crate::map::flow_field::FlowField;
 use crate::map::grid::Grid;
@@ -741,6 +745,101 @@ impl GameAPI {
 
     pub fn treat_injury(entity: &mut GameObject, injury_id: u64, item_id: &str) -> InjuryResult {
         SurvivalSystems::treat_injury_with_item(entity, injury_id, item_id)
+    }
+
+    pub fn set_crouching(entity: &mut GameObject, crouching: bool) -> bool {
+        SurvivalWorldSystems::set_crouching(entity, crouching)
+    }
+
+    pub fn stealth_movement_multiplier(entity: &GameObject) -> f64 {
+        SurvivalWorldSystems::movement_multiplier(entity)
+    }
+
+    pub fn stealth_visibility(entity: &GameObject) -> f64 {
+        SurvivalWorldSystems::visibility(entity)
+    }
+
+    pub fn emit_noise(entity: &mut GameObject, kind: &str, scale: f64) -> NoiseEvent2D {
+        SurvivalWorldSystems::emit_noise(entity, kind, scale)
+    }
+
+    pub fn tick_noise(entity: &mut GameObject, dt: f64) {
+        SurvivalWorldSystems::tick_noise(entity, dt)
+    }
+
+    pub fn perceive(
+        observer: &mut GameObject,
+        candidates: &[GameObject],
+        noises: &[NoiseEvent2D],
+        dt: f64,
+    ) -> PerceptionResult {
+        SurvivalWorldSystems::update_perception(observer, candidates, noises, dt)
+    }
+
+    pub fn door_action(
+        target: &mut GameObject,
+        action: &str,
+        key_id: Option<&str>,
+    ) -> DoorActionResult {
+        let command = match action {
+            "open" => DoorCommand::Open,
+            "close" => DoorCommand::Close,
+            "lock" => DoorCommand::Lock,
+            "unlock" => DoorCommand::Unlock { key_id },
+            _ => DoorCommand::Toggle,
+        };
+        SurvivalWorldSystems::door_action(target, command)
+    }
+
+    pub fn tick_door(target: &mut GameObject, dt: f64) -> bool {
+        SurvivalWorldSystems::tick_door(target, dt)
+    }
+
+    pub fn add_barricade_layer(target: &mut GameObject) -> BarricadeResult {
+        SurvivalWorldSystems::add_barricade_layer(target)
+    }
+
+    pub fn barricade_from_inventory(
+        actor: &mut GameObject,
+        target: &mut GameObject,
+    ) -> BarricadeResult {
+        let build_item = target
+            .get_component("Barricade2D")
+            .and_then(|component| component.get("build_item"))
+            .and_then(Value::as_str)
+            .unwrap_or("wood_plank")
+            .to_string();
+        let tool_item = target
+            .get_component("Barricade2D")
+            .and_then(|component| component.get("tool_item"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let item_count = target
+            .get_component("Barricade2D")
+            .map(|component| component.get_i64("items_per_layer", 1).max(1))
+            .unwrap_or(1);
+        if !tool_item.is_empty() && !Self::has_item(actor, &tool_item, 1) {
+            return BarricadeResult {
+                reason: "tool_required".to_string(),
+                ..BarricadeResult::default()
+            };
+        }
+        if !Self::has_item(actor, &build_item, item_count) {
+            return BarricadeResult {
+                reason: "materials_required".to_string(),
+                ..BarricadeResult::default()
+            };
+        }
+        let result = SurvivalWorldSystems::add_barricade_layer(target);
+        if result.success {
+            let _ = Self::remove_item(actor, &build_item, item_count);
+        }
+        result
+    }
+
+    pub fn damage_barricade(target: &mut GameObject, amount: f64) -> BarricadeResult {
+        SurvivalWorldSystems::damage_barricade(target, amount)
     }
 
     pub fn add_resource(entity: &mut GameObject, resource_type: &str, amount: f64) -> Option<f64> {

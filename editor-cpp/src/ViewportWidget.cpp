@@ -1106,6 +1106,63 @@ void ViewportWidget::paintSceneOverlays(QPainter& painter)
             }
         }
 
+        if (entityHasComponent(entity, QStringLiteral("NoiseEmitter2D"))) {
+            const qreal noise = entity.value(QStringLiteral("noise_radius")).toDouble();
+            const qreal ring = selected ? qMax<qreal>(10.0, noise * 4.0) : 10.0;
+            painter.setPen(QPen(QColor(255, 194, 92, selected ? 225 : 115), 1.4, Qt::DashLine));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawEllipse(center, ring, ring);
+            if (entity.value(QStringLiteral("stealth_crouching")).toBool()) {
+                painter.setPen(QColor(138, 255, 189, selected ? 245 : 180));
+                painter.drawText(QRectF(center + QPointF(-12, -28), QSizeF(24, 18)),
+                    Qt::AlignCenter, QStringLiteral("CR"));
+            }
+        }
+
+        if (entityHasComponent(entity, QStringLiteral("Senses2D"))) {
+            const qreal sight = entity.value(QStringLiteral("senses_sight_range")).toDouble();
+            const qreal alert = entity.value(QStringLiteral("senses_alertness")).toDouble();
+            painter.setPen(QPen(alert >= 35.0 ? QColor(255, 87, 79, 225)
+                                             : QColor(255, 219, 105, 155),
+                selected ? 2.0 : 1.2));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawArc(QRectF(center + QPointF(-18, -18), QSizeF(36, 36)), 25 * 16, 130 * 16);
+            painter.drawLine(center, radialPoint(center, selected ? 24 : 15, -35));
+            painter.drawLine(center, radialPoint(center, selected ? 24 : 15, 35));
+            if (selected) {
+                painter.drawText(QRectF(center + QPointF(18, -14), QSizeF(220, 24)),
+                    Qt::AlignLeft | Qt::AlignVCenter,
+                    tr("Sight %1 · Alert %2").arg(sight, 0, 'f', 1).arg(alert, 0, 'f', 0));
+            }
+        }
+
+        if (entityHasComponent(entity, QStringLiteral("Door2D"))) {
+            const int layers = entity.value(QStringLiteral("barricade_layers")).toInt();
+            const bool locked = entity.value(QStringLiteral("door_locked")).toBool();
+            const QString state = entity.value(QStringLiteral("door_state")).toString(QStringLiteral("closed"));
+            const QRectF doorBadge(center + QPointF(-11, -14), QSizeF(22, 28));
+            painter.setPen(QPen(locked ? QColor(255, 105, 91, 235)
+                                       : QColor(211, 157, 89, selected ? 250 : 180),
+                selected ? 2.2 : 1.4));
+            painter.setBrush(QColor(82, 48, 25, selected ? 155 : 90));
+            painter.drawRect(doorBadge);
+            painter.setBrush(QColor(255, 222, 140, 220));
+            painter.drawEllipse(center + QPointF(6, 1), 1.8, 1.8);
+            painter.setPen(QPen(QColor(231, 205, 149, 225), 2.0));
+            for (int layer = 0; layer < layers; ++layer) {
+                const qreal y = doorBadge.top() + 5.0 + layer * 5.0;
+                painter.drawLine(QPointF(doorBadge.left() - 3.0, y), QPointF(doorBadge.right() + 3.0, y));
+            }
+            if (selected) {
+                painter.drawText(QRectF(center + QPointF(17, -14), QSizeF(230, 26)),
+                    Qt::AlignLeft | Qt::AlignVCenter,
+                    tr("Door %1 · %2 · Barricade %3")
+                        .arg(state)
+                        .arg(locked ? tr("locked") : tr("unlocked"))
+                        .arg(layers));
+            }
+        }
+
         if (entityHasComponent(entity, QStringLiteral("BodyCondition2D"))) {
             const int injuries = entity.value(QStringLiteral("survival_injury_count")).toInt();
             const int equipped = entity.value(QStringLiteral("equipment_item_count")).toInt();

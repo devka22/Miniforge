@@ -13,7 +13,8 @@ parte del motor: no contienen mapas, objetos, arte, balance ni reglas de un jueg
    los componentes.
 5. Conecta acciones desde Visual Script usando `UseInventoryItem`, `CraftRecipe`,
    `SetSurvivalNeed`, `ModifySurvivalNeed`, `BranchSurvivalNeed`, `EquipInventoryItem`,
-   `UnequipToInventory`, `ApplyInjury` y `TreatInjury`.
+   `UnequipToInventory`, `ApplyInjury`, `TreatInjury`, `SetCrouching`, `EmitNoise`,
+   `DoorAction`, `AddBarricadeLayer`, `DamageBarricade` y `BranchAlertness`.
 
 El `GameplaySystem` actualiza automáticamente `SurvivalNeeds` durante el modo PLAY. `Health` e
 `Inventory` siguen siendo componentes independientes y pueden utilizarse en cualquier género.
@@ -29,6 +30,13 @@ El `GameplaySystem` actualiza automáticamente `SurvivalNeeds` durante el modo P
   entidad global creada desde **Create > Survival > Survival Environment 2D**.
 - `BodyCondition2D`: volumen de sangre, temperatura central, inmunidad y lesiones persistentes con
   zona corporal, sangrado, dolor, infección, gravedad y tiempo de curación.
+- `NoiseEmitter2D`: radios separados para andar, correr, agacharse, interactuar y combatir;
+  incorpora superficie, equipo y decaimiento para UI y gizmos.
+- `StealthState2D`: agachado, cobertura, exposición lumínica y multiplicadores de movimiento,
+  visibilidad y ruido.
+- `Senses2D`: cono visual, alcance auditivo, etiquetas objetivo, alerta, memoria y último estímulo.
+- `Door2D`: apertura progresiva, colisión sincronizada, cerradura, llave, ruido y cierre automático.
+- `Barricade2D`: capas, material, herramienta, coste declarativo, resistencia y salud persistente.
 - `Equipment`: ranuras de mano primaria/secundaria, cabeza, torso, manos, piernas, pies, espalda,
   abalorio y herramienta; admite objetos de varias ranuras, durabilidad, aislamiento, protección,
   impermeabilidad, peso y bonificadores de estadísticas.
@@ -117,6 +125,24 @@ El tick ambiental combina aislamiento e impermeabilidad del equipo con temperatu
 precipitación, refugio, calor y esfuerzo. También aplica encumbramiento, consumo de oxígeno,
 estrés, moral, higiene y enfermedad con límites seguros ante valores inválidos.
 
+## Sigilo, percepción y mundo barricable
+
+Desde **Create > Survival** se pueden crear tres actores listos para editar:
+
+- **Survival Actor 2D** incluye necesidades, cuerpo, inventario, equipo, sigilo y emisión de ruido.
+- **Survival Hunter / Zombie 2D** incluye vista, oído, memoria de alerta, navegación y combate.
+- **Barricadable Door 2D** incluye interacción, colisión, cerradura, audio, capas y guardado.
+
+`SurvivalWorldSystems::emit_noise` devuelve un `NoiseEvent2D` serializable en coordenadas del
+mundo. `perceive` y `update_perception` comparan candidatos con el cono visual y esos eventos de
+ruido, seleccionan el estímulo más fuerte y actualizan la alerta sin depender del renderer. El
+resultado sirve para IA de zombis, guardias, animales o enemigos de cualquier género.
+
+Las acciones de puerta son deterministas: una puerta cerrada conserva colisión, una abierta la
+libera, una cerradura valida `key_id` y una barricada impide abrir hasta que su salud llegue a cero.
+`barricade_from_inventory` exige la herramienta y materiales declarados en `Barricade2D`, consume
+los materiales sólo si se añade la capa y mantiene la operación atómica.
+
 ## Recetas declarativas
 
 ```json
@@ -167,6 +193,10 @@ Para integraciones avanzadas, `SurvivalSystems` y `GameAPI` exponen operaciones 
 - `equip_inventory_item`, `unequip_to_inventory`, `equipment_summary`, `effective_stat` y
   `degrade_equipment`.
 - `apply_injury` y `treat_injury`.
+- `set_crouching`, `stealth_movement_multiplier`, `stealth_visibility`, `emit_noise`, `tick_noise`
+  y `perceive`.
+- `door_action`, `tick_door`, `add_barricade_layer`, `barricade_from_inventory` y
+  `damage_barricade`.
 - `search_loot_container`, `rummage_loot_container`, `take_container_item` y
   `take_all_container_items`.
 - `can_craft`, `craft` y `craft_at`.

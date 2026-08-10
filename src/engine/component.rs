@@ -1671,6 +1671,75 @@ pub fn default_component(component_type: &str) -> Option<Component> {
             "next_injury_id": 1,
             "auto_progress": true,
         }),
+        "NoiseEmitter2D" => json!({
+            "enabled": true,
+            "movement_radius": 2.5,
+            "sprint_radius": 7.0,
+            "crouch_radius": 0.75,
+            "interaction_radius": 4.0,
+            "combat_radius": 10.0,
+            "equipment_noise_scale": 0.08,
+            "surface_multiplier": 1.0,
+            "current_radius": 0.0,
+            "current_intensity": 0.0,
+            "last_kind": "silent",
+            "decay_per_second": 12.0,
+        }),
+        "StealthState2D" => json!({
+            "crouching": false,
+            "concealed": false,
+            "visibility": 1.0,
+            "light_exposure": 1.0,
+            "movement_multiplier": 1.0,
+            "crouch_movement_multiplier": 0.55,
+            "noise_multiplier": 1.0,
+            "crouch_noise_multiplier": 0.3,
+            "concealment_visibility_multiplier": 0.35,
+        }),
+        "Senses2D" => json!({
+            "enabled": true,
+            "sight_range": 9.0,
+            "hearing_range": 14.0,
+            "fov_degrees": 120.0,
+            "alert_gain": 45.0,
+            "alert_decay": 10.0,
+            "alertness": 0.0,
+            "alert_threshold": 35.0,
+            "target_tags": ["Player"],
+            "last_target_id": null,
+            "last_stimulus": "none",
+            "last_known_x": 0.0,
+            "last_known_y": 0.0,
+            "memory_seconds": 4.0,
+            "memory_remaining": 0.0,
+        }),
+        "Door2D" => json!({
+            "state": "closed",
+            "locked": false,
+            "key_id": null,
+            "open_progress": 0.0,
+            "target_open": false,
+            "open_speed": 4.0,
+            "auto_close_seconds": 0.0,
+            "auto_close_remaining": 0.0,
+            "collision_when_closed": true,
+            "noise_radius": 3.5,
+            "strength": 100.0,
+            "integrity": 100.0,
+        }),
+        "Barricade2D" => json!({
+            "material": "wood",
+            "layers": 0,
+            "max_layers": 4,
+            "health": 0.0,
+            "health_per_layer": 40.0,
+            "max_health": 160.0,
+            "build_item": "wood_plank",
+            "items_per_layer": 1,
+            "tool_item": "hammer",
+            "damage_resistance": 0.1,
+            "noise_radius": 8.0,
+        }),
         "SurvivalUIBinding" => json!({
             "target_tag": "Player",
             "source": "health",
@@ -2468,6 +2537,11 @@ pub fn advanced_component_types() -> &'static [&'static str] {
         "SurvivalNeeds",
         "SurvivalEnvironment2D",
         "BodyCondition2D",
+        "NoiseEmitter2D",
+        "StealthState2D",
+        "Senses2D",
+        "Door2D",
+        "Barricade2D",
         "SurvivalUIBinding",
         "LootContainer",
         "CraftingBook",
@@ -2590,6 +2664,11 @@ pub fn advanced_component_category(component_type: &str) -> Option<&'static str>
         "SurvivalNeeds"
         | "SurvivalEnvironment2D"
         | "BodyCondition2D"
+        | "NoiseEmitter2D"
+        | "StealthState2D"
+        | "Senses2D"
+        | "Door2D"
+        | "Barricade2D"
         | "SurvivalUIBinding"
         | "LootContainer"
         | "CraftingBook"
