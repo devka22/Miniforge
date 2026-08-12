@@ -519,6 +519,64 @@ impl VisualScriptRuntime {
                         next_override = branch_next(node, treated);
                     }
                 }
+                "SetCrouching" => {
+                    let crouching = node
+                        .get("crouching")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true);
+                    let changed = GameAPI::set_crouching(entity, crouching);
+                    if node.get("true_next").is_some() || node.get("false_next").is_some() {
+                        next_override = branch_next(node, changed);
+                    }
+                }
+                "EmitNoise" => {
+                    let kind = node
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        .unwrap_or("interaction");
+                    let scale = node.get("scale").and_then(Value::as_f64).unwrap_or(1.0);
+                    let emitted = GameAPI::emit_noise(entity, kind, scale).radius > 0.0;
+                    if node.get("true_next").is_some() || node.get("false_next").is_some() {
+                        next_override = branch_next(node, emitted);
+                    }
+                }
+                "DoorAction" => {
+                    let action = node
+                        .get("action")
+                        .and_then(Value::as_str)
+                        .unwrap_or("toggle");
+                    let key = node.get("key_id").and_then(Value::as_str);
+                    let success = GameAPI::door_action(entity, action, key).success;
+                    if node.get("true_next").is_some() || node.get("false_next").is_some() {
+                        next_override = branch_next(node, success);
+                    }
+                }
+                "AddBarricadeLayer" => {
+                    let success = GameAPI::add_barricade_layer(entity).success;
+                    if node.get("true_next").is_some() || node.get("false_next").is_some() {
+                        next_override = branch_next(node, success);
+                    }
+                }
+                "DamageBarricade" => {
+                    let amount = node.get("amount").and_then(Value::as_f64).unwrap_or(10.0);
+                    let success = GameAPI::damage_barricade(entity, amount).success;
+                    if node.get("true_next").is_some() || node.get("false_next").is_some() {
+                        next_override = branch_next(node, success);
+                    }
+                }
+                "BranchAlertness" => {
+                    let alertness = entity
+                        .get_component("Senses2D")
+                        .map(|senses| senses.get_f64("alertness", 0.0))
+                        .unwrap_or(0.0);
+                    let target = node.get("value").and_then(Value::as_f64).unwrap_or(35.0);
+                    let passed = compare_numbers(
+                        alertness,
+                        target,
+                        node.get("operator").and_then(Value::as_str).unwrap_or(">="),
+                    );
+                    next_override = branch_next(node, passed);
+                }
                 "SortInventory" => {
                     let mode = node.get("mode").and_then(Value::as_str).unwrap_or("id");
                     let _ = GameAPI::sort_inventory(entity, mode);

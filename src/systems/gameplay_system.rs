@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 use crate::engine::component::default_component;
 use crate::engine::survival_systems::SurvivalSystems;
+use crate::engine::survival_world::{NoiseEvent2D, SurvivalWorldSystems};
 use crate::entities::game_object::GameObject;
 use crate::map::grid::Grid;
 use crate::systems::command_system::CommandSystem;
@@ -51,6 +52,8 @@ impl GameplaySystem {
                 ("survival_actors".to_string(), 0),
                 ("survival_ui_bindings".to_string(), 0),
                 ("harvest_respawns".to_string(), 0),
+                ("sense_detections".to_string(), 0),
+                ("world_interactions".to_string(), 0),
                 ("nav_repaths".to_string(), 0),
                 ("nav_blocked".to_string(), 0),
             ]);
@@ -64,12 +67,32 @@ impl GameplaySystem {
         };
         self.now += dt;
         let snapshot = entities.clone();
+        let noise_events = snapshot
+            .iter()
+            .filter_map(|entity| {
+                let emitter = entity.get_component("NoiseEmitter2D")?;
+                let radius = emitter.get_f64("current_radius", 0.0);
+                let intensity = emitter.get_f64("current_intensity", 0.0);
+                (radius > 0.0 && intensity > 0.0).then(|| NoiseEvent2D {
+                    source_id: entity.id,
+                    x: entity.x,
+                    y: entity.y,
+                    radius,
+                    intensity,
+                    kind: emitter.get_string("last_kind", "movement"),
+                    age: 0.0,
+                    duration: 0.1,
+                })
+            })
+            .collect::<Vec<_>>();
         let mut pending_destroy = Vec::new();
         let mut spawn_requests = Vec::new();
         let mut nav_repaths = 0usize;
         let mut nav_blocked = 0usize;
         let mut survival_actors = 0usize;
         let mut harvest_respawns = 0usize;
+        let mut sense_detections = 0usize;
+        let mut world_interactions = 0usize;
 
         for index in 0..entities.len() {
             if !entities[index].enabled {
@@ -81,6 +104,16 @@ impl GameplaySystem {
             let survival = SurvivalSystems::tick_entity(&mut entities[index], dt);
             survival_actors += usize::from(survival.updated);
             harvest_respawns += usize::from(survival.resource_respawned);
+            let perception = SurvivalWorldSystems::update_perception(
+                &mut entities[index],
+                &snapshot,
+                &noise_events,
+                dt,
+            );
+            sense_detections += usize::from(perception.detected);
+            SurvivalWorldSystems::tick_noise(&mut entities[index], dt);
+            world_interactions +=
+                usize::from(SurvivalWorldSystems::tick_door(&mut entities[index], dt));
             self.update_stat_regen(&mut entities[index], dt);
             self.update_state_machine(&mut entities[index], dt);
             self.update_tween(&mut entities[index], dt);
@@ -167,6 +200,8 @@ impl GameplaySystem {
             ("survival_actors".to_string(), survival_actors),
             ("survival_ui_bindings".to_string(), survival_ui_bindings),
             ("harvest_respawns".to_string(), harvest_respawns),
+            ("sense_detections".to_string(), sense_detections),
+            ("world_interactions".to_string(), world_interactions),
             ("nav_repaths".to_string(), nav_repaths),
             ("nav_blocked".to_string(), nav_blocked),
         ]);
@@ -1051,6 +1086,46 @@ mod tests {
                 < 100.0
         );
         assert_eq!(system.stats.get("survival_actors"), Some(&1));
+    }
+
+    #[test]
+    fn gameplay_system_advances_senses_noise_and_doors_without_scripts() {
+        let mut hunter = GameObject::new(0.0, 0.0, Some("Hunter".to_string()));
+        hunter.tag = "Enemy".to_string();
+        hunter.add_component(default_component("Senses2D").unwrap());
+
+        let mut player = GameObject::new(-12.0, 0.0, Some("Player".to_string()));
+        player.tag = "Player".to_string();
+        player.add_component(default_component("NoiseEmitter2D").unwrap());
+        let _ = SurvivalWorldSystems::emit_noise(&mut player, "combat", 1.4);
+
+        let mut door = GameObject::new(2.0, 2.0, Some("Door".to_string()));
+        door.add_component(default_component("Door2D").unwrap());
+        let _ = SurvivalWorldSystems::door_action(
+            &mut door,
+            crate::engine::survival_world::DoorCommand::Open,
+        );
+
+        let mut entities = vec![hunter, player, door];
+        let mut system = GameplaySystem::default();
+        system.update_entities(&mut entities, 0.05, "PLAY");
+
+        assert!(
+            entities[0]
+                .get_component("Senses2D")
+                .unwrap()
+                .get_f64("alertness", 0.0)
+                > 0.0
+        );
+        assert!(
+            entities[2]
+                .get_component("Door2D")
+                .unwrap()
+                .get_f64("open_progress", 0.0)
+                > 0.0
+        );
+        assert_eq!(system.stats.get("sense_detections"), Some(&1));
+        assert_eq!(system.stats.get("world_interactions"), Some(&1));
     }
 
     #[test]

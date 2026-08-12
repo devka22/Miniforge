@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde_json::json;
 
 use crate::engine::camera::Camera;
+use crate::engine::survival_world::SurvivalWorldSystems;
 use crate::entities::game_object::GameObject;
 use crate::map::grid::Grid;
 
@@ -193,7 +194,12 @@ fn update_character_controller(entity: &mut GameObject, dt: f64) -> bool {
     let max_jumps = controller.get_i64("max_jumps", 1).max(0);
     let walk_speed = controller.get_f64("walk_speed", 5.0).max(0.0);
     let run_speed = controller.get_f64("run_speed", walk_speed).max(walk_speed);
-    let speed = if run_pressed { run_speed } else { walk_speed };
+    let stealth_multiplier = entity
+        .get_component("StealthState2D")
+        .map(|stealth| stealth.get_f64("movement_multiplier", 1.0))
+        .unwrap_or(1.0)
+        .clamp(0.05, 3.0);
+    let speed = (if run_pressed { run_speed } else { walk_speed }) * stealth_multiplier;
     let mut facing_x = controller.get_f64("facing_x", 1.0);
     let mut facing_y = controller.get_f64("facing_y", 0.0);
     let has_input = input_x.abs() + input_y.abs() > 0.01;
@@ -302,6 +308,19 @@ fn update_character_controller(entity: &mut GameObject, dt: f64) -> bool {
         blackboard.blackboard_set("moving", json!(has_input));
         blackboard.blackboard_set("grounded", json!(grounded));
         blackboard.blackboard_set("dashing", json!(dash_timer > 0.0));
+    }
+    if has_input && entity.get_component("NoiseEmitter2D").is_some() {
+        let crouching = entity
+            .get_component("StealthState2D")
+            .is_some_and(|stealth| stealth.get_bool("crouching", false));
+        let kind = if crouching {
+            "crouch"
+        } else if run_pressed {
+            "sprint"
+        } else {
+            "movement"
+        };
+        let _ = SurvivalWorldSystems::emit_noise(entity, kind, 1.0);
     }
     entity.sync_to_components();
     true
@@ -561,4 +580,29 @@ fn lerp(from: f64, to: f64, alpha: f64) -> f64 {
 
 fn smoothing_alpha(smoothness: f64, dt: f64) -> f64 {
     1.0 - (-smoothness.max(0.0) * dt.max(0.0)).exp()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::component::default_component;
+
+    #[test]
+    fn character_controller_applies_native_crouch_speed_and_noise() {
+        let mut actor = GameObject::new(0.0, 0.0, Some("StealthActor".to_string()));
+        actor.add_component(default_component("CharacterController2D").unwrap());
+        actor.add_component(default_component("StealthState2D").unwrap());
+        actor.add_component(default_component("NoiseEmitter2D").unwrap());
+        assert!(SurvivalWorldSystems::set_crouching(&mut actor, true));
+        let controller = actor.get_component_mut("CharacterController2D").unwrap();
+        controller.set_f64("input_x", 1.0);
+        controller.set_f64("input_y", 0.0);
+
+        assert!(update_character_controller(&mut actor, 0.1));
+
+        assert!((actor.x - 0.275).abs() < 0.001);
+        let emitter = actor.get_component("NoiseEmitter2D").unwrap();
+        assert_eq!(emitter.get_string("last_kind", ""), "crouch");
+        assert!(emitter.get_f64("current_radius", 0.0) < 0.75);
+    }
 }

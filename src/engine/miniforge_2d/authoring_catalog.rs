@@ -600,6 +600,8 @@ fn builtin_presets() -> Vec<AuthoringPreset2D> {
                 "Stats",
                 "Health",
                 "Interaction",
+                "NoiseEmitter2D",
+                "StealthState2D",
                 "Saveable",
             ],
             &[
@@ -607,6 +609,8 @@ fn builtin_presets() -> Vec<AuthoringPreset2D> {
                 ov("CharacterController2D", "walk_speed", json!(3.5)),
                 ov("Rigidbody2D", "use_gravity", json!(false)),
                 ov("Rigidbody2D", "drag", json!(0.18)),
+                ov("StealthState2D", "crouch_movement_multiplier", json!(0.55)),
+                ov("StealthState2D", "crouch_noise_multiplier", json!(0.3)),
             ],
             &["stealth", "immersive-sim", "adventure"],
             &["player", "stealth", "interaction"],
@@ -651,6 +655,8 @@ fn builtin_presets() -> Vec<AuthoringPreset2D> {
                 "Health",
                 "SurvivalNeeds",
                 "BodyCondition2D",
+                "NoiseEmitter2D",
+                "StealthState2D",
                 "Inventory",
                 "Equipment",
                 "CraftingBook",
@@ -662,6 +668,33 @@ fn builtin_presets() -> Vec<AuthoringPreset2D> {
             &["needs", "inventory", "crafting"],
         )
         .aliases(&["survival"]),
+        preset(
+            "survival_hunter",
+            "Survival Hunter / Zombie",
+            "Survival",
+            AuthoringPresetKind2D::Actor,
+            "Sight cone, hearing, alert memory, navigation and combat targeting for any hunting AI.",
+            &[
+                "Actor2D",
+                "AIController2D",
+                "Senses2D",
+                "NavAgent",
+                "CombatTarget",
+                "DamageDealer",
+                "Health",
+                "Collider2D",
+                "StateMachine",
+            ],
+            &[
+                ov("Senses2D", "target_tags", json!(["Player"])),
+                ov("Senses2D", "sight_range", json!(9.0)),
+                ov("Senses2D", "hearing_range", json!(14.0)),
+                ov("CombatTarget", "require_line_of_sight", json!(true)),
+            ],
+            &["survival", "horror", "stealth", "action"],
+            &["zombie", "hunter", "senses", "hearing", "alert"],
+        )
+        .aliases(&["zombie_senses", "hunter_ai"]),
         preset(
             "survival_environment",
             "Survival Environment 2D",
@@ -963,21 +996,27 @@ fn builtin_presets() -> Vec<AuthoringPreset2D> {
         ),
         preset(
             "interactive_door",
-            "Interactive Door",
+            "Barricadable Door",
             "Gameplay Objects",
             AuthoringPresetKind2D::Gameplay,
-            "Collision, interaction, state machine, audio and persistent open/locked state.",
+            "Native opening, locking, collision, auto-close, barricade health, audio and persistence.",
             &[
                 "StaticBody2D",
                 "Collider2D",
                 "Interaction",
+                "Door2D",
+                "Barricade2D",
                 "StateMachine",
                 "AudioSource2D",
                 "Saveable",
             ],
-            &[],
-            &["all"],
-            &["door", "interaction", "state"],
+            &[
+                ov("Collider2D", "shape", json!("box")),
+                ov("Interaction", "prompt", json!("Open / Barricade")),
+                ov("Interaction", "action_name", json!("door_action")),
+            ],
+            &["all", "survival", "horror", "rpg"],
+            &["door", "interaction", "lock", "barricade", "survival"],
         ),
         preset(
             "checkpoint_spawn",
@@ -1910,6 +1949,95 @@ fn automatic_parameters(components: &[String]) -> Vec<PresetParameter2D> {
             1.0,
             "Environmental infection pressure applied to exposed actors.",
             &[("SurvivalEnvironment2D", "pathogen_exposure")],
+        ));
+    }
+    if has(components, "Senses2D") {
+        parameters.push(number_parameter(
+            "sight_range",
+            "Sight Range",
+            9.0,
+            0.0,
+            100_000.0,
+            "Maximum visual detection range before target visibility modifiers.",
+            &[("Senses2D", "sight_range")],
+        ));
+        parameters.push(number_parameter(
+            "hearing_range",
+            "Hearing Range",
+            14.0,
+            0.0,
+            100_000.0,
+            "Maximum range at which emitted noise stimuli can be heard.",
+            &[("Senses2D", "hearing_range")],
+        ));
+        parameters.push(number_parameter(
+            "field_of_view",
+            "Field of View",
+            120.0,
+            0.0,
+            360.0,
+            "Visual sensing cone in degrees around the actor rotation.",
+            &[("Senses2D", "fov_degrees")],
+        ));
+    }
+    if has(components, "NoiseEmitter2D") {
+        parameters.push(number_parameter(
+            "movement_noise_radius",
+            "Movement Noise Radius",
+            2.5,
+            0.0,
+            100_000.0,
+            "Base world radius of a regular movement noise stimulus.",
+            &[("NoiseEmitter2D", "movement_radius")],
+        ));
+        parameters.push(number_parameter(
+            "sprint_noise_radius",
+            "Sprint Noise Radius",
+            7.0,
+            0.0,
+            100_000.0,
+            "Base world radius of a sprint noise stimulus.",
+            &[("NoiseEmitter2D", "sprint_radius")],
+        ));
+    }
+    if has(components, "Door2D") {
+        parameters.push(number_parameter(
+            "door_open_speed",
+            "Door Open Speed",
+            4.0,
+            0.01,
+            1000.0,
+            "Normalized open/close progress advanced each second.",
+            &[("Door2D", "open_speed")],
+        ));
+        parameters.push(number_parameter(
+            "door_auto_close",
+            "Auto Close Delay",
+            0.0,
+            0.0,
+            3600.0,
+            "Seconds before an open door closes; zero disables auto-close.",
+            &[("Door2D", "auto_close_seconds")],
+        ));
+    }
+    if has(components, "Barricade2D") {
+        parameters.push(integer_parameter(
+            "barricade_layers",
+            "Maximum Barricade Layers",
+            4,
+            1,
+            100,
+            "Maximum construction layers supported by this object.",
+            &[("Barricade2D", "max_layers")],
+        ));
+        parameters.push(number_parameter(
+            "barricade_health_per_layer",
+            "Health Per Layer",
+            40.0,
+            0.01,
+            1_000_000.0,
+            "Durability contributed by each constructed layer.",
+            &[("Barricade2D", "health_per_layer")],
         ));
     }
     if has(components, "GpuParticles2D") {

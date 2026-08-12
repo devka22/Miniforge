@@ -2559,6 +2559,11 @@ impl EditorCore {
                 let survival_environment = entity.get_component("SurvivalEnvironment2D");
                 let body_condition = entity.get_component("BodyCondition2D");
                 let equipment = entity.get_component("Equipment");
+                let noise_emitter = entity.get_component("NoiseEmitter2D");
+                let stealth = entity.get_component("StealthState2D");
+                let senses = entity.get_component("Senses2D");
+                let door = entity.get_component("Door2D");
+                let barricade = entity.get_component("Barricade2D");
                 let hybrid_scene = entity.get_component("HybridScene3D");
                 let hybrid_anchor = entity.get_component("HybridAnchor2D3D");
                 let billboard = entity.get_component("Billboard3D");
@@ -2669,6 +2674,34 @@ impl EditorCore {
                         .and_then(Value::as_object)
                         .map(serde_json::Map::len)
                         .unwrap_or(0),
+                    "noise_radius": noise_emitter
+                        .map(|component| component.get_f64("current_radius", 0.0))
+                        .unwrap_or(0.0),
+                    "stealth_crouching": stealth
+                        .is_some_and(|component| component.get_bool("crouching", false)),
+                    "stealth_visibility": stealth
+                        .map(|component| component.get_f64("visibility", 1.0))
+                        .unwrap_or(1.0),
+                    "senses_sight_range": senses
+                        .map(|component| component.get_f64("sight_range", 9.0))
+                        .unwrap_or(0.0),
+                    "senses_hearing_range": senses
+                        .map(|component| component.get_f64("hearing_range", 14.0))
+                        .unwrap_or(0.0),
+                    "senses_fov": senses
+                        .map(|component| component.get_f64("fov_degrees", 120.0))
+                        .unwrap_or(0.0),
+                    "senses_alertness": senses
+                        .map(|component| component.get_f64("alertness", 0.0))
+                        .unwrap_or(0.0),
+                    "door_state": door.map(|component| component.get_string("state", "closed")),
+                    "door_locked": door.is_some_and(|component| component.get_bool("locked", false)),
+                    "barricade_layers": barricade
+                        .map(|component| component.get_i64("layers", 0))
+                        .unwrap_or(0),
+                    "barricade_health": barricade
+                        .map(|component| component.get_f64("health", 0.0))
+                        .unwrap_or(0.0),
                     "hybrid_world_enabled": hybrid_scene
                         .is_some_and(|component| component.enabled),
                     "hybrid_world_scale": hybrid_scene
@@ -3841,6 +3874,8 @@ impl EditorCore {
                         "Stats",
                         "SurvivalNeeds",
                         "BodyCondition2D",
+                        "NoiseEmitter2D",
+                        "StealthState2D",
                         "Inventory",
                         "Equipment",
                         "CraftingBook",
@@ -3871,7 +3906,83 @@ impl EditorCore {
                 CommandOutcome {
                     changed: true,
                     message: format!(
-                        "Created hybrid-ready SurvivalActor2D #{id} with native needs, injuries, inventory, equipment and animation"
+                        "Created hybrid-ready SurvivalActor2D #{id} with native needs, injuries, inventory, equipment, stealth, noise and animation"
+                    ),
+                }
+            }
+            "object.create_survival_hunter2d" => {
+                let (x, y) = editor_spawn_position(game);
+                let id = game.spawn_scene_node(
+                    "SurvivalHunter2D",
+                    &[
+                        "AIController2D",
+                        "Senses2D",
+                        "NavAgent",
+                        "CombatTarget",
+                        "DamageDealer",
+                        "Health",
+                        "StateMachine",
+                        "Animator2D",
+                        "HybridAnchor2D3D",
+                        "Billboard3D",
+                    ],
+                    x,
+                    y,
+                );
+                if let Some(entity) = game.get_entity_by_id_mut(id) {
+                    entity.tag = "Enemy".to_string();
+                    entity.layer = "Pawn".to_string();
+                    if let Some(senses) = entity.get_component_mut("Senses2D") {
+                        senses.set("target_tags", json!(["Player"]));
+                    }
+                    entity.sync_to_components();
+                }
+                game.sync_world();
+                CommandOutcome {
+                    changed: true,
+                    message: format!(
+                        "Created SurvivalHunter2D #{id} with sight, hearing, alert memory, navigation and combat"
+                    ),
+                }
+            }
+            "object.create_survival_door2d" => {
+                let (x, y) = editor_spawn_position(game);
+                let id = game.spawn_scene_node(
+                    "BarricadableDoor2D",
+                    &[
+                        "StaticBody2D",
+                        "Collider2D",
+                        "Interaction",
+                        "Door2D",
+                        "Barricade2D",
+                        "StateMachine",
+                        "AudioSource2D",
+                        "Saveable",
+                    ],
+                    x,
+                    y,
+                );
+                if let Some(entity) = game.get_entity_by_id_mut(id) {
+                    entity.tag = "Door".to_string();
+                    entity.layer = "World".to_string();
+                    entity.width = 1.0;
+                    entity.height = 0.2;
+                    if let Some(collider) = entity.get_component_mut("Collider2D") {
+                        collider.set("shape", json!("box"));
+                        collider.set_f64("width", 1.0);
+                        collider.set_f64("height", 0.2);
+                    }
+                    if let Some(interaction) = entity.get_component_mut("Interaction") {
+                        interaction.set("prompt", json!("Open / Barricade"));
+                        interaction.set("action_name", json!("door_action"));
+                    }
+                    entity.sync_to_components();
+                }
+                game.sync_world();
+                CommandOutcome {
+                    changed: true,
+                    message: format!(
+                        "Created BarricadableDoor2D #{id} with locking, collision, durability and persistence"
                     ),
                 }
             }
@@ -5843,6 +5954,18 @@ fn default_command_descriptors() -> Vec<CommandDescriptor> {
         command(
             "object.create_survival_actor2d",
             "Create Survival Actor 2D",
+            "Survival",
+            None,
+        ),
+        command(
+            "object.create_survival_hunter2d",
+            "Create Survival Hunter 2D",
+            "Survival",
+            None,
+        ),
+        command(
+            "object.create_survival_door2d",
+            "Create Barricadable Door 2D",
             "Survival",
             None,
         ),
@@ -8509,11 +8632,35 @@ mod tests {
                     "Health",
                     "SurvivalNeeds",
                     "BodyCondition2D",
+                    "NoiseEmitter2D",
+                    "StealthState2D",
                     "Inventory",
                     "Equipment",
                     "HybridAnchor2D3D",
                     "Billboard3D",
                     "Animator2D",
+                ],
+            ),
+            (
+                "object.create_survival_hunter2d",
+                &[
+                    "AIController2D",
+                    "Senses2D",
+                    "NavAgent",
+                    "CombatTarget",
+                    "DamageDealer",
+                    "HybridAnchor2D3D",
+                ],
+            ),
+            (
+                "object.create_survival_door2d",
+                &[
+                    "StaticBody2D",
+                    "Collider2D",
+                    "Interaction",
+                    "Door2D",
+                    "Barricade2D",
+                    "Saveable",
                 ],
             ),
             (
@@ -8631,6 +8778,21 @@ mod tests {
                     assert!(entity.get_component("Collider2D").is_none());
                     assert!(entity.get_component("SpriteRenderer").is_none());
                     assert_eq!(entity.layer, "Effects");
+                }
+                "object.create_survival_hunter2d" => {
+                    assert_eq!(entity.tag, "Enemy");
+                    let senses = entity.get_component("Senses2D").unwrap();
+                    assert_eq!(senses.get_string_list("target_tags"), vec!["Player"]);
+                }
+                "object.create_survival_door2d" => {
+                    assert_eq!(entity.tag, "Door");
+                    assert_eq!(
+                        entity
+                            .get_component("Interaction")
+                            .unwrap()
+                            .get_string("action_name", ""),
+                        "door_action"
+                    );
                 }
                 "object.create_survival_actor2d" => {
                     assert_eq!(entity.tag, "Player");
