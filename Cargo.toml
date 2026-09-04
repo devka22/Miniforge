@@ -55,7 +55,7 @@ macroquad = "0.4"
 notify = "8"
 pathfinding = "4.15.0"
 rayon = "1.10"
-rapier2d = "0.34"
+rapier2d = "0.35"
 rstar = "0.13.0"
 mlua = { version = "0.12.0", features = ["luau", "vendored"] }
 libloading = "0.9.0"
